@@ -336,7 +336,9 @@ func snapshotRequestCookies(snapshot []cookierefresh.BrowserCookie, fallback, re
 func isOfficialTokenRetryRet(ret []string) bool {
 	// value 表示当前遍历过程中的值
 	for _, value := range ret {
-		if strings.Contains(value, "TOKEN_EMPTY") || strings.Contains(value, "TOKEN_EXOIRED") {
+		if strings.Contains(value, "TOKEN_EMPTY") ||
+			strings.Contains(value, "TOKEN_EXOIRED") ||
+			strings.Contains(value, "TOKEN_EXPIRED") {
 			return true
 		}
 	}
