@@ -4,6 +4,7 @@ package mtop
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -21,10 +22,54 @@ type ItemDetailFetcher interface {
 
 var _ ItemDetailFetcher = (*ClientImpl)(nil)
 
-// DetectItemMultiSpec 查询商品详情并识别多规格结构。该调用不主动刷新 token；
+// DetectItemMultiSpec 查询商品详情并识别多规格结构；MTOP 签名 Token 过期时刷新后重试。
 // 当 ctx 携带 CookieSession 时会像浏览器一样吸收响应 Cookie。
-// DetectItemMultiSpec 封装Detect商品MultiSpec业务协调。
 func (c *ClientImpl) DetectItemMultiSpec(ctx context.Context, cookies, itemID string) (bool, error) {
+	// currentCookies 保存本轮商品详情请求实际使用的 Cookie，不向日志或错误输出。
+	currentCookies := cookies
+	if // session 用于吸收没有显式会话调用方收到的 Set-Cookie。
+	session := cookieSessionFromContext(ctx); session != nil {
+		currentCookies, _, _ = session.State()
+	} else {
+		ctx, _ = WithFlatCookieSession(ctx, currentCookies)
+	}
+	for // attempt 表示含首次请求在内的 Token 重试序号。
+	attempt := 0; attempt < 4; attempt++ {
+		// previousCookies 记录本次请求前的 Cookie，用于优先采用响应下发的 Token。
+		previousCookies := currentCookies
+		// ok、err 保存一次商品详情请求结果。
+		ok, err := c.detectItemMultiSpecOnce(ctx, currentCookies, itemID)
+		if err == nil {
+			return ok, nil
+		}
+		if !IsMTopTokenExpiredErr(err) {
+			return false, err
+		}
+		if // session 用于读取响应刚吸收的最新 Cookie。
+		session := cookieSessionFromContext(ctx); session != nil {
+			currentCookies, _, _ = session.State()
+		}
+		if attempt == 3 {
+			return false, fmt.Errorf("商品详情接口 Token 重试失败: %w", err)
+		}
+		if currentCookies == previousCookies {
+			// refreshed、refreshErr 保存主动刷新 MTOP 签名 Token 的结果及错误。
+			refreshed, refreshErr := c.RefreshTokenContext(ctx, currentCookies)
+			if refreshErr != nil {
+				return false, fmt.Errorf("商品详情 Token 过期且刷新失败: %w", refreshErr)
+			}
+			currentCookies = refreshed.UpdatedCookies
+		}
+		if // sleepErr 表示两次平台请求之间等待期间的取消错误。
+		sleepErr := sleepCtx(ctx, MTopRetryGap); sleepErr != nil {
+			return false, sleepErr
+		}
+	}
+	return false, errors.New("商品详情 Token 重试失败")
+}
+
+// detectItemMultiSpecOnce 执行一次商品详情请求；调用方负责 Token 过期后的恢复重试。
+func (c *ClientImpl) detectItemMultiSpecOnce(ctx context.Context, cookies, itemID string) (bool, error) {
 	itemID = strings.TrimSpace(itemID)
 	if itemID == "" {
 		return false, fmt.Errorf("item_id 不能为空")
@@ -70,7 +115,7 @@ func (c *ClientImpl) DetectItemMultiSpec(ctx context.Context, cookies, itemID st
 	// raw、err 用于本次流程后续判断的raw、err
 	raw, err := readMTopBody(resp)
 	if err != nil {
-		return false, err
+		return false, c.mtopResponseFailure("商品详情接口", resp.StatusCode, nil, fmt.Sprintf("读取响应失败: %v", err))
 	}
 	// decoded 用于本次流程后续判断的decoded
 	var decoded struct {
@@ -79,13 +124,13 @@ func (c *ClientImpl) DetectItemMultiSpec(ctx context.Context, cookies, itemID st
 	}
 	if // err 用于本次流程后续判断的err
 	err := json.Unmarshal(raw, &decoded); err != nil {
-		return false, fmt.Errorf("解析商品详情响应失败: %w (body=%s)", err, truncate(string(raw), 300))
+		return false, c.mtopResponseFailure("商品详情接口", resp.StatusCode, nil, fmt.Sprintf("JSON 解析失败: %v", err))
 	}
-	if isSessionExpiredRet(decoded.Ret) {
-		return false, sessionExpiredError("商品详情接口", decoded.Ret)
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return false, c.mtopResponseFailure("商品详情接口", resp.StatusCode, decoded.Ret, "HTTP 状态异常")
 	}
 	if !hasMTopSuccess(decoded.Ret) {
-		return false, fmt.Errorf("商品详情接口返回非成功: ret=%v", decoded.Ret)
+		return false, c.mtopResponseFailure("商品详情接口", resp.StatusCode, decoded.Ret, "平台 ret 未包含 SUCCESS")
 	}
 	return detectItemMultiSpec(decoded.Data), nil
 }

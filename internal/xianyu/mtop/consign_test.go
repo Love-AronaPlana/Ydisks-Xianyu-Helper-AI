@@ -95,7 +95,7 @@ func TestConsignWrapper(t *testing.T) {
 	}
 }
 
-// TestConsignRetFailure: 非 token 过期的失败 ret，不重试，返回 ok=false。
+// TestConsignRetFailure: 非 token 过期的失败 ret，不重试，并返回平台错误码和原因。
 func TestConsignRetFailure(t *testing.T) {
 	// requests 用于本次流程后续判断的请求列表
 	var requests atomic.Int32
@@ -110,7 +110,7 @@ func TestConsignRetFailure(t *testing.T) {
 	client := &ClientImpl{HTTPClient: server.Client(), ConsignURL: server.URL + "/"}
 	// ok、ret、err 用于本次流程后续判断的ok、ret、err
 	ok, ret, _, err := client.ConsignContext(context.Background(), consignCookies, "order-1")
-	if err != nil || ok || len(ret) == 0 {
+	if err == nil || ok || len(ret) == 0 || !strings.Contains(err.Error(), "订单状态错误") {
 		t.Fatalf("ok=%v ret=%v err=%v", ok, ret, err)
 	}
 	if requests.Load() != 1 {
@@ -167,7 +167,7 @@ func TestConsignParseFailure(t *testing.T) {
 	client := &ClientImpl{HTTPClient: server.Client(), ConsignURL: server.URL + "/"}
 	// err 用于本次流程后续判断的err
 	_, _, _, err := client.ConsignContext(context.Background(), consignCookies, "order-1")
-	if err == nil || !strings.Contains(err.Error(), "解析 consign 响应失败") {
+	if err == nil || !strings.Contains(err.Error(), "解析确认发货响应失败") || !strings.Contains(err.Error(), "JSON 解析失败") {
 		t.Fatalf("err=%v", err)
 	}
 }
@@ -275,7 +275,7 @@ func TestConsignContextCanceled(t *testing.T) {
 	}
 }
 
-// TestConsignRetryExhausted: token 过期但每次下发不同 Set-Cookie，4 次重试耗尽返回 ok=false。
+// TestConsignRetryExhausted: token 过期但每次下发不同 Set-Cookie，4 次重试耗尽返回明确错误。
 func TestConsignRetryExhausted(t *testing.T) {
 	// requests 用于本次流程后续判断的请求列表
 	var requests atomic.Int32
@@ -295,8 +295,8 @@ func TestConsignRetryExhausted(t *testing.T) {
 	defer cancel()
 	// ok、ret、err 用于本次流程后续判断的ok、ret、err
 	ok, ret, _, err := client.ConsignContext(ctx, consignCookies, "order-1")
-	if err != nil || ok {
-		t.Fatalf("ok=%v err=%v want ok=false err=nil", ok, err)
+	if err == nil || ok || !strings.Contains(err.Error(), "Token 重试失败") {
+		t.Fatalf("ok=%v err=%v want ok=false and token retry error", ok, err)
 	}
 	if len(ret) == 0 || !strings.Contains(ret[0], "FAIL_SYS_TOKEN_EXOIRED") {
 		t.Fatalf("ret=%v", ret)

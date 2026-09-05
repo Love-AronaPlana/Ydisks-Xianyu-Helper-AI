@@ -11,8 +11,40 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
+
+// TestFetchSoldOrdersPageRetriesExpiredTokenWithResponseCookie 验证订单列表仅在 Token 过期时吸收新 Cookie 并重试，成功页解析不变。
+func TestFetchSoldOrdersPageRetriesExpiredTokenWithResponseCookie(t *testing.T) {
+	// requests 统计首次失败和成功重试的请求次数。
+	var requests atomic.Int32
+	// server 返回一次 Token 过期和一次合法订单页。
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// attempt 保存当前请求序号。
+		attempt := requests.Add(1)
+		if attempt == 1 {
+			http.SetCookie(w, &http.Cookie{Name: "_m_h5_tk", Value: "fresh_token", Path: "/"})
+			_, _ = io.WriteString(w, `{"ret":["FAIL_SYS_TOKEN_EXPIRED::令牌过期"]}`)
+			return
+		}
+		if !strings.Contains(r.Header.Get("Cookie"), "_m_h5_tk=fresh_token") {
+			t.Errorf("重试未携带响应下发的 Cookie: %s", r.Header.Get("Cookie"))
+		}
+		_, _ = io.WriteString(w, `{"ret":["SUCCESS::调用成功"],"data":{"module":{"items":[],"nextPage":false}}}`)
+	}))
+	defer server.Close()
+	// client 只请求本地服务，日志不输出合成失败。
+	client := &ClientImpl{HTTPClient: server.Client(), SoldOrdersURL: server.URL, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	// page、err 保存 Token 恢复后的订单页结果。
+	page, err := client.FetchSoldOrdersPage(context.Background(), "unb=1; _m_h5_tk=old_token", 1, 30)
+	if err != nil || page == nil || len(page.Items) != 0 || page.NextPage {
+		t.Fatalf("page=%+v err=%v", page, err)
+	}
+	if requests.Load() != 2 {
+		t.Fatalf("requests=%d want 2", requests.Load())
+	}
+}
 
 // TestFetchSoldOrdersPageCompleteness 用 t 验证唯一已售格式的完整性、合法空页及错误脱敏，失败页不能成为成功快照。
 func TestFetchSoldOrdersPageCompleteness(t *testing.T) {

@@ -55,12 +55,45 @@ type PublishError struct {
 // Error 封装错误业务协调。
 func (e *PublishError) Error() string {
 	if len(e.Ret) > 0 {
-		return strings.Join(e.Ret, "; ")
+		return strings.Join(sanitizeMTopRet(e.Ret), "; ")
 	}
 	if e.Body != "" {
-		return truncate(e.Body, 240)
+		return truncate(sanitizeMTopText(e.Body), 240)
 	}
 	return string(e.Code)
+}
+
+// sanitizeMTopRet 脱敏发布错误中的平台 ret，并保持发布错误的历史分隔格式。
+func sanitizeMTopRet(ret []string) []string {
+	// values 保存非空且已脱敏的平台错误条目。
+	values := make([]string, 0, len(ret))
+	// value 表示当前发布响应中的单条平台错误标记。
+	for _, value := range ret {
+		// item 保存当前平台错误条目的安全文本。
+		item := strings.TrimSpace(sanitizeMTopText(value))
+		if item != "" {
+			values = append(values, item)
+		}
+	}
+	return values
+}
+
+// isPublishTokenFailure 判断发布流程是否因 MTOP Token 过期或刷新失败而终止。
+func isPublishTokenFailure(err error) bool {
+	if IsMTopTokenExpiredErr(err) {
+		return true
+	}
+	// message 兼容 Token 刷新失败的外层包装，避免把发布认证失败降级为未知错误。
+	message := strings.ToLower(errString(err))
+	return strings.Contains(message, "token") && strings.Contains(message, "刷新")
+}
+
+// errString 返回错误文本；nil 错误转换为空字符串以便失败路径安全判断。
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // PublishImage 用于本次流程后续判断的发布图片
@@ -366,9 +399,18 @@ func (c *ClientImpl) recommendPublishCategory(ctx context.Context, cookiesStr, t
 	// decoded、updated、err 用于本次流程后续判断的decoded、updated、err
 	decoded, updated, err := c.callMTop(ctx, cookiesStr, RecommendItemAPI, "mtop.taobao.idle.kgraph.property.recommend", "2.0", "a21ybx.publish.0.0", "a21ybx.item.sidebar.1.67321598K9Vgx8", "67321598K9Vgx8", data)
 	if err != nil {
+		if isPublishTokenFailure(err) {
+			return nil, updated, &PublishError{Code: PublishErrorTokenExpired, Body: err.Error()}
+		}
 		return nil, updated, err
 	}
 	if !hasMTopSuccess(retFromDecoded(decoded)) {
+		// failure 保存推荐接口的统一平台失败分类；普通库存/权限错误继续由旧发布错误码兼容处理。
+		failure := c.mtopResponseFailure("mtop.taobao.idle.kgraph.property.recommend", http.StatusOK, retFromDecoded(decoded), "平台 ret 未包含 SUCCESS")
+		// kind、ok 保存推荐接口失败分类及其是否存在。
+		if kind, ok := MTopErrorKindOf(failure); ok && kind != MTopErrorBusiness {
+			return nil, updated, failure
+		}
 		return nil, updated, classifyPublishError(retFromDecoded(decoded), decoded)
 	}
 	// dataMap 用于本次流程后续判断的数据Map
@@ -528,11 +570,20 @@ func (c *ClientImpl) publishItemOnce(ctx context.Context, cookiesStr string, req
 	// decoded、updated、err 用于本次流程后续判断的decoded、updated、err
 	decoded, updated, err := c.callMTop(ctx, cookiesStr, PublishItemAPI, "mtop.idle.pc.idleitem.publish", "1.0", "a21ybx.publish.0.0", "a21ybx.home.sidebar.1.46413da6EPl7v5", "46413da6EPl7v5", data)
 	if err != nil {
+		if isPublishTokenFailure(err) {
+			return nil, &PublishError{Code: PublishErrorTokenExpired, Body: err.Error()}
+		}
 		return nil, err
 	}
 	// ret 用于本次流程后续判断的ret
 	ret := retFromDecoded(decoded)
 	if !hasMTopSuccess(ret) {
+		// failure 保存最终发布接口的统一平台失败分类；库存/权限错误仍保留既有专用码。
+		failure := c.mtopResponseFailure("mtop.idle.pc.idleitem.publish", http.StatusOK, ret, "平台 ret 未包含 SUCCESS")
+		// kind、ok 保存最终发布接口失败分类及其是否存在。
+		if kind, ok := MTopErrorKindOf(failure); ok && kind != MTopErrorBusiness {
+			return nil, failure
+		}
 		return nil, classifyPublishError(ret, decoded)
 	}
 	// dataMap 用于本次流程后续判断的数据Map
@@ -558,52 +609,6 @@ func (c *ClientImpl) publishItemOnce(ctx context.Context, cookiesStr string, req
 		result.ItemURL = "https://www.goofish.com/item?id=" + itemID
 	}
 	return result, nil
-}
-
-// callMTop 封装callMTop业务协调。
-func (c *ClientImpl) callMTop(ctx context.Context, cookiesStr, endpoint, api, version, spmCnt, spmPre, logID string, data any) (map[string]any, string, error) {
-	// hc 用于本次流程后续判断的hc
-	hc := c.httpClient()
-	// rawData 用于本次流程后续判断的原始数据
-	rawData, _ := json.Marshal(data)
-	// dataVal 用于本次流程后续判断的数据Val
-	dataVal := string(rawData)
-	// signingCookies、requestCookies 用于本次流程后续判断的signingCookies、requestCookies
-	signingCookies, requestCookies := mtopRequestCookies(ctx, cookiesStr, "https://www.goofish.com/", endpoint)
-	// t 用于本次流程后续判断的t
-	t := strconv.FormatInt(time.Now().UnixMilli(), 10)
-	// sign 用于本次流程后续判断的sign
-	sign := protocol.GenerateSign(t, protocol.SignToken(signingCookies), dataVal)
-	// query 用于本次流程后续判断的查询
-	query := buildMTopQuery(api, version, t, sign, spmCnt, spmPre, logID)
-	// body 用于本次流程后续判断的请求体
-	body := "data=" + url.QueryEscape(dataVal)
-	// req、err 用于本次流程后续判断的req、err
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"?"+query, strings.NewReader(body))
-	if err != nil {
-		return nil, cookiesStr, err
-	}
-	setCommonHeaders(req, requestCookies)
-	// resp、err 用于本次流程后续判断的resp、err
-	resp, err := hc.Do(req)
-	if err != nil {
-		return nil, cookiesStr, fmt.Errorf("%s 请求失败: %w", api, err)
-	}
-	defer resp.Body.Close()
-	// updated 用于本次流程后续判断的updated
-	updated := absorbMTopResponseCookies(ctx, cookiesStr, resp)
-	// raw、err 用于本次流程后续判断的raw、err
-	raw, err := readMTopBody(resp)
-	if err != nil {
-		return nil, updated, err
-	}
-	// decoded 用于本次流程后续判断的decoded
-	var decoded map[string]any
-	if // err 用于本次流程后续判断的err
-	err := json.Unmarshal(raw, &decoded); err != nil {
-		return nil, updated, fmt.Errorf("解析 %s 响应失败: %w (body=%s)", api, err, truncate(string(raw), 300))
-	}
-	return decoded, updated, nil
 }
 
 // buildMTopQuery 封装buildMTop查询业务协调。

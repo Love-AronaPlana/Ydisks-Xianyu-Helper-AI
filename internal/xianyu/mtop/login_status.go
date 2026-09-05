@@ -77,7 +77,7 @@ func (c *ClientImpl) CheckLoginStatusContext(ctx context.Context, cookiesStr str
 	// raw、err 用于本次流程后续判断的raw、err
 	raw, err := readMTopBody(resp)
 	if err != nil {
-		return nil, err
+		return nil, c.mtopResponseFailure("loginuser.get", resp.StatusCode, nil, fmt.Sprintf("读取响应失败: %v", err))
 	}
 
 	// payload 用于本次流程后续判断的请求载荷
@@ -89,10 +89,22 @@ func (c *ClientImpl) CheckLoginStatusContext(ctx context.Context, cookiesStr str
 	}
 	if // err 用于本次流程后续判断的err
 	err := json.Unmarshal(raw, &payload); err != nil {
-		return nil, fmt.Errorf("解析 loginuser.get 响应失败: %w (body=%s)", err, truncate(string(raw), 300))
+		return nil, c.mtopResponseFailure("loginuser.get", resp.StatusCode, nil, fmt.Sprintf("JSON 解析失败: %v", err))
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, c.mtopResponseFailure("loginuser.get", resp.StatusCode, payload.Ret, "HTTP 状态异常")
+	}
+	// failure 保存登录态失败响应的统一诊断；成功和已自动吸收新 Cookie 的恢复状态不改原消息。
+	var failure error
+	if !hasMTopSuccess(payload.Ret) {
+		// failure 仅用于记录非成功登录态响应；登录态状态机仍沿用原有返回值。
+		failure = c.mtopResponseFailure("loginuser.get", resp.StatusCode, payload.Ret, "平台 ret 未包含 SUCCESS")
 	}
 	// status、msg 用于本次流程后续判断的status、msg
 	status, msg := classifyLoginStatus(payload.Ret, updated != cookiesStr)
+	if failure != nil && status != LoginStatusTokenRefreshed {
+		msg = failure.Error()
+	}
 	return &LoginStatusResult{
 		Status:          status,
 		Ret:             payload.Ret,

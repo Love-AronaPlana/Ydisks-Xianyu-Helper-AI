@@ -76,6 +76,25 @@ func TestCheckLoginStatusTokenRefreshed(t *testing.T) {
 	}
 }
 
+// TestCheckLoginStatusFailureMessageIncludesPlatformReason 验证登录态失败状态保留平台错误码和原因，供前端与日志排障。
+func TestCheckLoginStatusFailureMessageIncludesPlatformReason(t *testing.T) {
+	// srv 返回普通业务失败，不触发 Token 自动恢复状态。
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"ret":["FAIL_BIZ_LOGIN_BLOCKED::账号暂不可用"],"data":{}}`)
+	}))
+	defer srv.Close()
+	// client 仅请求本地测试端点。
+	client := &ClientImpl{HTTPClient: srv.Client(), LoginUserURL: srv.URL}
+	// result、err 保存登录态检查结果及调用错误。
+	result, err := client.CheckLoginStatusContext(context.Background(), "unb=123; _m_h5_tk=token_1")
+	if err != nil || result == nil || result.Status != LoginStatusFailed {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if !strings.Contains(result.Message, "FAIL_BIZ_LOGIN_BLOCKED") || !strings.Contains(result.Message, "账号暂不可用") {
+		t.Fatalf("message=%q 未包含平台失败原因", result.Message)
+	}
+}
+
 // TestClassifyLoginStatusRisk 封装TestClassify登录状态Risk业务协调。
 func TestClassifyLoginStatusRisk(t *testing.T) {
 	// status、msg 用于本次流程后续判断的status、msg

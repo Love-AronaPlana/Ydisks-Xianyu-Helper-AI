@@ -26,6 +26,7 @@ test('部分失败标记单独生效，逐项说明保留 error 和 message 且�
   expect(message).toContain('未完成');
   expect(message).toContain('账号 account-a');
   expect(message).toContain('订单 order-a');
+  expect(message).toContain('失败原因：归属错误');
   expect(message).toContain('归属错误');
   expect(message).toContain('核验卖家');
   expect(message).toContain('列表不可用');

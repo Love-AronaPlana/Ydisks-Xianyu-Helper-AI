@@ -29,17 +29,20 @@ func (c *ClientImpl) FetchUserProfile(ctx context.Context, cookiesStr string) (*
 		// res、ret、updatedCookies、err 用于本次流程后续判断的res、ret、updatedCookies、err
 		res, ret, updatedCookies, err := c.fetchUserProfileOnce(ctx, currentCookies)
 		if err != nil {
-			return nil, err
-		}
-		lastRet = ret
-		if res != nil {
-			return res, nil
-		}
-		if isSessionExpiredRet(ret) {
-			return nil, sessionExpiredError("账号资料接口", ret)
-		}
-		if !isTokenExpiredRet(ret) {
-			return nil, fmt.Errorf("账号资料接口返回非成功: ret=%v", ret)
+			if !IsMTopTokenExpiredErr(err) {
+				return nil, err
+			}
+			lastRet = mtopErrorRet(err)
+		} else {
+			lastRet = ret
+			if res != nil {
+				return res, nil
+			}
+			// failure 保存平台非成功响应的统一失败分类。
+			failure := c.mtopResponseFailure("账号资料接口", http.StatusOK, ret, "")
+			if !IsMTopTokenExpiredErr(failure) {
+				return nil, failure
+			}
 		}
 		if updatedCookies != "" && updatedCookies != currentCookies {
 			currentCookies = updatedCookies
@@ -60,7 +63,7 @@ func (c *ClientImpl) FetchUserProfile(ctx context.Context, cookiesStr string) (*
 		}
 		currentCookies = refreshed.UpdatedCookies
 	}
-	return nil, fmt.Errorf("账号资料接口 token 重试失败: ret=%v", lastRet)
+	return nil, fmt.Errorf("账号资料接口 token 重试失败: %w", c.mtopResponseFailure("账号资料接口", http.StatusOK, lastRet, "重试次数已耗尽"))
 }
 
 // fetchUserProfileOnce 封装fetch用户ProfileOnce业务协调。
@@ -99,7 +102,7 @@ func (c *ClientImpl) fetchUserProfileOnce(ctx context.Context, cookiesStr string
 	// raw、err 用于本次流程后续判断的raw、err
 	raw, err := readMTopBody(resp)
 	if err != nil {
-		return nil, nil, updated, err
+		return nil, nil, updated, c.mtopResponseFailure("账号资料接口", resp.StatusCode, nil, fmt.Sprintf("读取响应失败: %v", err))
 	}
 
 	// decoded 用于本次流程后续判断的decoded
@@ -109,7 +112,10 @@ func (c *ClientImpl) fetchUserProfileOnce(ctx context.Context, cookiesStr string
 	}
 	if // err 用于本次流程后续判断的err
 	err := json.Unmarshal(raw, &decoded); err != nil {
-		return nil, nil, updated, fmt.Errorf("解析账号资料响应失败: %w (body=%s)", err, truncate(string(raw), 300))
+		return nil, nil, updated, c.mtopResponseFailure("账号资料接口", resp.StatusCode, nil, fmt.Sprintf("JSON 解析失败: %v", err))
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, decoded.Ret, updated, c.mtopResponseFailure("账号资料接口", resp.StatusCode, decoded.Ret, "HTTP 状态异常")
 	}
 	if !hasMTopSuccess(decoded.Ret) {
 		return nil, decoded.Ret, updated, nil

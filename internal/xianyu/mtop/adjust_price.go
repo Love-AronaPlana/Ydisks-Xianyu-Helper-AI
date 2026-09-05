@@ -46,20 +46,25 @@ func (c *ClientImpl) AdjustOrderPriceContext(ctx context.Context, cookiesStr, or
 		// ok、ret、updated、requestErr 分别是单次调用的业务成功标志、业务返回、Cookie 更新和传输错误。
 		ok, ret, updated, requestErr := c.adjustOrderPriceOnce(ctx, currentCookies, orderID, priceCents)
 		if requestErr != nil {
-			return false, ret, currentCookies, requestErr
+			if !IsMTopTokenExpiredErr(requestErr) {
+				return false, ret, currentCookies, requestErr
+			}
+			lastRet = mtopErrorRet(requestErr)
+		} else {
+			lastRet = ret
+			if updated != "" {
+				currentCookies = updated
+			}
+			if ok {
+				return true, ret, currentCookies, nil
+			}
+			requestErr = c.mtopResponseFailure("订单改价接口", http.StatusOK, ret, "平台业务未确认成功")
+			if !IsMTopTokenExpiredErr(requestErr) {
+				return false, ret, currentCookies, requestErr
+			}
 		}
-		lastRet = ret
 		if updated != "" {
 			currentCookies = updated
-		}
-		if ok {
-			return true, ret, currentCookies, nil
-		}
-		if isSessionExpiredRet(ret) {
-			return false, ret, currentCookies, sessionExpiredError("订单改价接口", ret)
-		}
-		if !isTokenExpiredRet(ret) {
-			return false, ret, currentCookies, nil
 		}
 		if attempt == 3 {
 			break
@@ -82,7 +87,7 @@ func (c *ClientImpl) AdjustOrderPriceContext(ctx context.Context, cookiesStr, or
 			return false, ret, currentCookies, err
 		}
 	}
-	return false, lastRet, currentCookies, nil
+	return false, lastRet, currentCookies, fmt.Errorf("订单改价接口 Token 重试失败: %w", c.mtopResponseFailure("订单改价接口", http.StatusOK, lastRet, "重试次数已耗尽"))
 }
 
 // adjustOrderPriceOnce 执行一次订单改价请求；业务成功要求 ret 为 SUCCESS 且 data.success 为 true。
@@ -135,7 +140,7 @@ func (c *ClientImpl) adjustOrderPriceOnce(ctx context.Context, cookiesStr, order
 	// raw、err 分别是响应正文和读取错误。
 	raw, err := readMTopBody(resp)
 	if err != nil {
-		return false, nil, updated, err
+		return false, nil, updated, c.mtopResponseFailure("订单改价接口", resp.StatusCode, nil, fmt.Sprintf("读取响应失败: %v", err))
 	}
 	// res 是改价响应的最小解析结构；data.success 是平台的业务成功标志。
 	var res struct {
@@ -146,7 +151,10 @@ func (c *ClientImpl) adjustOrderPriceOnce(ctx context.Context, cookiesStr, order
 	}
 	if // err 是响应 JSON 解析错误。
 	err := json.Unmarshal(raw, &res); err != nil {
-		return false, nil, updated, fmt.Errorf("解析订单改价响应失败: %w (body=%s)", err, truncate(string(raw), 300))
+		return false, nil, updated, c.mtopResponseFailure("订单改价接口", resp.StatusCode, nil, fmt.Sprintf("JSON 解析失败: %v", err))
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return false, res.Ret, updated, c.mtopResponseFailure("订单改价接口", resp.StatusCode, res.Ret, "HTTP 状态异常")
 	}
 	if hasMTopSuccess(res.Ret) && res.Data.Success {
 		return true, res.Ret, updated, nil

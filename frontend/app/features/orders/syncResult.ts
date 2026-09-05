@@ -17,8 +17,8 @@ export const formatOrderSyncResult = (result: OrderRefreshResponse): string => {
     if (item.success) continue;
     // identity 按明细可用字段标识账号和订单，账号级失败不虚构订单号。
     const identity = [item.cookie_id ? `账号 ${item.cookie_id}` : '', item.order_id ? `订单 ${item.order_id}` : ''].filter(Boolean).join('，');
-    // detail 同时保留技术错误与操作说明；完全相同的文案只展示一次。
-    const detail = [item.error, item.message !== item.error ? item.message : ''].filter(Boolean).join('；');
+    // detail 同时保留技术错误与操作说明；完全相同的文案只展示一次，并明确标出失败原因。
+    const detail = [item.error ? `失败原因：${item.error}` : '', item.message !== item.error ? item.message : ''].filter(Boolean).join('；');
     lines.push(`${identity ? `${identity}：` : ''}${detail || '未提供失败原因'}`);
   }
   return lines.join('\n');

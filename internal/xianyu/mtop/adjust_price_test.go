@@ -56,7 +56,7 @@ func TestAdjustOrderPriceSuccess(t *testing.T) {
 	}
 }
 
-// TestAdjustOrderPriceDataSuccessFalse: ret SUCCESS 但 data.success=false 时视为业务失败且不重试。
+// TestAdjustOrderPriceDataSuccessFalse: ret SUCCESS 但 data.success=false 时视为业务失败且不重试，并返回明确错误。
 func TestAdjustOrderPriceDataSuccessFalse(t *testing.T) {
 	// requests 统计服务端收到的请求次数。
 	var requests atomic.Int32
@@ -71,7 +71,7 @@ func TestAdjustOrderPriceDataSuccessFalse(t *testing.T) {
 	client := &ClientImpl{HTTPClient: server.Client(), AdjustPriceURL: server.URL + "/"}
 	// ok、ret、err 分别是改价结果、业务返回和调用错误。
 	ok, ret, _, err := client.AdjustOrderPriceContext(context.Background(), adjustPriceCookies, "order-1", 990)
-	if err != nil || ok || len(ret) == 0 {
+	if err == nil || ok || len(ret) == 0 || !strings.Contains(err.Error(), "平台业务未确认成功") {
 		t.Fatalf("ok=%v ret=%v err=%v", ok, ret, err)
 	}
 	if requests.Load() != 1 {
@@ -79,7 +79,7 @@ func TestAdjustOrderPriceDataSuccessFalse(t *testing.T) {
 	}
 }
 
-// TestAdjustOrderPriceBizFailure: 非 token 过期的业务失败不重试，返回 ok=false 且无错误。
+// TestAdjustOrderPriceBizFailure: 非 token 过期的业务失败不重试，并返回平台错误码和原因。
 func TestAdjustOrderPriceBizFailure(t *testing.T) {
 	// requests 统计服务端收到的请求次数。
 	var requests atomic.Int32
@@ -94,7 +94,7 @@ func TestAdjustOrderPriceBizFailure(t *testing.T) {
 	client := &ClientImpl{HTTPClient: server.Client(), AdjustPriceURL: server.URL + "/"}
 	// ok、ret、err 分别是改价结果、业务返回和调用错误。
 	ok, ret, _, err := client.AdjustOrderPriceContext(context.Background(), adjustPriceCookies, "order-1", 990)
-	if err != nil || ok || len(ret) == 0 || !strings.Contains(ret[0], "FAIL_BIZ_ORDER_NOT_ALLOW_MODIFY") {
+	if err == nil || ok || len(ret) == 0 || !strings.Contains(ret[0], "FAIL_BIZ_ORDER_NOT_ALLOW_MODIFY") || !strings.Contains(err.Error(), "当前订单不允许修改价格") {
 		t.Fatalf("ok=%v ret=%v err=%v", ok, ret, err)
 	}
 	if requests.Load() != 1 {
