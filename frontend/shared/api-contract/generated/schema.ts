@@ -2251,7 +2251,13 @@ export interface components {
             channel_category_id?: string;
             /** @description 可选的淘宝类目主键 */
             tb_category_id?: string;
+            /** @description 可选的闲鱼 itemProperties JSON；多规格时每个维度至少包含两个规格值 */
+            item_properties?: string;
+            /** @description 可选的闲鱼 itemSkuList JSON；多规格时逐行提供价格、库存和 propertyList */
+            item_sku_list?: string;
             images: string[];
+            /** @description 多规格规格值图片，可选 */
+            spec_images?: string[];
         };
         ItemPublishBatchPreviewRow: {
             row_no: number;

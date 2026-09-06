@@ -83,6 +83,73 @@ func TestPublishItemValidationFailures(t *testing.T) {
 	}
 }
 
+// TestPublishItemBuildsOfficialMultiSKUPayload 验证多规格发布生成闲鱼官方组合字段。
+func TestPublishItemBuildsOfficialMultiSKUPayload(t *testing.T) {
+	// png1 保存普通主图和规格图片使用的确定性图片数据。
+	png1 := tinyPNG(t)
+	// publishedData 保存最终发布请求的脱敏业务载荷。
+	var publishedData map[string]any
+	// transport 保存图片上传和最终发布接口的本地响应。
+	transport := &dispatchTransport{handlers: map[string]http.HandlerFunc{
+		"_upload": func(w http.ResponseWriter, _ *http.Request) {
+			fmt.Fprint(w, `{"object":{"url":"https://cdn/spec.jpg","pix":"800x600"}}`)
+		},
+		"mtop.idle.pc.idleitem.publish": func(w http.ResponseWriter, r *http.Request) {
+			publishedData, _ = parseDataURL(readBody(r))
+			fmt.Fprint(w, `{"ret":["SUCCESS::调用成功"],"data":{"itemId":"multi-item"}}`)
+		},
+	}}
+	// client 保存使用本地传输替身的商品发布客户端。
+	client := &ClientImpl{HTTPClient: &http.Client{Transport: transport}}
+	// request 保存颜色、尺码及四个 SKU 组合。
+	request := PublishItemRequest{
+		Title: "多规格商品", PriceCents: 0, OriginalPriceCents: 3990, Quantity: 10, Virtual: true,
+		PreferredCategory: &PublishCategory{CatID: "5001", CatName: "虚拟服务", ChannelCatID: "6001"},
+		Images:            []PublishImage{{Filename: "main.png", ContentType: "image/png", Data: png1}},
+		SpecImages:        []PublishImage{{Filename: "red.png", ContentType: "image/png", Data: png1}},
+		Specs: []PublishSpec{
+			{PropertyName: "颜色", SupportImage: true, Values: []PublishSpecValue{{Value: "红色", ImageIndex: 0}, {Value: "蓝色", ImageIndex: -1}}},
+			{PropertyName: "尺码", Values: []PublishSpecValue{{Value: "S", ImageIndex: -1}, {Value: "M", ImageIndex: -1}}},
+		},
+		SKUs: []PublishSKU{
+			{PriceCents: 990, Quantity: 2, PropertyList: []PublishSKUProperty{{PropertyText: "颜色", ValueText: "红色"}, {PropertyText: "尺码", ValueText: "S"}}},
+			{PriceCents: 1090, Quantity: 3, PropertyList: []PublishSKUProperty{{PropertyText: "颜色", ValueText: "红色"}, {PropertyText: "尺码", ValueText: "M"}}},
+			{PriceCents: 1190, Quantity: 4, PropertyList: []PublishSKUProperty{{PropertyText: "颜色", ValueText: "蓝色"}, {PropertyText: "尺码", ValueText: "S"}}},
+			{PriceCents: 1290, Quantity: 1, PropertyList: []PublishSKUProperty{{PropertyText: "颜色", ValueText: "蓝色"}, {PropertyText: "尺码", ValueText: "M"}}},
+		},
+	}
+	// result、err 保存本地传输执行后的发布结果。
+	result, err := client.PublishItem(context.Background(), consignCookies, request)
+	if err != nil || result == nil || result.ItemID != "multi-item" {
+		t.Fatalf("多规格发布失败 result=%+v err=%v", result, err)
+	}
+	// properties、ok 保存官方 itemProperties 结构。
+	properties, ok := publishedData["itemProperties"].([]any)
+	if !ok || len(properties) != 2 {
+		t.Fatalf("itemProperties=%+v", publishedData["itemProperties"])
+	}
+	// skuList、ok 保存官方 itemSkuList 结构。
+	skuList, ok := publishedData["itemSkuList"].([]any)
+	if !ok || len(skuList) != 4 {
+		t.Fatalf("itemSkuList=%+v", publishedData["itemSkuList"])
+	}
+	// firstSKU、ok 保存首个 SKU，用于核对价格、库存和规格对。
+	firstSKU, ok := skuList[0].(map[string]any)
+	if !ok || firstSKU["priceInCent"] != "990" || firstSKU["quantity"] != float64(2) {
+		t.Fatalf("first SKU=%+v", skuList[0])
+	}
+	// propertyImages、ok 保存规格值图片列表。
+	propertyImages, ok := publishedData["propertyImageList"].([]any)
+	if !ok || len(propertyImages) != 1 {
+		t.Fatalf("propertyImageList=%+v", publishedData["propertyImageList"])
+	}
+	// priceDTO、ok 保存顶层价格结构，多规格时不应再发送单一成交价。
+	priceDTO, ok := publishedData["itemPriceDTO"].(map[string]any)
+	if !ok || priceDTO["priceInCent"] != nil || priceDTO["origPriceInCent"] != "3990" {
+		t.Fatalf("itemPriceDTO=%+v", publishedData["itemPriceDTO"])
+	}
+}
+
 // TestPublishItemDescriptionDefaultsToTitle: description 为空时回退为 title。
 func TestPublishItemDescriptionDefaultsToTitle(t *testing.T) {
 	// png1 用于本次流程后续判断的png1

@@ -102,6 +102,42 @@ type PublishCategory struct {
 	TBCatID string
 }
 
+// PublishSpecValue 是单个规格值及其可选图片在应用层的表示。
+type PublishSpecValue struct {
+	// Value 是展示给买家的规格值文本。
+	Value string
+	// ImageIndex 是规格图片在 PublishInput.SpecImages 中的下标，-1 表示未绑定图片。
+	ImageIndex int
+}
+
+// PublishSpec 是单个商品规格维度在应用层的表示。
+type PublishSpec struct {
+	// PropertyName 是闲鱼规格名称，例如颜色或尺码。
+	PropertyName string
+	// SupportImage 表示该规格值是否允许绑定规格图片。
+	SupportImage bool
+	// Values 保存该规格维度下的有效规格值。
+	Values []PublishSpecValue
+}
+
+// PublishSKUProperty 是一个 SKU 中的规格名称和值对。
+type PublishSKUProperty struct {
+	// PropertyText 是 SKU 规格名称。
+	PropertyText string
+	// ValueText 是 SKU 规格值。
+	ValueText string
+}
+
+// PublishSKU 是一个规格组合对应的价格、库存和规格值列表。
+type PublishSKU struct {
+	// PriceCents 是该 SKU 的售价，单位为分。
+	PriceCents int64
+	// Quantity 是该 SKU 的库存数量。
+	Quantity int
+	// PropertyList 保存该 SKU 的规格组合，顺序与规格维度一致。
+	PropertyList []PublishSKUProperty
+}
+
 // PublishInput 是单商品发布用例输入，携带已由 HTTP 层验证的业务字段。
 type PublishInput struct {
 	// UserID 是发起发布操作的用户标识。
@@ -128,6 +164,12 @@ type PublishInput struct {
 	Category *PublishCategory
 	// Images 是待上传的商品图片。
 	Images []Image
+	// Specs 是按闲鱼官方 itemProperties 结构整理的规格维度。
+	Specs []PublishSpec
+	// SKUs 是按闲鱼官方 itemSkuList 结构整理的规格组合。
+	SKUs []PublishSKU
+	// SpecImages 是规格值绑定的图片，索引由 Specs 中的 ImageIndex 引用。
+	SpecImages []Image
 }
 
 // PublishResult 是平台返回的商品结果，经过端口转换后不暴露平台 DTO。
@@ -186,6 +228,8 @@ type ItemRecord struct {
 	ItemDetail string
 	// MultiQuantityDelivery 表示该商品是否启用多库存交付。
 	MultiQuantityDelivery bool
+	// IsMultiSpec 表示该商品是否使用了多规格 SKU 发布。
+	IsMultiSpec bool
 }
 
 // ItemRepository 是商品本地持久化端口。
@@ -215,6 +259,15 @@ func NewService(publisher PublishPort, repository ItemRepository) (*Service, err
 
 // PublishSingle 执行发布用例；平台成功但本地保存失败时保留远端结果供 HTTP 层提示补偿。
 func (svc *Service) PublishSingle(ctx context.Context, input PublishInput) (PublishOutcome, error) {
+	if len(input.SKUs) > 0 {
+		// totalQuantity 汇总 SKU 库存，确保平台端口不依赖表单中的隐藏顶层库存字段。
+		totalQuantity := 0
+		// sku 表示当前待汇总的规格组合库存。
+		for _, sku := range input.SKUs {
+			totalQuantity += sku.Quantity
+		}
+		input.Quantity = totalQuantity
+	}
 	// outcome 保存平台端口返回的远端结果；err 保存平台调用或凭证持久化错误。
 	outcome, err := svc.publisher.Publish(ctx, input)
 	if err != nil || outcome.Result == nil || strings.TrimSpace(outcome.Result.ItemID) == "" {
@@ -235,7 +288,7 @@ func (svc *Service) PublishSingle(ctx context.Context, input PublishInput) (Publ
 		CookieID: input.CookieID, ItemID: outcome.Result.ItemID, ItemTitle: outcome.Result.Title,
 		ItemDescription: input.Description, ItemCategory: outcome.Result.CategoryID,
 		ItemPrice: outcome.Result.PriceText, ItemDetail: string(detailJSON),
-		MultiQuantityDelivery: input.Quantity > 1,
+		MultiQuantityDelivery: input.Quantity > 1, IsMultiSpec: len(input.Specs) > 0,
 	})
 	outcome.LocalSaveErr = localErr
 	return outcome, nil

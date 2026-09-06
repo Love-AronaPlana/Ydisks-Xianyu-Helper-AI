@@ -2,6 +2,7 @@ import { useCallback,useEffect,useRef,useState,type Dispatch,type SetStateAction
 import type { Item } from './api';
 import type { PublishLocation } from './api';
 import { createItem,deleteItem,getPublishLocations,itemErrorMessage,publishItem,recommendPublishCategory as recommendItemPublishCategory,syncItemsFromAccount,updateItem } from './api';
+import type { PublishSkuRow, PublishSpec } from './publishSpecs';
 import type { PublishCategory } from './types';
 
 // AddItemForm 描述手动添加商品弹窗的表单字段。
@@ -38,6 +39,10 @@ export interface PublishItemForm {
   postage: string;
   // images 是发布商品上传的图片文件。
   images: File[];
+  // specs 是按闲鱼官方结构维护的商品规格维度。
+  specs: PublishSpec[];
+  // skuRows 是规格组合对应的价格与库存表单数据。
+  skuRows: PublishSkuRow[];
 }
 
 // ItemActionsOptions 描述商品动作协调器依赖的列表状态和批量定位回调。
@@ -146,7 +151,7 @@ export interface ItemActionsState {
 export const emptyAddItemForm = (): AddItemForm => ({ cookie_id: '', item_id: '', item_title: '', item_price: '', item_image: '' });
 
 // emptyPublishItemForm 创建普通发布商品表单的初始值。
-export const emptyPublishItemForm = (cookieID = ''): PublishItemForm => ({ cookie_id: cookieID, title: '', description: '', price: '', original_price: '', quantity: '1', postage_mode: 'free', postage: '', images: [] });
+export const emptyPublishItemForm = (cookieID = ''): PublishItemForm => ({ cookie_id: cookieID, title: '', description: '', price: '', original_price: '', quantity: '1', postage_mode: 'free', postage: '', images: [], specs: [], skuRows: [] });
 
 // useItemActions 集中管理商品同步、编辑、删除、添加、普通发布和定位动作。
 export const useItemActions = ({ selectedAccount, setSelectedAccount, setItems, loadItems, loadShippingRules, onConfigureDelivery, setBatchLocations, setBatchLocation }: ItemActionsOptions): ItemActionsState => {
@@ -321,14 +326,19 @@ export const useItemActions = ({ selectedAccount, setSelectedAccount, setItems, 
   const handlePublishItem = useCallback(/* publishAction 执行普通商品发布。 */ async () => {
     if (!publishForm.cookie_id) return alert('请选择发布账号');
     if (!publishForm.title.trim()) return alert('请填写商品标题');
-    if (!publishForm.price.trim()) return alert('请填写商品价格');
-    if (!publishForm.quantity || Number(publishForm.quantity) <= 0) return alert('库存数量必须大于 0');
+    if (publishForm.specs.length > 0 && publishForm.skuRows.length === 0) return alert('请先填写每种规格的规格值');
+    if (publishForm.skuRows.some(/* row 检查每个 SKU 是否有有效售价。 */ row => !row.price.trim() || Number(row.price) <= 0)) return alert('请填写每个 SKU 的售价');
+    if (publishForm.skuRows.some(/* row 检查每个 SKU 是否有正整数库存。 */ row => !/^\d+$/.test(row.quantity.trim()) || Number(row.quantity) <= 0)) return alert('请填写每个 SKU 的库存');
+    if (publishForm.specs.length === 0 && !publishForm.price.trim()) return alert('请填写商品价格');
+    if (publishForm.specs.length === 0 && (!publishForm.quantity || Number(publishForm.quantity) <= 0)) return alert('库存数量必须大于 0');
     if (publishForm.images.length === 0) return alert('至少上传 1 张商品图片');
     if (publishForm.postage_mode === 'fixed' && !publishForm.postage.trim()) return alert('请填写一口价邮费');
     setPublishing(true);
     try {
       // result 保存平台发布接口返回的商品信息。
-      const result = await publishItem({ ...publishForm, location: publishLocation || undefined, category: publishCategory || undefined });
+      const totalQuantity = publishForm.specs.length > 0 ? publishForm.skuRows.reduce(/* total、row 汇总各 SKU 的库存。 */ (total, row) => total + (Number(row.quantity) || 0), 0) : Number(publishForm.quantity);
+      // result 保存平台发布接口返回的商品信息。
+      const result = await publishItem({ ...publishForm, quantity: totalQuantity, location: publishLocation || undefined, category: publishCategory || undefined });
       await loadItems();
       setShowPublishModal(false);
       setPublishForm(emptyPublishItemForm(selectedAccount || ''));

@@ -427,6 +427,63 @@ func TestPublishItemPassesPreferredCategory(t *testing.T) {
 	}
 }
 
+// TestPublishItemParsesMultiSKUForm 验证 HTTP multipart 会把官方规格 JSON 转换为应用输入。
+func TestPublishItemParsesMultiSKUForm(t *testing.T) {
+	// srv、cleanup 保存当前测试服务器及清理函数。
+	srv, _, cleanup := newTestServer(t)
+	defer cleanup()
+	// receivedInput 保存平台发布端口收到的规格输入。
+	var receivedInput itemapp.PublishInput
+	setTestMTop(srv, &stubPublishMTop{publish: func(_ context.Context, _ string, request mtop.PublishItemRequest) (*mtop.PublishItemResult, error) {
+		receivedInput.Specs = make([]itemapp.PublishSpec, 0, len(request.Specs))
+		// spec 表示平台请求中的一个规格维度。
+		for _, spec := range request.Specs {
+			// values 保存当前规格维度的应用层规格值。
+			values := make([]itemapp.PublishSpecValue, 0, len(spec.Values))
+			// value 表示当前规格维度中的一个规格值。
+			for _, value := range spec.Values {
+				values = append(values, itemapp.PublishSpecValue{Value: value.Value, ImageIndex: value.ImageIndex})
+			}
+			receivedInput.Specs = append(receivedInput.Specs, itemapp.PublishSpec{PropertyName: spec.PropertyName, SupportImage: spec.SupportImage, Values: values})
+		}
+		receivedInput.SKUs = make([]itemapp.PublishSKU, 0, len(request.SKUs))
+		// sku 表示平台请求中的一个 SKU 组合。
+		for _, sku := range request.SKUs {
+			// properties 保存当前 SKU 的应用层规格名称和值对。
+			properties := make([]itemapp.PublishSKUProperty, 0, len(sku.PropertyList))
+			// property 表示当前 SKU 中的一组规格名称和值。
+			for _, property := range sku.PropertyList {
+				properties = append(properties, itemapp.PublishSKUProperty{PropertyText: property.PropertyText, ValueText: property.ValueText})
+			}
+			receivedInput.SKUs = append(receivedInput.SKUs, itemapp.PublishSKU{PriceCents: sku.PriceCents, Quantity: sku.Quantity, PropertyList: properties})
+		}
+		return &mtop.PublishItemResult{ItemID: "multi-item", Title: "多规格商品"}, nil
+	}})
+	// h、cookie 保存测试路由和登录 Cookie。
+	h := srv.Router()
+	// cookie 保存测试请求使用的登录 Cookie。
+	cookie := loginHelper(t, h)
+	// properties 保存前端提交的官方 itemProperties JSON。
+	properties := `[{"propertyName":"颜色","supportImage":false,"propertyValues":[{"propertyValue":"红色"},{"propertyValue":"蓝色"}]}]`
+	// skuList 保存前端提交的官方 itemSkuList JSON。
+	skuList := `[{"price":"9.90","quantity":2,"propertyList":[{"propertyText":"颜色","valueText":"红色"}]},{"price":"10.90","quantity":3,"propertyList":[{"propertyText":"颜色","valueText":"蓝色"}]}]`
+	// body、contentType 保存多规格 multipart 请求体。
+	body, contentType := buildPublishMultipart(t, map[string]string{"cookie_id": "acc1", "title": "多规格商品", "price": "", "quantity": "5", "item_properties": properties, "item_sku_list": skuList})
+	// req、rec 保存多规格发布请求和响应。
+	req := httptest.NewRequest(http.MethodPost, "/items/publish", body)
+	req.Header.Set("Content-Type", contentType)
+	req.AddCookie(cookie)
+	// rec 保存 HTTP 处理完成后的状态码和响应体。
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || len(receivedInput.Specs) != 1 || len(receivedInput.SKUs) != 2 {
+		t.Fatalf("多规格请求异常 status=%d specs=%+v skus=%+v body=%s", rec.Code, receivedInput.Specs, receivedInput.SKUs, rec.Body.String())
+	}
+	if receivedInput.Specs[0].PropertyName != "颜色" || receivedInput.SKUs[1].PriceCents != 1090 || receivedInput.SKUs[1].Quantity != 3 {
+		t.Fatalf("规格请求转换异常 specs=%+v skus=%+v", receivedInput.Specs, receivedInput.SKUs)
+	}
+}
+
 // TestPublishItemRejectsIncompletePreferredCategory 验证不完整类目不会进入远端发布并返回具体原因。
 func TestPublishItemRejectsIncompletePreferredCategory(t *testing.T) {
 	// srv、cleanup 保存当前测试服务器及清理函数。

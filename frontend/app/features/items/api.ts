@@ -15,6 +15,7 @@ ShippingRule
 import { ApiError, type RequestControlOptions } from '../../../shared/http/client';
 import { contractClient, contractMultipartBody, runContractRequest } from '../../../shared/api-contract/client';
 import { collectionFrom } from '../../../shared/http/contract';
+import type { PublishSkuRow, PublishSpec } from './publishSpecs';
 export type * from './models';
 import { getPublishLocations as queryPublishLocations,type PublishLocationRequestOptions } from './amapLocation';
 
@@ -98,6 +99,8 @@ export const publishItem = async (form: {
     /** postage_mode 表示运费模式。 */ postage_mode: string;
     /** postage 表示运费。 */ postage?: string;
 	/** images 表示图片列表。 */ images: File[];
+	/** specs 表示商品规格维度及其规格值。 */ specs?: PublishSpec[];
+	/** skuRows 表示规格组合的价格和库存。 */ skuRows?: PublishSkuRow[];
 	/** location 表示地址。 */ location?: PublishLocation;
 	/** category 表示用户选中的闲鱼类目；省略时由后端自动识别并使用电子资料兜底。 */ category?: {
 	  /** cat_id 表示闲鱼类目主键。 */ cat_id: string;
@@ -117,11 +120,35 @@ export const publishItem = async (form: {
     body.set('postage_mode', form.postage_mode);
     body.set('postage', form.postage || '');
 	if (form.location) body.set('location', JSON.stringify(form.location));
-	if (form.category) {
+    if (form.category) {
 	  body.set('category_id', form.category.cat_id);
 	  body.set('category_name', form.category.cat_name);
 	  body.set('channel_category_id', form.category.channel_cat_id || '');
 	  body.set('tb_category_id', form.category.tb_cat_id || '');
+	}
+    if (form.specs?.length && form.skuRows?.length) {
+      // specImages 保存规格值图片，并按下标与 itemProperties 中的 image_index 对应。
+      const specImages: File[] = [];
+      // itemProperties 保存与闲鱼官方发布请求一致的规格维度和规格值结构。
+      const itemProperties = form.specs.map(/* spec 转换为官方规格维度 DTO。 */ spec => ({
+        propertyName: spec.name.trim(),
+        supportImage: spec.supportImage,
+        propertyValues: spec.values.filter(/* value 筛选非空规格值。 */ value => value.value.trim()).map(/* value 转换为官方规格值 DTO。 */ value => {
+          // imageIndex 表示该规格值图片在 spec_images multipart 字段中的位置。
+          const imageIndex = spec.supportImage && value.image ? specImages.push(value.image) - 1 : -1;
+          return { propertyValue: value.value.trim(), ...(imageIndex >= 0 ? { image_index: imageIndex } : {}) };
+        }),
+      }));
+      // itemSkuList 保存每个组合的官方 propertyList、price 和 quantity 字段。
+      const itemSkuList = form.skuRows.map(/* row 转换为官方 SKU 行 DTO。 */ row => ({
+        price: row.price,
+        quantity: Number(row.quantity),
+        propertyList: row.valueLabels.map(/* valueText、index 组成当前 SKU 的规格对。 */ (valueText, index) => ({ propertyText: form.specs?.[index]?.name.trim() || '', valueText })),
+      }));
+      body.set('item_properties', JSON.stringify(itemProperties));
+      body.set('item_sku_list', JSON.stringify(itemSkuList));
+      // specImage 表示当前待上传到规格图片字段的文件。
+      for (const /* specImage 表示当前待上传到规格图片字段的文件。 */ specImage of specImages) body.append('spec_images', specImage);
 	}
     for (const // file 上传文件，用于当前 API 处理流程。
 file of form.images) {

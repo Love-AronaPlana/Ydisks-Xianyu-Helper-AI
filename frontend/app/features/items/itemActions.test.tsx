@@ -100,9 +100,9 @@ describe('useItemActions', /* 当前回调验证商品普通操作、发布和�
   test('普通发布成功后清理表单并打开发货规则配置', /* 当前回调验证普通发布成功分支。 */ async () => {
     // hook 是商品动作 Hook 的真实 React 状态实例。
     const hook = renderHook(/* delayedLocationHookFactory 创建可关闭普通发布弹窗的商品动作状态容器。 */ () => useItemActionsHarness());
-    act(/* 当前回调写入普通发布商品表单。 */ () => hook.result.current.actions.setPublishForm({ cookie_id: 'account-1', title: '新商品', description: '描述', price: '20', original_price: '', quantity: '2', postage_mode: 'free', postage: '', images: [new File(['image'], 'image.jpg')] }));
+    act(/* 当前回调写入普通发布商品表单。 */ () => hook.result.current.actions.setPublishForm({ cookie_id: 'account-1', title: '新商品', description: '描述', price: '20', original_price: '', quantity: '2', postage_mode: 'free', postage: '', images: [new File(['image'], 'image.jpg')], specs: [], skuRows: [] }));
     await act(/* 当前回调执行普通商品发布。 */ async () => hook.result.current.actions.handlePublishItem());
-    expect(publishItemMock).toHaveBeenCalledWith(expect.objectContaining({ cookie_id: 'account-1', title: '新商品', quantity: '2', images: expect.any(Array) }));
+    expect(publishItemMock).toHaveBeenCalledWith(expect.objectContaining({ cookie_id: 'account-1', title: '新商品', quantity: 2, images: expect.any(Array) }));
     expect(hook.result.current.onConfigureDelivery).toHaveBeenCalledWith(expect.objectContaining({ item_id: 'new-item', cookie_id: 'account-1' }));
     expect(hook.result.current.actions.publishForm).toEqual(expect.objectContaining({ cookie_id: 'account-1', title: '', images: [] }));
     hook.unmount();
@@ -116,7 +116,7 @@ describe('useItemActions', /* 当前回调验证商品普通操作、发布和�
     await act(/* recommendAction 请求普通发布推荐类目。 */ async () => hook.result.current.actions.handleRecommendPublishCategory());
     expect(recommendPublishCategoryMock).toHaveBeenCalledWith('account-1', '课程资料', expect.objectContaining({ signal: expect.any(AbortSignal) }));
     expect(hook.result.current.actions.publishCategory).toEqual({ cat_id: '5001', cat_name: '虚拟服务', channel_cat_id: '6001', tb_cat_id: '7001' });
-    act(/* formAction 写入普通发布必填字段和图片。 */ () => hook.result.current.actions.setPublishForm({ cookie_id: 'account-1', title: '新商品', description: '描述', price: '20', original_price: '', quantity: '1', postage_mode: 'free', postage: '', images: [new File(['image'], 'image.jpg')] }));
+    act(/* formAction 写入普通发布必填字段和图片。 */ () => hook.result.current.actions.setPublishForm({ cookie_id: 'account-1', title: '新商品', description: '描述', price: '20', original_price: '', quantity: '1', postage_mode: 'free', postage: '', images: [new File(['image'], 'image.jpg')], specs: [], skuRows: [] }));
     await act(/* publishAction 提交带选中类目的普通商品。 */ async () => hook.result.current.actions.handlePublishItem());
     expect(publishItemMock).toHaveBeenCalledWith(expect.objectContaining({ category: { cat_id: '5001', cat_name: '虚拟服务', channel_cat_id: '6001', tb_cat_id: '7001' } }));
     hook.unmount();

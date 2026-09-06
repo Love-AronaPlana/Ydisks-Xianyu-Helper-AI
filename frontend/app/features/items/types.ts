@@ -1,11 +1,17 @@
-import type { Dispatch,SetStateAction } from 'react';
+import type { ComponentType,Dispatch,SetStateAction } from 'react';
 import type { AccountDetail,Item,ShippingRule } from './api';
+import type { PublishImagesEditorProps } from './components/PublishImagesEditor';
+import type { PublishSpecsEditorProps } from './components/PublishSpecsEditor';
 import type { PublishLocation } from './api';
 
 // ItemListProps 描述商品页面从父级接收的规则配置回调。
 export interface ItemListProps {
   // onConfigureDelivery 打开指定商品的自动化发货规则编辑器。
   onConfigureDelivery: (item: Item) => void;
+  // publishSpecsEditor 是应用壳按需注入的多规格编辑器组件。
+  publishSpecsEditor?: ComponentType<PublishSpecsEditorProps>;
+  // publishImagesEditor 是应用壳按需注入的可排序商品图片编辑器组件。
+  publishImagesEditor?: ComponentType<PublishImagesEditorProps>;
 }
 
 // BatchPhase 表示批量铺货流程当前所在的步骤。

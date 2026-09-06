@@ -47,6 +47,10 @@ const OrderList = lazy(/* OrderList 页面按路由激活时加载。 */ () => i
 const CardList = lazy(/* CardList 页面按路由激活时加载。 */ () => import('../features/cards/pages/CardList'));
 // ItemList 是按需加载的商品页面，避免首屏载入商品发布编辑器代码。
 const ItemList = lazy(/* ItemList 页面按路由激活时加载。 */ () => import('../features/items/pages/ItemList'));
+// PublishSpecsEditor 在商品页面中按需加载，保持规格编辑器与商品主分片解耦。
+const PublishSpecsEditor = lazy(/* 规格编辑器随商品页面路由加载。 */ () => import('../features/items/components/PublishSpecsEditor').then(/* module 提供规格编辑器的具名导出。 */ module => ({ default: module.PublishSpecsEditor })));
+// PublishImagesEditor 在商品页面中按需加载，避免图片编辑交互增大商品主分片。
+const PublishImagesEditor = lazy(/* 图片编辑器随商品页面路由加载。 */ () => import('../features/items/components/PublishImagesEditor').then(/* module 提供图片编辑器的具名导出。 */ module => ({ default: module.PublishImagesEditor })));
 // Settings 是按需加载的系统设置页面，仅在管理员访问时加载。
 const Settings = lazy(/* Settings 页面按路由激活时加载。 */ () => import('../features/settings/pages/Settings'));
 // Rules 是按需加载的自动化规则页面，避免首屏载入规则编辑器代码。
@@ -104,7 +108,7 @@ export const AppContent: React.FC<AppContentProps> = ({
       case 'chat': return <Chat />;
       case 'orders': return <OrderList />;
       case 'cards': return <CardList />;
-      case 'items': return <ItemList onConfigureDelivery={handleConfigureDelivery} />;
+      case 'items': return <ItemList onConfigureDelivery={handleConfigureDelivery} publishSpecsEditor={PublishSpecsEditor} publishImagesEditor={PublishImagesEditor} />;
       case 'rules': return <Rules
         initialDeliveryTarget={deliveryRuleTarget}
         onDeliveryTargetHandled={onDeliveryTargetHandled}

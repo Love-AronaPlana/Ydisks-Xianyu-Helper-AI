@@ -62,7 +62,7 @@ func (s *Server) publishItem(w http.ResponseWriter, r *http.Request) {
 	description := strings.TrimSpace(r.FormValue("description"))
 	// priceCents、err 用于本次流程后续判断的priceCents、err
 	priceCents, err := parseMoneyCents(r.FormValue("price"))
-	if err != nil || priceCents <= 0 {
+	if err != nil || priceCents < 0 {
 		writeErr(w, http.StatusBadRequest, "商品价格必须大于 0")
 		return
 	}
@@ -93,6 +93,22 @@ func (s *Server) publishItem(w http.ResponseWriter, r *http.Request) {
 	images, err := readPublishImages(r, 9)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	// specImages 保存规格值图片；没有规格图片时保持空集合，不影响单规格发布。
+	specImages, err := readOptionalPublishImages(r, "spec_images", 1500)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	// publishSpecs、publishSKUs 保存从 multipart JSON 转换出的规格维度和组合。
+	publishSpecs, publishSKUs, specErr := parseItemPublishSpecs(r.FormValue("item_properties"), r.FormValue("item_sku_list"), len(specImages))
+	if specErr != nil {
+		writeErr(w, http.StatusBadRequest, specErr.Error())
+		return
+	}
+	if len(publishSpecs) == 0 && priceCents <= 0 {
+		writeErr(w, http.StatusBadRequest, "商品价格必须大于 0")
 		return
 	}
 	// location 保存带有 JSON 标签的 HTTP 发货地请求模型。
@@ -129,12 +145,18 @@ func (s *Server) publishItem(w http.ResponseWriter, r *http.Request) {
 	for _, image := range images {
 		applicationImages = append(applicationImages, itemapp.Image{Filename: image.Filename, ContentType: image.ContentType, Data: image.Data})
 	}
+	// applicationSpecImages 是规格图片转换后的应用图片模型，索引与规格值图片引用保持一致。
+	applicationSpecImages := make([]itemapp.Image, 0, len(specImages))
+	// image 表示当前待转换的规格图片。
+	for _, image := range specImages {
+		applicationSpecImages = append(applicationSpecImages, itemapp.Image{Filename: image.Filename, ContentType: image.ContentType, Data: image.Data})
+	}
 	// outcome、callErr 保存应用服务返回的发布结果及调用错误。
 	outcome, callErr := s.itemSinglePublishApplication().PublishSingle(r.Context(), itemapp.PublishInput{
 		UserID: userID, CookieID: cookieID, Title: title, Description: description,
 		PriceCents: priceCents, OriginalPriceCents: origCents, Quantity: quantity,
 		PostageMode: postageMode, PostageCents: postageCents, Location: applicationLocation,
-		Category: applicationCategory, Images: applicationImages,
+		Category: applicationCategory, Images: applicationImages, Specs: publishSpecs, SKUs: publishSKUs, SpecImages: applicationSpecImages,
 	})
 	// res 用于本次流程后续判断的响应
 	res := outcome.Result
@@ -220,16 +242,32 @@ type itemPublishCategoryRequest struct {
 
 // readPublishImages 封装read发布Images业务协调。
 func readPublishImages(r *http.Request, maxImages int) ([]itemapp.Image, error) {
+	return readPublishImageField(r, "images", maxImages, true)
+}
+
+// readOptionalPublishImages 读取可选的规格值图片；字段不存在时返回空集合。
+func readOptionalPublishImages(r *http.Request, field string, maxImages int) ([]itemapp.Image, error) {
+	return readPublishImageField(r, field, maxImages, false)
+}
+
+// readPublishImageField 将 multipart 图片字段转换为应用图片模型并执行大小、数量与 MIME 校验。
+func readPublishImageField(r *http.Request, field string, maxImages int, required bool) ([]itemapp.Image, error) {
 	if r.MultipartForm == nil || r.MultipartForm.File == nil {
-		return nil, errors.New("至少上传 1 张商品图片")
+		if required {
+			return nil, errors.New("至少上传 1 张商品图片")
+		}
+		return nil, nil
 	}
-	// files 用于本次流程后续判断的文件列表
-	files := r.MultipartForm.File["images"]
-	if len(files) == 0 {
+	// files 用于本次流程后续判断的文件列表。
+	files := r.MultipartForm.File[field]
+	if len(files) == 0 && required && field == "images" {
 		files = r.MultipartForm.File["image"]
 	}
 	if len(files) == 0 {
-		return nil, errors.New("至少上传 1 张商品图片")
+		if required {
+			return nil, errors.New("至少上传 1 张商品图片")
+		}
+		return nil, nil
 	}
 	if len(files) > maxImages {
 		return nil, fmt.Errorf("商品图片最多 %d 张", maxImages)
