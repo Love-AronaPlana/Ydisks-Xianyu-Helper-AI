@@ -157,30 +157,30 @@ func (c *ClientImpl) accountTaskRequest(ctx context.Context, cookiesStr, endpoin
 	session := cookieSessionFromContext(ctx); session != nil {
 		current, _, _ = session.State()
 	}
-	// lastRet 用于本次流程后续判断的lastRet
-	var lastRet []string
+	// lastFailure 保存最后一次可诊断的 MTOP 失败，供 Token 重试耗尽时返回完整原因。
+	var lastFailure error
 	for // attempt 用于本次流程后续判断的尝试次数
 	attempt := 0; attempt < 3; attempt++ {
+		// previousCookies 记录本次请求前的 Cookie，用于判断响应是否已完成 Token 轮换。
+		previousCookies := current
 		// decoded、updated、err 用于本次流程后续判断的decoded、updated、err
 		decoded, updated, err := c.accountTaskRequestOnce(ctx, current, endpoint, api, version, data, referer)
-		if err != nil {
-			return nil, current, err
+		// failure 保存本次响应的统一失败分类；成功响应仍沿用原有直接返回路径。
+		failure := err
+		if err == nil {
+			if hasMTopSuccess(decoded.Ret) {
+				return decoded, updated, nil
+			}
+			failure = c.mtopResponseFailure(api, http.StatusOK, decoded.Ret, "")
 		}
-		lastRet = decoded.Ret
-		if hasMTopSuccess(decoded.Ret) {
-			return decoded, updated, nil
+		lastFailure = failure
+		if !IsMTopTokenExpiredErr(failure) {
+			return nil, updated, failure
 		}
-		if isRiskVerificationRet(decoded.Ret) {
-			return nil, updated, &RiskVerificationError{Ret: decoded.Ret}
+		if updated != "" {
+			current = updated
 		}
-		if isSessionExpiredRet(decoded.Ret) {
-			return nil, updated, sessionExpiredError(api, decoded.Ret)
-		}
-		if !isTokenExpiredRet(decoded.Ret) {
-			return nil, updated, fmt.Errorf("%s 返回失败: %s", api, firstRet(decoded.Ret))
-		}
-		current = updated
-		if current == cookiesStr {
+		if current == previousCookies {
 			// refreshed、refreshErr 用于本次流程后续判断的refreshed、refreshErr
 			refreshed, refreshErr := c.RefreshTokenContext(ctx, current)
 			if refreshErr != nil {
@@ -193,7 +193,7 @@ func (c *ClientImpl) accountTaskRequest(ctx context.Context, cookiesStr, endpoin
 			return nil, current, err
 		}
 	}
-	return nil, current, fmt.Errorf("%s token 重试失败: %s", api, firstRet(lastRet))
+	return nil, current, fmt.Errorf("%s token 重试失败: %w", api, lastFailure)
 }
 
 // accountTaskRequestOnce 封装账号任务请求Once业务协调。
@@ -268,13 +268,16 @@ func (c *ClientImpl) accountTaskRequestOnce(ctx context.Context, cookiesStr, end
 	// raw、err 用于本次流程后续判断的raw、err
 	raw, err := readMTopBody(resp)
 	if err != nil {
-		return nil, updated, err
+		return nil, updated, c.mtopResponseFailure(api, resp.StatusCode, nil, fmt.Sprintf("读取响应失败: %v", err))
 	}
 	// decoded 用于本次流程后续判断的decoded
 	var decoded accountTaskResponse
 	if // err 用于本次流程后续判断的err
 	err := json.Unmarshal(raw, &decoded); err != nil {
-		return nil, updated, fmt.Errorf("解析 %s 响应: %w", api, err)
+		return nil, updated, c.mtopResponseFailure(api, resp.StatusCode, nil, fmt.Sprintf("JSON 解析失败: %v", err))
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, updated, c.mtopResponseFailure(api, resp.StatusCode, decoded.Ret, "HTTP 状态异常")
 	}
 	return &decoded, updated, nil
 }

@@ -79,7 +79,14 @@ func (c *ClientImpl) RefreshTokenWithCredentialContext(ctx context.Context, cook
 		if err != nil {
 			return refreshResultFromContext(ctx, currentCookies, currentSnapshot, currentSnapshotComplete, cookieStateChanged), err
 		}
-		if accessToken != "" {
+		if status < http.StatusOK || status >= http.StatusMultipleChoices {
+			// failure 保存非 2xx 响应的统一分类；若 ret 明确是 Token 过期，继续执行官方刷新重试。
+			failure := c.mtopResponseFailure("token API", status, ret, "HTTP 状态异常")
+			if !IsMTopTokenExpiredErr(failure) {
+				return refreshResultFromContext(ctx, currentCookies, currentSnapshot, currentSnapshotComplete, cookieStateChanged), failure
+			}
+		}
+		if accessToken != "" && status >= http.StatusOK && status < http.StatusMultipleChoices {
 			// result 用于本次流程后续判断的结果
 			result := refreshResultFromContext(ctx, currentCookies, currentSnapshot, currentSnapshotComplete, cookieStateChanged)
 			result.AccessToken = accessToken
@@ -87,13 +94,17 @@ func (c *ClientImpl) RefreshTokenWithCredentialContext(ctx context.Context, cook
 			return result, nil
 		}
 		if isRiskVerificationRet(ret) {
-			return refreshResultFromContext(ctx, currentCookies, currentSnapshot, currentSnapshotComplete, cookieStateChanged), &RiskVerificationError{Ret: ret, VerificationURL: verificationURL}
+			// failure 记录安全的风控诊断，同时保留历史 RiskVerificationError 供验证码恢复流程识别。
+			_ = c.mtopResponseFailure("token API", status, ret, "平台要求安全验证")
+			return refreshResultFromContext(ctx, currentCookies, currentSnapshot, currentSnapshotComplete, cookieStateChanged), &RiskVerificationError{API: "token API", Ret: ret, VerificationURL: verificationURL}
 		}
 		if isSessionExpiredRet(ret) {
+			// failure 记录安全的会话失效诊断，同时保留历史 SessionExpiredError 供账号恢复流程识别。
+			_ = c.mtopResponseFailure("token API", status, ret, "平台 Session 已失效")
 			return refreshResultFromContext(ctx, currentCookies, currentSnapshot, currentSnapshotComplete, cookieStateChanged), sessionExpiredError("token API", ret)
 		}
 		if !isOfficialTokenRetryRet(ret) {
-			return refreshResultFromContext(ctx, currentCookies, currentSnapshot, currentSnapshotComplete, cookieStateChanged), fmt.Errorf("token API 返回非成功: ret=%v (status=%d)", ret, status)
+			return refreshResultFromContext(ctx, currentCookies, currentSnapshot, currentSnapshotComplete, cookieStateChanged), c.mtopResponseFailure("token API", status, ret, "平台 ret 未满足 Token 刷新成功条件")
 		}
 		if attempt == officialMTopMaxAttempts-1 {
 			// snapshotForClear 用于本次流程后续判断的snapshotForClear
@@ -113,10 +124,10 @@ func (c *ClientImpl) RefreshTokenWithCredentialContext(ctx context.Context, cook
 					session.replaceFlat(currentCookies)
 				}
 			}
-			return refreshResultFromContext(ctx, currentCookies, currentSnapshot, currentSnapshotComplete, cookieStateChanged), fmt.Errorf("token API 登录凭证已失效: ret=%v (status=%d)", ret, status)
+			return refreshResultFromContext(ctx, currentCookies, currentSnapshot, currentSnapshotComplete, cookieStateChanged), fmt.Errorf("token API 登录凭证已失效（MTOP Token 重试次数已耗尽）: %w", c.mtopResponseFailure("token API", status, ret, "Token 重试次数已耗尽，登录凭证未恢复"))
 		}
 	}
-	return refreshResultFromContext(ctx, currentCookies, currentSnapshot, currentSnapshotComplete, cookieStateChanged), fmt.Errorf("token API 登录凭证已失效")
+	return refreshResultFromContext(ctx, currentCookies, currentSnapshot, currentSnapshotComplete, cookieStateChanged), fmt.Errorf("token API 登录凭证已失效: %w", c.mtopResponseFailure("token API", 0, nil, "Token 刷新循环未获得有效结果"))
 }
 
 // refreshResult 封装refresh结果业务协调。
@@ -265,7 +276,7 @@ func (c *ClientImpl) refreshTokenOnce(ctx context.Context, cookiesStr, deviceID 
 	}
 	raw, reqErr = readMTopBody(resp)
 	if reqErr != nil {
-		return "", 0, nil, updated, snapshot, "", resp.StatusCode, snapshotComplete, stateChanged, reqErr
+		return "", 0, nil, updated, snapshot, "", resp.StatusCode, snapshotComplete, stateChanged, c.mtopResponseFailure("token API", resp.StatusCode, nil, fmt.Sprintf("读取响应失败: %v", reqErr))
 	}
 	status = resp.StatusCode
 
@@ -280,7 +291,7 @@ func (c *ClientImpl) refreshTokenOnce(ctx context.Context, cookiesStr, deviceID 
 	}
 	if // err 用于本次流程后续判断的err
 	err := json.Unmarshal(raw, &res); err != nil {
-		return "", 0, nil, updated, snapshot, "", status, snapshotComplete, stateChanged, fmt.Errorf("解析 token 响应失败: %w (body=%s)", err, truncate(string(raw), 300))
+		return "", 0, nil, updated, snapshot, "", status, snapshotComplete, stateChanged, c.mtopResponseFailure("token API", status, nil, fmt.Sprintf("JSON 解析失败: %v", err))
 	}
 
 	// ok 用于本次流程后续判断的ok
@@ -296,7 +307,7 @@ func (c *ClientImpl) refreshTokenOnce(ctx context.Context, cookiesStr, deviceID 
 		return "", 0, res.Ret, updated, snapshot, res.Data.URL, status, snapshotComplete, stateChanged, nil
 	}
 	if res.Data.AccessToken == "" {
-		return "", 0, res.Ret, updated, snapshot, "", status, snapshotComplete, stateChanged, fmt.Errorf("token API 成功但 accessToken 为空 (body=%s)", truncate(string(raw), 300))
+		return "", 0, res.Ret, updated, snapshot, "", status, snapshotComplete, stateChanged, c.mtopResponseFailure("token API", status, res.Ret, "平台返回 SUCCESS 但 accessToken 为空")
 	}
 	return res.Data.AccessToken, parseAccessTokenExpireAt(res.Data.AccessTokenExpiredTime, time.Now()), res.Ret, updated, snapshot, "", status, snapshotComplete, stateChanged, nil
 }
@@ -325,7 +336,9 @@ func snapshotRequestCookies(snapshot []cookierefresh.BrowserCookie, fallback, re
 func isOfficialTokenRetryRet(ret []string) bool {
 	// value 表示当前遍历过程中的值
 	for _, value := range ret {
-		if strings.Contains(value, "TOKEN_EMPTY") || strings.Contains(value, "TOKEN_EXOIRED") {
+		if strings.Contains(value, "TOKEN_EMPTY") ||
+			strings.Contains(value, "TOKEN_EXOIRED") ||
+			strings.Contains(value, "TOKEN_EXPIRED") {
 			return true
 		}
 	}

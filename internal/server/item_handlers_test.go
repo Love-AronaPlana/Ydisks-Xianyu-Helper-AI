@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -388,6 +389,103 @@ func TestPublishItemSuccess(t *testing.T) {
 	json.Unmarshal(rec.Body.Bytes(), &res)
 	if res["success"] != true || res["item_id"] != "pub-item-1" {
 		t.Fatalf("发布成功响应异常: %+v", res)
+	}
+}
+
+// TestPublishItemPassesPreferredCategory 验证单商品发布会把用户选择的完整类目传到平台端口。
+func TestPublishItemPassesPreferredCategory(t *testing.T) {
+	// srv、cleanup 保存当前测试服务器及清理函数。
+	srv, _, cleanup := newTestServer(t)
+	defer cleanup()
+	// receivedCategory 保存 HTTP 请求转换后的平台类目。
+	var receivedCategory *mtop.PublishCategory
+	setTestMTop(srv, &stubPublishMTop{publish: func(_ context.Context, _ string, request mtop.PublishItemRequest) (*mtop.PublishItemResult, error) {
+		receivedCategory = request.PreferredCategory
+		return &mtop.PublishItemResult{ItemID: "category-item", Title: "测试商品"}, nil
+	}})
+	// h 用于本次流程后续判断的路由处理器。
+	h := srv.Router()
+	// cookie 用于本次流程后续判断的登录会话 Cookie。
+	cookie := loginHelper(t, h)
+	// body、ct 保存带有完整类目字段的 multipart 请求。
+	body, ct := buildPublishMultipart(t, map[string]string{
+		"cookie_id": "acc1", "title": "测试商品", "price": "12.50", "quantity": "1",
+		"category_id": "5001", "category_name": "虚拟服务", "channel_category_id": "6001", "tb_category_id": "7001",
+	})
+	// req、rec 保存类目发布请求及 HTTP 响应。
+	req := httptest.NewRequest(http.MethodPost, "/items/publish", body)
+	req.Header.Set("Content-Type", ct)
+	req.AddCookie(cookie)
+	// rec 保存类目发布请求的 HTTP 响应。
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || receivedCategory == nil {
+		t.Fatalf("类目发布请求异常: status=%d category=%+v body=%s", rec.Code, receivedCategory, rec.Body.String())
+	}
+	if receivedCategory.CatID != "5001" || receivedCategory.CatName != "虚拟服务" || receivedCategory.ChannelCatID != "6001" || receivedCategory.TBCatID != "7001" {
+		t.Fatalf("平台收到的类目错误: %+v", receivedCategory)
+	}
+}
+
+// TestPublishItemRejectsIncompletePreferredCategory 验证不完整类目不会进入远端发布并返回具体原因。
+func TestPublishItemRejectsIncompletePreferredCategory(t *testing.T) {
+	// srv、cleanup 保存当前测试服务器及清理函数。
+	srv, _, cleanup := newTestServer(t)
+	defer cleanup()
+	// called 保存平台发布端口是否被错误调用。
+	called := false
+	setTestMTop(srv, &stubPublishMTop{publish: func(context.Context, string, mtop.PublishItemRequest) (*mtop.PublishItemResult, error) {
+		called = true
+		return &mtop.PublishItemResult{ItemID: "unexpected"}, nil
+	}})
+	// h 用于本次流程后续判断的路由处理器。
+	h := srv.Router()
+	// cookie 用于本次流程后续判断的登录会话 Cookie。
+	cookie := loginHelper(t, h)
+	// body、ct 保存缺少频道类目 ID 的 multipart 请求。
+	body, ct := buildPublishMultipart(t, map[string]string{
+		"cookie_id": "acc1", "title": "测试商品", "price": "12.50", "quantity": "1",
+		"category_id": "5001", "category_name": "虚拟服务",
+	})
+	// req、rec 保存类目校验请求及 HTTP 响应。
+	req := httptest.NewRequest(http.MethodPost, "/items/publish", body)
+	req.Header.Set("Content-Type", ct)
+	req.AddCookie(cookie)
+	// rec 保存类目校验请求的 HTTP 响应。
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "类目信息不完整") || called {
+		t.Fatalf("不完整类目未被明确拒绝: status=%d called=%v body=%s", rec.Code, called, rec.Body.String())
+	}
+}
+
+// TestPublishItemReturnsRemoteFailureReason 验证未被专用错误类型包装的平台失败会把原因返回前端。
+func TestPublishItemReturnsRemoteFailureReason(t *testing.T) {
+	// srv、cleanup 用于本次流程后续判断的测试服务器及清理函数。
+	srv, _, cleanup := newTestServer(t)
+	defer cleanup()
+	// remoteFailure 保存模拟发布接口返回的详细平台失败原因。
+	remoteFailure := errors.New("mtop.idle.pc.idleitem.publish（HTTP 502）；平台原因：商品类目暂不可用")
+	setTestMTop(srv, &stubPublishMTop{publish: func(context.Context, string, mtop.PublishItemRequest) (*mtop.PublishItemResult, error) {
+		return nil, remoteFailure
+	}})
+	// h 用于本次流程后续判断的路由处理器。
+	h := srv.Router()
+	// cookie 用于本次流程后续判断的登录会话 Cookie。
+	cookie := loginHelper(t, h)
+	// body、ct 用于本次流程后续判断的 multipart 请求体及其内容类型。
+	body, ct := buildPublishMultipart(t, map[string]string{
+		"cookie_id": "acc1", "title": "测试商品", "price": "12.50", "quantity": "1",
+	})
+	// req 用于本次流程后续判断的发布请求。
+	req := httptest.NewRequest(http.MethodPost, "/items/publish", body)
+	req.Header.Set("Content-Type", ct)
+	req.AddCookie(cookie)
+	// rec 用于本次流程后续判断的响应记录器。
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "商品类目暂不可用") || strings.Contains(rec.Body.String(), "publish_result_missing_item_id") {
+		t.Fatalf("发布失败原因未返回: status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

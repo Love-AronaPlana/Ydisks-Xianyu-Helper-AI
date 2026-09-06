@@ -42,21 +42,27 @@ func (c *ClientImpl) FetchOrderDetail(ctx context.Context, cookiesStr, orderID s
 		// result、ret、updated、err 用于本次流程后续判断的result、ret、updated、err
 		result, ret, updated, err := c.fetchOrderDetailOnce(ctx, currentCookies, orderID)
 		if err != nil {
-			return nil, err
+			if !IsMTopTokenExpiredErr(err) {
+				return nil, err
+			}
+			lastRet = mtopErrorRet(err)
+		} else {
+			lastRet = ret
+			if updated != "" {
+				currentCookies = updated
+			}
+			if result != nil {
+				result.UpdatedCookies = currentCookies
+				return result, nil
+			}
+			// failure 保存平台非成功响应的统一失败分类。
+			failure := c.mtopResponseFailure("订单详情接口", http.StatusOK, ret, "")
+			if !IsMTopTokenExpiredErr(failure) {
+				return nil, failure
+			}
 		}
-		lastRet = ret
 		if updated != "" {
 			currentCookies = updated
-		}
-		if result != nil {
-			result.UpdatedCookies = currentCookies
-			return result, nil
-		}
-		if isSessionExpiredRet(ret) {
-			return nil, sessionExpiredError("订单详情接口", ret)
-		}
-		if !isTokenExpiredRet(ret) {
-			return nil, fmt.Errorf("订单详情接口返回非成功: ret=%v", ret)
 		}
 		if attempt == 3 {
 			break
@@ -74,7 +80,7 @@ func (c *ClientImpl) FetchOrderDetail(ctx context.Context, cookiesStr, orderID s
 			return nil, err
 		}
 	}
-	return nil, fmt.Errorf("订单详情 token 重试失败: ret=%v", lastRet)
+	return nil, fmt.Errorf("订单详情 token 重试失败: %w", c.mtopResponseFailure("订单详情接口", http.StatusOK, lastRet, "重试次数已耗尽"))
 }
 
 // fetchOrderDetailOnce 封装fetch订单DetailOnce业务协调。
@@ -114,7 +120,7 @@ func (c *ClientImpl) fetchOrderDetailOnce(ctx context.Context, cookiesStr, order
 	// raw、err 用于本次流程后续判断的raw、err
 	raw, err := readMTopBody(resp)
 	if err != nil {
-		return nil, nil, updated, err
+		return nil, nil, updated, c.mtopResponseFailure("订单详情接口", resp.StatusCode, nil, fmt.Sprintf("读取响应失败: %v", err))
 	}
 	// decoded 用于本次流程后续判断的decoded
 	var decoded struct {
@@ -123,7 +129,10 @@ func (c *ClientImpl) fetchOrderDetailOnce(ctx context.Context, cookiesStr, order
 	}
 	if // err 用于本次流程后续判断的err
 	err := json.Unmarshal(raw, &decoded); err != nil {
-		return nil, nil, updated, fmt.Errorf("解析订单详情响应失败: %w (body=%s)", err, truncate(string(raw), 300))
+		return nil, nil, updated, c.mtopResponseFailure("订单详情接口", resp.StatusCode, nil, fmt.Sprintf("JSON 解析失败: %v", err))
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, decoded.Ret, updated, c.mtopResponseFailure("订单详情接口", resp.StatusCode, decoded.Ret, "HTTP 状态异常")
 	}
 	if !hasMTopSuccess(decoded.Ret) {
 		return nil, decoded.Ret, updated, nil

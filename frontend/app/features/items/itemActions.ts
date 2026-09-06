@@ -1,7 +1,8 @@
 import { useCallback,useEffect,useRef,useState,type Dispatch,type SetStateAction } from 'react';
 import type { Item } from './api';
 import type { PublishLocation } from './api';
-import { createItem,deleteItem,getPublishLocations,itemErrorMessage,publishItem,syncItemsFromAccount,updateItem } from './api';
+import { createItem,deleteItem,getPublishLocations,itemErrorMessage,publishItem,recommendPublishCategory as recommendItemPublishCategory,syncItemsFromAccount,updateItem } from './api';
+import type { PublishCategory } from './types';
 
 // AddItemForm 描述手动添加商品弹窗的表单字段。
 export interface AddItemForm {
@@ -91,6 +92,16 @@ export interface ItemActionsState {
   publishLocation: PublishLocation | null;
   // setPublishLocation 更新普通发布当前发货地。
   setPublishLocation: Dispatch<SetStateAction<PublishLocation | null>>;
+  // publishCategoryKeyword 保存普通发布类目推荐关键词。
+  publishCategoryKeyword: string;
+  // setPublishCategoryKeyword 更新普通发布类目推荐关键词。
+  setPublishCategoryKeyword: Dispatch<SetStateAction<string>>;
+  // publishCategoryLoading 表示普通发布类目推荐是否正在执行。
+  publishCategoryLoading: boolean;
+  // publishCategory 保存普通发布当前选中的类目；为空时由后端自动识别并兜底。
+  publishCategory: PublishCategory | null;
+  // setPublishCategory 更新普通发布当前选中的类目。
+  setPublishCategory: Dispatch<SetStateAction<PublishCategory | null>>;
   // selectedItem 保存当前编辑或删除的商品。
   selectedItem: Item | null;
   // editForm 保存当前商品编辑草稿。
@@ -119,6 +130,8 @@ export interface ItemActionsState {
   handleAddItem: () => Promise<void>;
   // handlePublishItem 发布普通商品并在成功后打开规则配置。
   handlePublishItem: () => Promise<void>;
+  // handleRecommendPublishCategory 根据普通发布关键词获取类目。
+  handleRecommendPublishCategory: () => Promise<void>;
   // downloadPublishTemplate 下载普通发布 CSV 模板。
   downloadPublishTemplate: () => void;
   // openAddModal 打开添加商品弹窗并回填当前账号。
@@ -153,6 +166,12 @@ export const useItemActions = ({ selectedAccount, setSelectedAccount, setItems, 
   const [publishLocations, setPublishLocations] = useState<PublishLocation[]>([]);
   // publishLocation 保存普通发布当前发货地。
   const [publishLocation, setPublishLocation] = useState<PublishLocation | null>(null);
+  // publishCategoryKeyword 保存当前普通发布类目搜索词。
+  const [publishCategoryKeyword, setPublishCategoryKeyword] = useState('');
+  // publishCategoryLoading 表示当前普通发布类目推荐请求是否运行中。
+  const [publishCategoryLoading, setPublishCategoryLoading] = useState(false);
+  // publishCategory 保存当前普通发布选中的完整类目。
+  const [publishCategory, setPublishCategory] = useState<PublishCategory | null>(null);
   // selectedItem 保存当前编辑或删除的商品。
   const [selectedItem, setSelectedItem] = useState<Item | null>(null);
   // editForm 保存当前商品编辑草稿。
@@ -167,6 +186,10 @@ export const useItemActions = ({ selectedAccount, setSelectedAccount, setItems, 
   const locationController = useRef<AbortController | null>(null);
   // locationGeneration 丢弃已经失去当前界面所有权的定位响应。
   const locationGeneration = useRef(0);
+  // publishCategoryController 保存当前类目推荐请求的取消器。
+  const publishCategoryController = useRef<AbortController | null>(null);
+  // publishCategoryGeneration 丢弃晚到的类目推荐响应。
+  const publishCategoryGeneration = useRef(0);
 
   // useEffect 管理普通发布图片对象地址的创建和释放。
   useEffect(/* 当前回调同步发布图片预览资源生命周期。 */ () => {
@@ -195,6 +218,33 @@ export const useItemActions = ({ selectedAccount, setSelectedAccount, setItems, 
   useEffect(/* publishModalLocationCleanup 监听普通发布弹窗可见性并取消失去界面所有权的定位请求。 */ () => {
     if (!showPublishModal) cancelLocationLookup();
   }, [cancelLocationLookup, showPublishModal]);
+
+  // cancelPublishCategoryLookup 取消失去当前表单所有权的类目推荐请求。
+  const cancelPublishCategoryLookup = useCallback(/* cancelCategoryAction 中止当前类目推荐并推进响应代次。 */ () => {
+    publishCategoryController.current?.abort();
+    publishCategoryController.current = null;
+    publishCategoryGeneration.current += 1;
+    setPublishCategoryLoading(false);
+  }, []);
+
+  // 普通发布 Hook 卸载时释放类目推荐请求。
+  useEffect(/* publishCategoryUnmountCleanup 在组件卸载时取消类目推荐请求。 */ () => cancelPublishCategoryLookup, [cancelPublishCategoryLookup]);
+
+  // 普通发布弹窗关闭时清理未完成的类目请求和临时选择。
+  useEffect(/* publishModalCategoryCleanup 在弹窗关闭后撤回失去界面所有权的类目状态。 */ () => {
+    if (!showPublishModal) {
+      cancelPublishCategoryLookup();
+      setPublishCategory(null);
+      setPublishCategoryKeyword('');
+    }
+  }, [cancelPublishCategoryLookup, showPublishModal]);
+
+  // 账号切换时清理旧账号的类目，避免晚到响应污染当前发布表单。
+  useEffect(/* publishCategoryAccountCleanup 在发布账号变化时撤回旧类目和关键词。 */ () => {
+    cancelPublishCategoryLookup();
+    setPublishCategory(null);
+    setPublishCategoryKeyword('');
+  }, [cancelPublishCategoryLookup, publishForm.cookie_id]);
 
   // handleSync 同步当前账号商品并刷新列表。
   const handleSync = useCallback(/* syncAction 执行当前账号商品同步。 */ async () => {
@@ -278,10 +328,12 @@ export const useItemActions = ({ selectedAccount, setSelectedAccount, setItems, 
     setPublishing(true);
     try {
       // result 保存平台发布接口返回的商品信息。
-      const result = await publishItem({ ...publishForm, location: publishLocation || undefined });
+      const result = await publishItem({ ...publishForm, location: publishLocation || undefined, category: publishCategory || undefined });
       await loadItems();
       setShowPublishModal(false);
       setPublishForm(emptyPublishItemForm(selectedAccount || ''));
+      setPublishCategoryKeyword('');
+      setPublishCategory(null);
       setPublishLocations([]);
       setPublishLocation(null);
       if (result?.item_id) {
@@ -298,7 +350,39 @@ export const useItemActions = ({ selectedAccount, setSelectedAccount, setItems, 
     } finally {
       setPublishing(false);
     }
-  }, [loadItems, onConfigureDelivery, publishForm, publishLocation, selectedAccount]);
+  }, [loadItems, onConfigureDelivery, publishCategory, publishForm, publishLocation, selectedAccount]);
+
+  // handleRecommendPublishCategory 请求普通发布使用的推荐类目。
+  const handleRecommendPublishCategory = useCallback(/* recommendCategoryAction 根据关键词请求并写回普通发布类目。 */ async () => {
+    // keyword 是去除空白后的类目搜索词。
+    const keyword = publishCategoryKeyword.trim();
+    // cookieID 是本次推荐使用的发布账号。
+    const cookieID = publishForm.cookie_id.trim();
+    if (!cookieID) return alert('请先选择发布账号');
+    if (!keyword) return alert('请输入类目关键词');
+    cancelPublishCategoryLookup();
+    // controller 是当前类目推荐请求独占的取消器。
+    const controller = new AbortController();
+    publishCategoryController.current = controller;
+    // generation 是当前类目推荐请求的响应所有权版本。
+    const generation = ++publishCategoryGeneration.current;
+    setPublishCategoryLoading(true);
+    try {
+      // result 保存类目推荐接口返回的完整类目。
+      const result = await recommendItemPublishCategory(cookieID, keyword, { signal: controller.signal });
+      if (controller.signal.aborted || generation !== publishCategoryGeneration.current) return;
+      setPublishCategory(result.category);
+    } catch (/* error 表示类目推荐请求异常。 */ error: unknown) {
+      if (controller.signal.aborted || generation !== publishCategoryGeneration.current) return;
+      console.error('获取普通发布类目失败:', error);
+      alert(itemErrorMessage(error, '获取类目失败，请检查关键词后重试'));
+    } finally {
+      if (generation === publishCategoryGeneration.current) {
+        publishCategoryController.current = null;
+        setPublishCategoryLoading(false);
+      }
+    }
+  }, [cancelPublishCategoryLookup, publishCategoryKeyword, publishForm.cookie_id]);
 
   // downloadPublishTemplate 生成并下载普通发布 CSV 模板。
   const downloadPublishTemplate = useCallback(/* templateAction 下载普通发布模板。 */ () => {
@@ -388,5 +472,5 @@ export const useItemActions = ({ selectedAccount, setSelectedAccount, setItems, 
     }
   }, [cancelLocationLookup, publishForm.cookie_id, selectedAccount, setBatchLocation, setBatchLocations]);
 
-  return { selectedAccount, setSelectedAccount, loading, publishing, showEditModal, setShowEditModal, showAddModal, setShowAddModal, showPublishModal, setShowPublishModal, locationLoading, publishLocations, setPublishLocations, publishLocation, setPublishLocation, selectedItem, editForm, setEditForm, addForm, setAddForm, publishForm, setPublishForm, publishImagePreviews, handleSync, handleEdit, handleSaveEdit, handleDelete, handleAddItem, handlePublishItem, downloadPublishTemplate, openAddModal, openPublishModal, locateForPublish };
+  return { selectedAccount, setSelectedAccount, loading, publishing, showEditModal, setShowEditModal, showAddModal, setShowAddModal, showPublishModal, setShowPublishModal, locationLoading, publishLocations, setPublishLocations, publishLocation, setPublishLocation, publishCategoryKeyword, setPublishCategoryKeyword, publishCategoryLoading, publishCategory, setPublishCategory, selectedItem, editForm, setEditForm, addForm, setAddForm, publishForm, setPublishForm, publishImagePreviews, handleSync, handleEdit, handleSaveEdit, handleDelete, handleAddItem, handlePublishItem, handleRecommendPublishCategory, downloadPublishTemplate, openAddModal, openPublishModal, locateForPublish };
 };

@@ -154,6 +154,14 @@ func (p *ItemPublishPort) publish(ctx context.Context, input itemapp.PublishInpu
 			POIName: input.Location.POIName, Province: input.Location.Province,
 		}
 	}
+	// preferredCategory 保存应用层人工类目转换后的 MTOP 请求类目；为空时由 MTOP 自动推荐并兜底。
+	var preferredCategory *mtop.PublishCategory
+	if input.Category != nil {
+		preferredCategory = &mtop.PublishCategory{
+			CatID: input.Category.CatID, CatName: input.Category.CatName,
+			ChannelCatID: input.Category.ChannelCatID, TBCatID: input.Category.TBCatID,
+		}
+	}
 	// mtopCtx、cookieSession 保存带 Cookie 快照的平台调用上下文。
 	mtopCtx, cookieSession := withCookieSnapshot(requestCtx, latest)
 	// initialValue、initialMetadata 保存远端调用前的凭证快照，用于提交阶段复核。
@@ -165,7 +173,7 @@ func (p *ItemPublishPort) publish(ctx context.Context, input itemapp.PublishInpu
 		Title: input.Title, Description: input.Description, PriceCents: input.PriceCents,
 		OriginalPriceCents: input.OriginalPriceCents, Quantity: input.Quantity,
 		PostageMode: input.PostageMode, PostageCents: input.PostageCents, Virtual: true,
-		Location: location, Images: images,
+		Location: location, PreferredCategory: preferredCategory, Images: images,
 	})
 	// callErr 由适配器转换为应用层错误，保留原始错误链供基础设施恢复逻辑使用。
 	callErr = publishErrorToApplication(callErr)

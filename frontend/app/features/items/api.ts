@@ -97,8 +97,14 @@ export const publishItem = async (form: {
     /** quantity 表示待发布商品的件数，提交前会转换为表单字符串。 */ quantity: string | number;
     /** postage_mode 表示运费模式。 */ postage_mode: string;
     /** postage 表示运费。 */ postage?: string;
-    /** images 表示图片列表。 */ images: File[];
+	/** images 表示图片列表。 */ images: File[];
 	/** location 表示地址。 */ location?: PublishLocation;
+	/** category 表示用户选中的闲鱼类目；省略时由后端自动识别并使用电子资料兜底。 */ category?: {
+	  /** cat_id 表示闲鱼类目主键。 */ cat_id: string;
+	  /** cat_name 表示闲鱼类目名称。 */ cat_name: string;
+	  /** channel_cat_id 表示闲鱼频道类目主键。 */ channel_cat_id?: string;
+	  /** tb_cat_id 表示可选淘宝类目主键。 */ tb_cat_id?: string;
+	};
 }): Promise<ItemPublishResponse> => {
     // body 请求体，用于当前 API 处理流程。
     const body = new FormData();
@@ -111,6 +117,12 @@ export const publishItem = async (form: {
     body.set('postage_mode', form.postage_mode);
     body.set('postage', form.postage || '');
 	if (form.location) body.set('location', JSON.stringify(form.location));
+	if (form.category) {
+	  body.set('category_id', form.category.cat_id);
+	  body.set('category_name', form.category.cat_name);
+	  body.set('channel_category_id', form.category.channel_cat_id || '');
+	  body.set('tb_category_id', form.category.tb_cat_id || '');
+	}
     for (const // file 上传文件，用于当前 API 处理流程。
 file of form.images) {
       body.append('images', file);

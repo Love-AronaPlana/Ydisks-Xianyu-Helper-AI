@@ -35,17 +35,20 @@ func (c *ClientImpl) FetchItemsPage(ctx context.Context, cookiesStr string, page
 		// res、ret、updatedCookies、err 用于本次流程后续判断的res、ret、updatedCookies、err
 		res, ret, updatedCookies, err := c.fetchItemsPageOnce(ctx, currentCookies, pageNumber, pageSize)
 		if err != nil {
-			return nil, err
-		}
-		lastRet = ret
-		if res != nil {
-			return res, nil
-		}
-		if isSessionExpiredRet(ret) {
-			return nil, sessionExpiredError("商品列表接口", ret)
-		}
-		if !isTokenExpiredRet(ret) {
-			return nil, fmt.Errorf("商品列表接口返回非成功: ret=%v", ret)
+			if !IsMTopTokenExpiredErr(err) {
+				return nil, err
+			}
+			lastRet = mtopErrorRet(err)
+		} else {
+			lastRet = ret
+			if res != nil {
+				return res, nil
+			}
+			// failure 保存平台非成功响应的统一失败分类。
+			failure := c.mtopResponseFailure("商品列表接口", http.StatusOK, ret, "")
+			if !IsMTopTokenExpiredErr(failure) {
+				return nil, failure
+			}
 		}
 		if updatedCookies != "" && updatedCookies != currentCookies {
 			currentCookies = updatedCookies
@@ -66,7 +69,7 @@ func (c *ClientImpl) FetchItemsPage(ctx context.Context, cookiesStr string, page
 		}
 		currentCookies = refreshed.UpdatedCookies
 	}
-	return nil, fmt.Errorf("商品列表接口 token 重试失败: ret=%v", lastRet)
+	return nil, fmt.Errorf("商品列表接口 token 重试失败: %w", c.mtopResponseFailure("商品列表接口", http.StatusOK, lastRet, "重试次数已耗尽"))
 }
 
 // fetchItemsPageOnce 封装fetch商品列表页码Once业务协调。
@@ -123,7 +126,7 @@ func (c *ClientImpl) fetchItemsPageOnce(ctx context.Context, cookiesStr string, 
 	// raw、err 用于本次流程后续判断的raw、err
 	raw, err := readMTopBody(resp)
 	if err != nil {
-		return nil, nil, updated, err
+		return nil, nil, updated, c.mtopResponseFailure("商品列表接口", resp.StatusCode, nil, fmt.Sprintf("读取响应失败: %v", err))
 	}
 
 	// decoded 用于本次流程后续判断的decoded
@@ -133,7 +136,10 @@ func (c *ClientImpl) fetchItemsPageOnce(ctx context.Context, cookiesStr string, 
 	}
 	if // err 用于本次流程后续判断的err
 	err := json.Unmarshal(raw, &decoded); err != nil {
-		return nil, nil, updated, fmt.Errorf("解析商品列表响应失败: %w (body=%s)", err, truncate(string(raw), 300))
+		return nil, nil, updated, c.mtopResponseFailure("商品列表接口", resp.StatusCode, nil, fmt.Sprintf("JSON 解析失败: %v", err))
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, decoded.Ret, updated, c.mtopResponseFailure("商品列表接口", resp.StatusCode, decoded.Ret, "HTTP 状态异常")
 	}
 	if !hasMTopSuccess(decoded.Ret) {
 		return nil, decoded.Ret, updated, nil

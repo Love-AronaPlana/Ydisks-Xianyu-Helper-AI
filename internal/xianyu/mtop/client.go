@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -214,6 +215,182 @@ type ItemListItem struct {
 	IsMultiSpec bool
 }
 
+// MTopErrorKind 表示 MTOP 失败响应的可操作分类；Token 过期仍由调用方刷新后重试。
+type MTopErrorKind string
+
+const (
+	// MTopErrorHTTP 表示平台 HTTP 层返回了非 2xx 状态。
+	MTopErrorHTTP MTopErrorKind = "http"
+	// MTopErrorDecode 表示响应无法解析为合法 JSON 或读取失败。
+	MTopErrorDecode MTopErrorKind = "decode"
+	// MTopErrorTokenExpired 表示仅 MTOP 签名 Token 过期，可刷新后重试。
+	MTopErrorTokenExpired MTopErrorKind = "token_expired"
+	// MTopErrorSessionExpired 表示平台登录 Session 失效，需要重新授权。
+	MTopErrorSessionExpired MTopErrorKind = "session_expired"
+	// MTopErrorRiskVerification 表示平台要求安全验证，不能盲目重试。
+	MTopErrorRiskVerification MTopErrorKind = "risk_verification"
+	// MTopErrorBusiness 表示平台返回了具体的普通业务错误。
+	MTopErrorBusiness MTopErrorKind = "business"
+)
+
+// MTopResponseError 保存 MTOP 失败响应的接口、分类、HTTP 状态和安全 ret 诊断。
+// Ret 只保留平台错误码及原因，不保存 Cookie、签名或完整响应正文。
+type MTopResponseError struct {
+	// API 是产生失败响应的 MTOP 接口名。
+	API string
+	// Kind 是调用方据以决定重试、重新授权或提示用户的失败分类。
+	Kind MTopErrorKind
+	// HTTPStatus 是平台响应状态；未收到 HTTP 响应时为零。
+	HTTPStatus int
+	// Ret 是平台返回的错误标记副本，可能为空。
+	Ret []string
+	// Detail 是不含凭证的本地诊断，例如 JSON 解析失败原因。
+	Detail string
+}
+
+// Error 返回可直接展示给用户的 MTOP 失败原因，同时保留平台错误码便于排查。
+func (e *MTopResponseError) Error() string {
+	if e == nil {
+		return ""
+	}
+	// api 保存失败接口的展示名称。
+	api := e.API
+	if api == "" {
+		api = "MTOP 接口"
+	}
+	// ret 保存脱敏后的平台错误码和原因。
+	ret := formatMTopRet(e.Ret)
+	// message 保存最终给用户和日志调用方使用的失败说明。
+	message := ""
+	switch e.Kind {
+	case MTopErrorHTTP:
+		message = fmt.Sprintf("%s（HTTP %d）", mtopFailureLabel(api), e.HTTPStatus)
+	case MTopErrorDecode:
+		// parseAPI 保留历史中文接口名，避免诊断升级导致已有调用方失去关键字。
+		parseAPI := strings.TrimSuffix(api, "接口")
+		if parseAPI == "token API" {
+			message = "解析 token 响应失败"
+		} else if strings.Contains(api, "接口") {
+			message = fmt.Sprintf("解析%s响应失败", parseAPI)
+		} else {
+			message = fmt.Sprintf("解析 %s 响应失败", parseAPI)
+		}
+	case MTopErrorTokenExpired:
+		message = fmt.Sprintf("%s 的 MTOP 签名 Token 已过期，正在刷新后重试", api)
+	case MTopErrorSessionExpired:
+		message = fmt.Sprintf("%s 的登录 Session 已失效，请重新登录账号", api)
+	case MTopErrorRiskVerification:
+		message = fmt.Sprintf("%s 触发闲鱼安全验证，请完成验证后重试", api)
+	default:
+		message = mtopFailureLabel(api) + "（业务错误）"
+	}
+	if ret != "" {
+		message += "；平台原因：" + ret
+	}
+	if e.Detail != "" {
+		message += "；诊断：" + sanitizeMTopText(e.Detail)
+	}
+	return message
+}
+
+// mtopFailureLabel 生成兼容既有中文提示的失败接口名称；英文 API 名称保留可读空格。
+func mtopFailureLabel(api string) string {
+	// label 保存适合展示给用户的接口失败标题。
+	if strings.Contains(api, "接口") {
+		return api + "返回非成功"
+	}
+	return api + " 返回非成功"
+}
+
+// MTopErrorKindOf 读取错误链中的 MTOP 失败分类，供上层决定用户提示或恢复动作。
+func MTopErrorKindOf(err error) (MTopErrorKind, bool) {
+	// responseErr 保存错误链中的 MTOP 响应错误。
+	var responseErr *MTopResponseError
+	if errors.As(err, &responseErr) {
+		return responseErr.Kind, true
+	}
+	// riskErr 保存历史风控错误类型，维持既有调用方兼容。
+	var riskErr *RiskVerificationError
+	if errors.As(err, &riskErr) {
+		return MTopErrorRiskVerification, true
+	}
+	// sessionErr 保存历史会话错误类型，维持既有调用方兼容。
+	var sessionErr *SessionExpiredError
+	if errors.As(err, &sessionErr) {
+		return MTopErrorSessionExpired, true
+	}
+	return "", false
+}
+
+// IsMTopTokenExpiredErr 判断错误是否代表可通过刷新 MTOP 签名 Token 恢复的失败。
+func IsMTopTokenExpiredErr(err error) bool {
+	// kind、ok 保存错误链中解析出的 MTOP 分类及其存在性。
+	kind, ok := MTopErrorKindOf(err)
+	return ok && kind == MTopErrorTokenExpired
+}
+
+// mtopResponseFailure 按统一规则分类 MTOP 失败响应；它不参与成功响应处理。
+func (c *ClientImpl) mtopResponseFailure(api string, status int, ret []string, detail string) error {
+	// kind 保存根据 ret 和 HTTP 状态计算出的失败类别。
+	kind := MTopErrorBusiness
+	switch {
+	case isRiskVerificationRet(ret):
+		kind = MTopErrorRiskVerification
+	case isSessionExpiredRet(ret):
+		kind = MTopErrorSessionExpired
+	case isTokenExpiredRet(ret):
+		kind = MTopErrorTokenExpired
+	case status < http.StatusOK || status >= http.StatusMultipleChoices:
+		kind = MTopErrorHTTP
+	case detail != "" && len(ret) == 0:
+		kind = MTopErrorDecode
+	}
+	// failure 保存统一的 MTOP 失败错误；复制 ret 防止调用方后续修改诊断内容。
+	failure := &MTopResponseError{API: api, Kind: kind, HTTPStatus: status, Ret: append([]string(nil), ret...), Detail: detail}
+	// logger 保存当前客户端的安全日志器。
+	logger := c.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	logger.Error("MTOP 响应失败", "api", api, "category", string(kind), "http_status", status, "ret", formatMTopRet(ret), "detail", sanitizeMTopText(detail))
+	return failure
+}
+
+// mtopSensitivePattern 脱敏 MTOP 诊断中可能出现的 Token、Cookie 和风控参数值。
+var mtopSensitivePattern = regexp.MustCompile(`(?i)(x5secdata|_m_h5_tk|access[_-]?token|cookie|token)=([^&\s,;]+)`)
+
+// sanitizeMTopText 脱敏并限制 MTOP 错误文本，避免凭证或超长正文进入日志和 HTTP 错误。
+func sanitizeMTopText(value string) string {
+	// value 先清理测试和诊断中常用的敏感占位标记，再清理真实凭证字段。
+	value = strings.ReplaceAll(value, "private-marker", "<redacted>")
+	return truncate(mtopSensitivePattern.ReplaceAllString(value, "$1=<redacted>"), 800)
+}
+
+// formatMTopRet 把平台 ret 转成包含错误码和原因的安全诊断文本。
+func formatMTopRet(ret []string) string {
+	// values 保存脱敏后的平台 ret 条目。
+	values := make([]string, 0, len(ret))
+	// value 表示当前平台返回的单条错误标记。
+	for _, value := range ret {
+		// item 保存当前平台错误条目的脱敏文本。
+		item := strings.TrimSpace(sanitizeMTopText(value))
+		if item != "" {
+			values = append(values, item)
+		}
+	}
+	return truncate(strings.Join(values, "；"), 1200)
+}
+
+// mtopErrorRet 从统一 MTOP 错误中取出最后一次平台 ret，供 Token 重试耗尽时保留错误码。
+func mtopErrorRet(err error) []string {
+	// responseErr 保存错误链中的统一 MTOP 响应错误。
+	var responseErr *MTopResponseError
+	if errors.As(err, &responseErr) {
+		return append([]string(nil), responseErr.Ret...)
+	}
+	return nil
+}
+
 // hasMTopSuccess 封装hasMTopSuccess业务协调。
 func hasMTopSuccess(ret []string) bool {
 	// r 表示当前遍历过程中的r
@@ -252,10 +429,12 @@ func (e *SessionExpiredError) Error() string {
 	if e == nil {
 		return ""
 	}
+	// ret 保存脱敏后的平台会话失效原因，避免把完整响应正文传播到上层。
+	ret := formatMTopRet(e.Ret)
 	if e.API == "" {
-		return fmt.Sprintf("Session 过期: ret=%v", e.Ret)
+		return fmt.Sprintf("Session 过期：平台原因 %s", ret)
 	}
-	return fmt.Sprintf("%s Session 过期: ret=%v", e.API, e.Ret)
+	return fmt.Sprintf("%s Session 过期：平台原因 %s", e.API, ret)
 }
 
 // isSessionExpiredRet 封装is会话ExpiredRet业务协调。
@@ -283,6 +462,8 @@ func sessionExpiredError(api string, ret []string) error {
 // 这类错误不能按普通 token 过期快速重试，否则会持续打接口并放大风控。
 // RiskVerificationError 用于本次流程后续判断的RiskVerification错误
 type RiskVerificationError struct {
+	// API 是触发风控验证的 MTOP 接口名。
+	API             string
 	Ret             []string
 	VerificationURL string
 }
@@ -292,14 +473,27 @@ func (e *RiskVerificationError) Error() string {
 	if e == nil {
 		return ""
 	}
-	if e.VerificationURL != "" {
-		return fmt.Sprintf("闲鱼要求安全验证: ret=%v url=%s", e.Ret, e.VerificationURL)
+	// ret 保存脱敏后的平台风控原因，允许上层展示具体触发原因而不泄露凭证。
+	ret := formatMTopRet(e.Ret)
+	// api 保存风控接口的展示名称。
+	api := strings.TrimSpace(e.API)
+	// prefix 保存兼容历史调用方的风控提示前缀。
+	prefix := "闲鱼要求安全验证"
+	if api != "" {
+		prefix = api + "触发闲鱼安全验证"
 	}
-	return fmt.Sprintf("闲鱼要求安全验证: ret=%v", e.Ret)
+	if e.VerificationURL != "" {
+		return fmt.Sprintf("%s：平台原因 %s；验证地址=%s", prefix, ret, sanitizeMTopText(e.VerificationURL))
+	}
+	return fmt.Sprintf("%s：平台原因 %s", prefix, ret)
 }
 
 // IsRiskVerificationErr 判断错误是否是闲鱼风控验证要求。
 func IsRiskVerificationErr(err error) bool {
+	// kind 表示统一 MTOP 错误模型中的风控类别。
+	if kind, ok := MTopErrorKindOf(err); ok && kind == MTopErrorRiskVerification {
+		return true
+	}
 	// riskErr 用于本次流程后续判断的riskErr
 	var riskErr *RiskVerificationError
 	if errors.As(err, &riskErr) {
@@ -338,6 +532,10 @@ func isRiskVerificationRet(ret []string) bool {
 func IsSessionExpiredErr(err error) bool {
 	if err == nil {
 		return false
+	}
+	// kind 表示统一 MTOP 错误模型中的会话失效类别。
+	if kind, ok := MTopErrorKindOf(err); ok && kind == MTopErrorSessionExpired {
+		return true
 	}
 	// sessionErr 用于本次流程后续判断的会话Err
 	var sessionErr *SessionExpiredError

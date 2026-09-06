@@ -3,7 +3,7 @@ import { act,renderHook } from '@testing-library/react';
 import { useState } from 'react';
 import { afterEach,beforeEach,describe,expect,test,vi } from 'vitest';
 import type { Item } from './api';
-import { createItem,deleteItem,getPublishLocations,publishItem,syncItemsFromAccount,updateItem } from './api';
+import { createItem,deleteItem,getPublishLocations,publishItem,recommendPublishCategory,syncItemsFromAccount,updateItem } from './api';
 import { useItemActions,type ItemActionsOptions } from './itemActions';
 
 vi.mock('./api', /* itemActionsApiMockFactory 提供商品动作 Hook 的确定性 API 替身。 */ () => ({
@@ -12,6 +12,7 @@ vi.mock('./api', /* itemActionsApiMockFactory 提供商品动作 Hook 的确定�
   getPublishLocations: vi.fn(),
   itemErrorMessage: /* errorMessageMock 将测试动作中的异常转换为稳定回退文本。 */ (error: unknown, fallback: string) => error instanceof Error ? error.message : fallback,
   publishItem: vi.fn(),
+  recommendPublishCategory: vi.fn(),
   syncItemsFromAccount: vi.fn(),
   updateItem: vi.fn(),
 }));
@@ -24,6 +25,8 @@ const deleteItemMock = vi.mocked(deleteItem);
 const locationsMock = vi.mocked(getPublishLocations);
 // publishItemMock 是普通商品发布接口的可控替身。
 const publishItemMock = vi.mocked(publishItem);
+// recommendPublishCategoryMock 是普通发布类目推荐接口的可控替身。
+const recommendPublishCategoryMock = vi.mocked(recommendPublishCategory);
 // syncItemsMock 是商品同步接口的可控替身。
 const syncItemsMock = vi.mocked(syncItemsFromAccount);
 // updateItemMock 是商品编辑接口的可控替身。
@@ -64,6 +67,7 @@ describe('useItemActions', /* 当前回调验证商品普通操作、发布和�
     deleteItemMock.mockResolvedValue({ success: true });
     locationsMock.mockResolvedValue([locationFixture]);
     publishItemMock.mockResolvedValue({ success: true, message: '发布成功', item_id: 'new-item', item_url: '', item_image: 'image.jpg', item_title: '新商品', item_price: '20', quantity: 1, category_id: '', category_name: '' });
+    recommendPublishCategoryMock.mockResolvedValue({ success: true, category: { cat_id: '5001', cat_name: '虚拟服务', channel_cat_id: '6001', tb_cat_id: '7001' } });
     syncItemsMock.mockResolvedValue({ success: true, message: '同步完成', total_count: 1, total_pages: 1, saved_count: 1, deleted_count: 0 });
     updateItemMock.mockResolvedValue({ success: true });
     vi.stubGlobal('alert', vi.fn());
@@ -101,6 +105,20 @@ describe('useItemActions', /* 当前回调验证商品普通操作、发布和�
     expect(publishItemMock).toHaveBeenCalledWith(expect.objectContaining({ cookie_id: 'account-1', title: '新商品', quantity: '2', images: expect.any(Array) }));
     expect(hook.result.current.onConfigureDelivery).toHaveBeenCalledWith(expect.objectContaining({ item_id: 'new-item', cookie_id: 'account-1' }));
     expect(hook.result.current.actions.publishForm).toEqual(expect.objectContaining({ cookie_id: 'account-1', title: '', images: [] }));
+    hook.unmount();
+  });
+
+  test('普通发布可推荐类目并把选中类目随发布请求提交', /* 当前回调验证普通发布类目推荐与发布参数衔接。 */ async () => {
+    // hook 是商品动作 Hook 的真实 React 状态实例。
+    const hook = renderHook(/* categoryHookFactory 创建普通发布类目选择场景的 Hook。 */ () => useItemActionsHarness());
+    act(/* accountAction 写入普通发布类目推荐使用的账号。 */ () => hook.result.current.actions.setPublishForm(current => ({ ...current, cookie_id: 'account-1' })));
+    act(/* keywordAction 写入普通发布类目关键词。 */ () => hook.result.current.actions.setPublishCategoryKeyword('课程资料'));
+    await act(/* recommendAction 请求普通发布推荐类目。 */ async () => hook.result.current.actions.handleRecommendPublishCategory());
+    expect(recommendPublishCategoryMock).toHaveBeenCalledWith('account-1', '课程资料', expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    expect(hook.result.current.actions.publishCategory).toEqual({ cat_id: '5001', cat_name: '虚拟服务', channel_cat_id: '6001', tb_cat_id: '7001' });
+    act(/* formAction 写入普通发布必填字段和图片。 */ () => hook.result.current.actions.setPublishForm({ cookie_id: 'account-1', title: '新商品', description: '描述', price: '20', original_price: '', quantity: '1', postage_mode: 'free', postage: '', images: [new File(['image'], 'image.jpg')] }));
+    await act(/* publishAction 提交带选中类目的普通商品。 */ async () => hook.result.current.actions.handlePublishItem());
+    expect(publishItemMock).toHaveBeenCalledWith(expect.objectContaining({ category: { cat_id: '5001', cat_name: '虚拟服务', channel_cat_id: '6001', tb_cat_id: '7001' } }));
     hook.unmount();
   });
 
