@@ -824,6 +824,24 @@ func TestCallMTopParseFailure(t *testing.T) {
 	}
 }
 
+// TestCallMTopHTTPFailureIncludesReason 验证发布 MTOP 非 2xx 响应会保留平台错误码和原因。
+func TestCallMTopHTTPFailureIncludesReason(t *testing.T) {
+	// dt 用于本次流程后续判断的 HTTP 响应分发。
+	dt := &dispatchTransport{handlers: map[string]http.HandlerFunc{
+		"some.api": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusBadGateway)
+			fmt.Fprint(w, `{"ret":["FAIL_BIZ_CATEGORY_UNAVAILABLE::商品类目暂不可用"]}`)
+		},
+	}}
+	// client 用于本次流程后续判断的本地 MTOP 客户端。
+	client := &ClientImpl{HTTPClient: &http.Client{Transport: dt}}
+	// err 用于本次流程后续判断的发布接口失败。
+	_, _, err := client.callMTop(context.Background(), consignCookies, "http://x", "some.api", "1.0", "spm", "spmPre", "log", map[string]any{})
+	if err == nil || !strings.Contains(err.Error(), "HTTP 502") || !strings.Contains(err.Error(), "FAIL_BIZ_CATEGORY_UNAVAILABLE") || !strings.Contains(err.Error(), "商品类目暂不可用") {
+		t.Fatalf("发布 HTTP 错误原因未保留: %v", err)
+	}
+}
+
 // TestCallMTopRequestError 封装TestCallMTop请求错误业务协调。
 func TestCallMTopRequestError(t *testing.T) {
 	// 指向不可达地址
@@ -901,6 +919,18 @@ func TestPublishLabelsEmpty(t *testing.T) {
 	out := publishLabels(map[string]any{"cardList": []any{map[string]any{"cardData": nil}}})
 	if len(out) != 0 {
 		t.Fatalf("got=%v", out)
+	}
+	// missingValuesList 是平台省略 valuesList 的异常属性卡片。
+	missingValuesList := map[string]any{"cardList": []any{map[string]any{"cardData": map[string]any{"propertyId": "p1"}}}}
+	if // got 用于本次流程后续判断的got
+	got := publishLabels(missingValuesList); len(got) != 0 {
+		t.Fatalf("缺失 valuesList 时应跳过卡片: got=%v", got)
+	}
+	// nullValuesList 是平台将 valuesList 返回为 null 的异常属性卡片。
+	nullValuesList := map[string]any{"cardList": []any{map[string]any{"cardData": map[string]any{"propertyId": "p1", "valuesList": nil}}}}
+	if // got 用于本次流程后续判断的got
+	got := publishLabels(nullValuesList); len(got) != 0 {
+		t.Fatalf("valuesList 为 null 时应跳过卡片: got=%v", got)
 	}
 }
 

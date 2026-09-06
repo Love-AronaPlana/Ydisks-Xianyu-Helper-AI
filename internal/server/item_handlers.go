@@ -150,6 +150,16 @@ func (s *Server) publishItem(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusConflict, callErr.Error())
 			return
 		}
+		// message 保存未被专用错误类型包装的平台或基础设施失败原因，确保前端不会收到误导性的成功结果缺失提示。
+		message := strings.TrimSpace(callErr.Error())
+		if message == "" {
+			message = "商品发布失败"
+		}
+		if s.Logger != nil {
+			s.Logger.Error("商品发布失败", "cookie_id", cookieID, "err", callErr)
+		}
+		writeErrCode(w, http.StatusBadGateway, "publish_failed", message, "")
+		return
 	}
 	if res == nil || strings.TrimSpace(res.ItemID) == "" {
 		writeErrCode(w, http.StatusBadGateway, "publish_result_missing_item_id", "平台返回发布成功，但缺少商品 ID，无法确认发布结果", "")
