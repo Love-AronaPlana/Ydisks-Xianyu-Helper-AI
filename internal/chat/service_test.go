@@ -451,6 +451,14 @@ func TestHistoryMessageIsSystem(t *testing.T) {
 	if !historyMessageIsSystem(last, "[我已拍下，待付款]") {
 		t.Fatal("交易卡片应被识别为系统消息")
 	}
+	// reviewEncoded 保存确认收货后评价提醒的 contentType=25 卡片载荷。
+	reviewEncoded := base64.StdEncoding.EncodeToString([]byte(`{"contentType":25,"title":"快给ta一个评价吧～"}`))
+	if !historyMessageIsSystem(map[string]any{
+		"extension": map[string]any{"senderUserId": "peer@goofish"},
+		"content":   map[string]any{"custom": map[string]any{"data": reviewEncoded}},
+	}, "快给ta一个评价吧～") {
+		t.Fatal("评价提醒卡片应被识别为系统消息")
+	}
 	if historyMessageIsSystem(map[string]any{
 		"extension": map[string]any{"senderUserId": "peer@goofish"},
 		"content":   map[string]any{"custom": map[string]any{"summary": "你好"}},

@@ -54,3 +54,57 @@ func TestPrepareBuyerNicknameBoundaries(t *testing.T) {
 	}
 	closedCleanup()
 }
+
+// TestResolvePaidTaskOrderFromSimplifiedContext 验证简化付款事件可从本账号会话订单补齐自动发货所需事实。
+func TestResolvePaidTaskOrderFromSimplifiedContext(t *testing.T) {
+	// store、cleanup 提供自动化中心所需的隔离数据库。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	// ctx 控制订单事实回填过程的数据库生命周期。
+	ctx := context.Background()
+	// writeErr 保存待发货订单种子写入错误。
+	if writeErr := store.Orders.Upsert(ctx, "simple-order", db.OrderUpsertOpts{
+		CookieID: "cid", ChatID: "simple-chat", BuyerID: "buyer-1", ItemID: "item-1", OrderStatus: "pending_ship",
+	}); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	// center 是只使用本地数据库的自动化中心。
+	center := New(store, nil, nil)
+	// task 保存只有会话、买家和商品事实的简化付款任务。
+	task := Task{AccountID: "cid", TriggerType: TriggerOrderPaid, ChatID: "simple-chat", BuyerID: "buyer-1", ItemID: "item-1"}
+	// resolved、resolveErr 保存回填后的付款任务及错误。
+	resolved, resolveErr := center.resolvePaidTaskOrder(ctx, task)
+	if resolveErr != nil || resolved.OrderID != "simple-order" {
+		t.Fatalf("简化付款订单回填异常: task=%+v err=%v", resolved, resolveErr)
+	}
+	// untouched、untouchedErr 验证普通评价任务不会触发付款订单回填。
+	untouched, untouchedErr := center.resolvePaidTaskOrder(ctx, Task{AccountID: "cid", TriggerType: TriggerBuyerReviewed, ChatID: "simple-chat"})
+	if untouchedErr != nil || untouched.OrderID != "" {
+		t.Fatalf("非付款任务不应回填订单: task=%+v err=%v", untouched, untouchedErr)
+	}
+}
+
+// TestHandleTaskSkipsPaidDeliveryWhenAutoConfirmDisabled 验证参考项目的自动确认开关会在付款自动发货入口处整体阻断执行。
+func TestHandleTaskSkipsPaidDeliveryWhenAutoConfirmDisabled(t *testing.T) {
+	// store、cleanup 提供自动化中心所需的隔离数据库。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	// ctx 控制付款事件处理过程的数据库生命周期。
+	ctx := context.Background()
+	// updateErr 保存关闭账号自动确认设置的数据库错误。
+	if _, updateErr := store.DB.ExecContext(ctx, `UPDATE cookies SET auto_confirm=0 WHERE id='cid'`); updateErr != nil {
+		t.Fatal(updateErr)
+	}
+	// sender 记录本次被门禁阻断时不应发送的自动发货消息。
+	sender := &testSender{}
+	// center 是带测试发送器的自动化中心。
+	center := New(store, testSenderProvider{sender: sender}, nil)
+	// handleErr 保存付款任务经过账号开关门禁后的处理错误。
+	handleErr := center.HandleTask(ctx, Task{AccountID: "cid", TriggerType: TriggerOrderPaid, OrderID: "paid-order"})
+	if handleErr != nil {
+		t.Fatal(handleErr)
+	}
+	if len(sender.texts) != 0 {
+		t.Fatalf("关闭自动确认时不应发送付款自动发货消息: %v", sender.texts)
+	}
+}

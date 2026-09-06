@@ -82,7 +82,11 @@ func ExtractTaskFromWS(accountID, cookieStr string, raw map[string]any) *Task {
 	if f.orderRole == "buyer" {
 		return nil
 	}
-	if f.text == "" && f.redReminder == "" && f.updateKey == "" {
+	// 明确的普通用户消息不能仅凭“待发货”等词语进入卖家自动化；缺少方向字段的历史协议仍保留兼容入口。
+	if f.messageDirection == "2" && !isSystemEvent(f) {
+		return nil
+	}
+	if f.text == "" && f.redReminder == "" && f.reminderNotice == "" && f.taskName == "" && f.cardTitle == "" && f.buttonText == "" && f.updateKey == "" {
 		return nil
 	}
 	// task 保存待交给中心的卖家事件；缺少角色不构成拒绝条件，也不能根据文案或发送者推断买卖身份。
@@ -94,7 +98,7 @@ func ExtractTaskFromWS(accountID, cookieStr string, raw map[string]any) *Task {
 		OrderID:   f.orderID,
 		ItemID:    f.itemID,
 		BuyerID:   f.buyerID,
-		Text:      firstNonEmpty(f.text, f.redReminder),
+		Text:      firstNonEmpty(f.text, f.redReminder, f.reminderNotice, f.taskName, f.cardTitle, f.buttonText, f.title, f.detail),
 		UpdateKey: f.updateKey,
 		Raw:       raw,
 	}
@@ -113,13 +117,29 @@ func ExtractTaskFromWS(accountID, cookieStr string, raw map[string]any) *Task {
 
 // rawFields 用于本次流程后续判断的原始字段列表
 type rawFields struct {
-	text        string
-	redReminder string
-	title       string
-	detail      string
+	text string
+	// reminderContent 保存参考项目直接自动发货判断使用的 message["1"]["10"] 原始文案。
+	reminderContent string
+	redReminder     string
+	// reminderNotice 保存平台交易通知摘要，部分版本只在该字段提供“买家已付款”等发货信号。
+	reminderNotice string
+	title          string
+	detail         string
+	// taskName 保存 bizTag.taskName，兼容付款完成业务键缺失时的交易状态识别。
+	taskName string
+	// cardTitle 保存交易卡片内层标题，避免外层通用标题覆盖付款业务文案。
+	cardTitle string
+	// buttonText 保存交易卡片内层操作按钮文案，兼容只有“去发货”提示的系统卡片。
+	buttonText  string
 	orderRole   string
 	updateKey   string
 	contentType string
+	// messageDirection 保存平台消息方向；2 表示普通接收聊天，1 通常表示系统事件。
+	messageDirection string
+	// systemBiz 表示 bizTag 明确携带系统任务标识，兼容没有稳定方向字段的系统卡片。
+	systemBiz bool
+	// simplified 表示 message["1"] 是会话字符串的简化消息，订单事实需要从本地订单回填。
+	simplified  bool
 	chatID      string
 	orderID     string
 	itemID      string
@@ -133,23 +153,35 @@ func fieldsFromRaw(raw map[string]any) rawFields {
 	var f rawFields
 	if // m1 用于本次流程后续判断的m1
 	m1 := mapAt(raw, "1"); m1 != nil {
+		f.messageDirection = strAny(m1["7"])
 		if // s 用于本次流程后续判断的s
 		s := strAny(m1["2"]); s != "" {
 			f.chatID = trimGoofishSID(s)
 		}
 		if // m10 用于本次流程后续判断的m10
 		m10 := mapAt(m1, "10"); m10 != nil {
-			f.text = strAny(m10["reminderContent"])
-			f.redReminder = strAny(m10["redReminder"])
-			f.title = strAny(m10["reminderTitle"])
-			f.detail = strAny(m10["detailNotice"])
-			f.reminderURL = strAny(m10["reminderUrl"])
-			f.buyerID = strAny(m10["senderUserId"])
+			mergeNoticeFields(&f, m10)
 			f.updateKey, f.contentType = extFields(strAny(m10["extJson"]))
-			f.orderRole = orderRoleFromTaskName(bizTaskName(strAny(m10["bizTag"])))
+			f.taskName = firstNonEmpty(f.taskName, bizTaskName(strAny(m10["bizTag"])))
+			f.orderRole = firstNonEmpty(f.orderRole, orderRoleFromTaskName(f.taskName))
+			f.systemBiz = hasSystemBizTag(strAny(m10["bizTag"]))
+		}
+		if f.text == "" {
+			f.text = nestedString(raw, "1", "6", "3", "2")
+		}
+		if f.contentType == "" {
+			f.contentType = nestedString(raw, "1", "6", "3", "4")
 		}
 		if // contentJSON 用于本次流程后续判断的内容JSON
 		contentJSON := nestedString(raw, "1", "6", "3", "5"); contentJSON != "" {
+			// cardTitle、buttonText 分别保存交易卡片内层标题和按钮文案，兼容外层仅显示“卡片消息”的新版协议。
+			cardTitle, buttonText := extractCardSignals(contentJSON)
+			if f.cardTitle == "" {
+				f.cardTitle = cardTitle
+			}
+			if f.buttonText == "" {
+				f.buttonText = buttonText
+			}
 			if // role 用于本次流程后续判断的role
 			role := extractOrderRoleFromContent(contentJSON); role != "" {
 				f.orderRole = role
@@ -158,6 +190,13 @@ func fieldsFromRaw(raw map[string]any) rawFields {
 			id := extractOrderIDFromContent(contentJSON); id != "" {
 				f.orderID = id
 			}
+		}
+	} else if // compactSession 保存简化消息中的会话标识
+	compactSession, ok := raw["1"].(string); ok && strings.TrimSpace(compactSession) != "" {
+		f.simplified = true
+		f.chatID = trimGoofishSID(compactSession)
+		if f.chatID == compactSession {
+			f.chatID = trimGoofishSID(strAny(raw["2"]))
 		}
 	}
 	if // m3 用于本次流程后续判断的m3
@@ -168,21 +207,7 @@ func fieldsFromRaw(raw map[string]any) rawFields {
 	}
 	if // m4 用于本次流程后续判断的m4
 	m4 := mapAt(raw, "4"); m4 != nil {
-		if f.text == "" {
-			f.text = strAny(m4["reminderContent"])
-		}
-		if f.redReminder == "" {
-			f.redReminder = strAny(m4["redReminder"])
-		}
-		if f.title == "" {
-			f.title = strAny(m4["reminderTitle"])
-		}
-		if f.detail == "" {
-			f.detail = strAny(m4["detailNotice"])
-		}
-		if f.reminderURL == "" {
-			f.reminderURL = strAny(m4["reminderUrl"])
-		}
+		mergeNoticeFields(&f, m4)
 		if f.updateKey == "" {
 			f.updateKey, f.contentType = extFields(strAny(m4["extJson"]))
 		}
@@ -215,6 +240,76 @@ func fieldsFromRaw(raw map[string]any) rawFields {
 	// 固定路径已取到全部事实时仍需识别角色，避免买家侧卡片被误投递为卖家自动化。
 	supplementEventFacts(&f, raw, 0)
 	return f
+}
+
+// mergeNoticeFields 合并一份平台交易通知字段；已有固定路径值优先，避免备用层覆盖可信事实。
+func mergeNoticeFields(fields *rawFields, notice map[string]any) {
+	if fields == nil || notice == nil {
+		return
+	}
+	if fields.reminderContent == "" {
+		fields.reminderContent = strAny(notice["reminderContent"])
+	}
+	if fields.text == "" {
+		fields.text = fields.reminderContent
+	}
+	if fields.redReminder == "" {
+		fields.redReminder = strAny(notice["redReminder"])
+	}
+	if fields.reminderNotice == "" {
+		fields.reminderNotice = strAny(notice["reminderNotice"])
+	}
+	if fields.title == "" {
+		fields.title = strAny(notice["reminderTitle"])
+	}
+	if fields.detail == "" {
+		fields.detail = strAny(notice["detailNotice"])
+	}
+	if fields.reminderURL == "" {
+		fields.reminderURL = strAny(notice["reminderUrl"])
+	}
+	if fields.buyerID == "" {
+		fields.buyerID = strAny(notice["senderUserId"])
+	}
+	if fields.taskName == "" {
+		fields.taskName = bizTaskName(strAny(notice["bizTag"]))
+	}
+	if fields.orderRole == "" {
+		fields.orderRole = orderRoleFromTaskName(fields.taskName)
+	}
+	if hasSystemBizTag(strAny(notice["bizTag"])) {
+		fields.systemBiz = true
+	}
+}
+
+// hasSystemBizTag 判断 bizTag 是否带有参考项目用于识别系统消息的稳定标识。
+func hasSystemBizTag(raw string) bool {
+	// trimmed 是去除空白后的 bizTag 原文，供稳定系统字段匹配。
+	trimmed := strings.TrimSpace(raw)
+	return trimmed != "" && (strings.Contains(trimmed, "SECURITY") || strings.Contains(trimmed, "taskName") || strings.Contains(trimmed, "taskId"))
+}
+
+// isSystemEvent 判断当前交易事件是否具备系统消息语义；未知方向的旧报文保留兼容，不在此处拒绝。
+func isSystemEvent(fields rawFields) bool {
+	return fields.simplified || fields.messageDirection == "1" || fields.contentType == "6" || fields.systemBiz
+}
+
+// extractCardSignals 从交易卡片 JSON 中提取内层标题和按钮文案；返回值仅用于系统事件识别，不读取普通聊天正文。
+func extractCardSignals(contentJSON string) (cardTitle, buttonText string) {
+	// content 保存已解码的卡片对象；解析失败时调用方继续使用外层交易字段。
+	var content map[string]any
+	if json.Unmarshal([]byte(contentJSON), &content) != nil {
+		return "", ""
+	}
+	cardTitle = firstNonEmpty(
+		nestedString(content, "dxCard", "item", "main", "exContent", "title"),
+		nestedString(content, "dynamicOperation", "changeContent", "dxCard", "item", "main", "exContent", "title"),
+	)
+	buttonText = firstNonEmpty(
+		nestedString(content, "dxCard", "item", "main", "exContent", "button", "text"),
+		nestedString(content, "dynamicOperation", "changeContent", "dxCard", "item", "main", "exContent", "button", "text"),
+	)
+	return cardTitle, buttonText
 }
 
 // fallbackEventFactsMaxDepth 限制平台原始报文递归解析深度，避免异常报文占用无限栈空间。
@@ -299,12 +394,21 @@ func supplementEventFactByKey(fields *rawFields, key string, value any) {
 			fields.orderRole = normalizedOrderRole(text)
 		}
 	case "taskname":
+		if fields.taskName == "" {
+			fields.taskName = text
+		}
 		if fields.orderRole == "" {
 			fields.orderRole = orderRoleFromTaskName(text)
 		}
 	case "biztag":
+		if fields.taskName == "" {
+			fields.taskName = bizTaskName(text)
+		}
 		if fields.orderRole == "" {
 			fields.orderRole = orderRoleFromTaskName(bizTaskName(text))
+		}
+		if hasSystemBizTag(text) {
+			fields.systemBiz = true
 		}
 	case "reminderurl", "targeturl", "url", "deeplink", "link":
 		supplementEventFactsFromURL(fields, text)
@@ -359,10 +463,27 @@ func isOrderPaidEvent(f rawFields) bool {
 	if f.orderRole == "buyer" {
 		return false
 	}
-	return strings.Contains(f.text, "我已付款，等待你发货") ||
-		strings.Contains(f.text, "已付款，待发货") ||
-		strings.Contains(f.text, "记得及时发货") ||
-		strings.Contains(f.redReminder, "等待卖家发货")
+	// 简化消息只接受参考项目的精确红色提醒，订单号和商品事实随后由会话订单回填。
+	if f.simplified {
+		return strings.TrimSpace(f.redReminder) == "等待卖家发货"
+	}
+	// 成功小刀只能由系统卡片标题触发，不能由普通文本、通知摘要或业务键触发。
+	if isBargainReadyCard(f) {
+		return isSystemEvent(f)
+	}
+	// 普通付款自动发货严格采用参考项目 _is_auto_delivery_trigger 的四个文案，并要求系统消息门禁。
+	if !isSystemEvent(f) {
+		return false
+	}
+	return strings.Contains(f.reminderContent, "[我已付款，等待你发货]") ||
+		strings.Contains(f.reminderContent, "[已付款，待发货]") ||
+		strings.Contains(f.reminderContent, "我已付款，等待你发货") ||
+		strings.Contains(f.reminderContent, "[记得及时发货]")
+}
+
+// isBargainReadyCard 判断是否为参考项目第二阶段的成功小刀系统卡片标题。
+func isBargainReadyCard(fields rawFields) bool {
+	return fields.cardTitle == "我已成功小刀，待发货" || fields.cardTitle == "我已成功小刀,待发货"
 }
 
 // isOrderCreatedEvent 判定买家已拍下但尚未付款的交易卡片。

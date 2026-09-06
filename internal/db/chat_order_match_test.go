@@ -110,3 +110,30 @@ func TestFindChatIDsByBuyerAndItem(t *testing.T) {
 		t.Fatalf("缺少商品条件不应扩大匹配: ids=%v err=%v", emptyIDs, emptyErr)
 	}
 }
+
+// TestFindLatestPendingByChat 验证简化系统消息可按账号、会话、买家和商品安全回填待发货订单。
+func TestFindLatestPendingByChat(t *testing.T) {
+	// store、cleanup 保存迁移后的临时 SQLite 数据库及关闭责任。
+	store, cleanup := newTestDB(t)
+	defer cleanup()
+	// ctx 是本测试共用的数据库上下文。
+	ctx := context.Background()
+	// _, cookieID 保存测试账号归属；用户标识只用于构造有效外键。
+	_, cookieID := seedAccount(t, store)
+	// writeErr 保存待发货订单初始化失败。
+	if writeErr := store.Orders.Upsert(ctx, "simple-order", OrderUpsertOpts{
+		CookieID: cookieID, ChatID: "simple-chat", BuyerID: "buyer-1", ItemID: "item-1", OrderStatus: "pending_ship",
+	}); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	// order、queryErr 保存按简化消息上下文回填出的订单及查询错误。
+	order, queryErr := store.Orders.FindLatestPendingByChat(ctx, cookieID, "simple-chat@goofish", "buyer-1@goofish", "item-1")
+	if queryErr != nil || order == nil || order.OrderID != "simple-order" {
+		t.Fatalf("简化消息订单回填异常: order=%+v err=%v", order, queryErr)
+	}
+	// missingOrder、missingErr 验证错误商品不会串到其他待发货订单。
+	missingOrder, missingErr := store.Orders.FindLatestPendingByChat(ctx, cookieID, "simple-chat", "buyer-1", "other-item")
+	if missingErr != nil || missingOrder != nil {
+		t.Fatalf("错误商品不应命中订单: order=%+v err=%v", missingOrder, missingErr)
+	}
+}

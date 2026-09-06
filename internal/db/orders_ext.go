@@ -182,6 +182,44 @@ func (o *Orders) ByCookie(ctx context.Context, cookieID string, limit int) ([]Or
 	return o.ByCookiePage(ctx, cookieID, limit, 0)
 }
 
+// FindLatestPendingByChat 按账号和会话查找最近一笔待发货订单，供简化系统消息补回订单号及商品事实。
+// buyerID、itemID 非空时同时作为串单防线；多个候选按最近更新时间和订单号稳定选择。
+func (o *Orders) FindLatestPendingByChat(ctx context.Context, cookieID, chatID, buyerID, itemID string) (*Order, error) {
+	// accountID 是经过空白清理的账号标识，限制订单归属范围。
+	accountID := strings.TrimSpace(cookieID)
+	// sessionID 是去除协议后缀的会话标识，兼容订单表历史存储格式。
+	sessionID := strings.TrimSpace(strings.TrimSuffix(chatID, "@goofish"))
+	if accountID == "" || sessionID == "" {
+		return nil, nil
+	}
+	// where 保存跨数据库通用的订单筛选条件。
+	where := []string{"cookie_id=?", "chat_id=?", "deleted_at IS NULL", "order_status IN (?,?,?,?,?,?)"}
+	// args 保存 where 条件对应的绑定参数，状态集合覆盖本地和参考项目的待发货别名。
+	args := []any{accountID, sessionID, "pending_ship", "paid", "2", "pending_delivery", "partial_success", "partial_pending_finalize"}
+	// normalizedBuyerID 是去除协议后缀的买家标识，用于兼容裸值和带后缀值。
+	if normalizedBuyerID := strings.TrimSuffix(strings.TrimSpace(buyerID), "@goofish"); normalizedBuyerID != "" {
+		where = append(where, "buyer_id IN (?,?)")
+		args = append(args, normalizedBuyerID, normalizedBuyerID+"@goofish")
+	}
+	// productID 是可选的商品约束，防止同一会话内跨商品串单。
+	if productID := strings.TrimSpace(itemID); productID != "" {
+		where = append(where, "item_id=?")
+		args = append(args, productID)
+	}
+	// orderID 保存查询出的最近待发货订单业务标识。
+	var orderID string
+	// query 保存按更新时间和订单号倒序选择候选订单的 SQL。
+	query := `SELECT order_id FROM orders WHERE ` + strings.Join(where, " AND ") + ` ORDER BY updated_at DESC, order_id DESC LIMIT 1`
+	// err 保存候选订单查询或扫描错误。
+	if err := o.DB.QueryRowContext(ctx, query, args...).Scan(&orderID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return o.Get(ctx, orderID)
+}
+
 // ByCookiePage 分页读取账号订单，供需要完整扫描的后台任务使用。
 func (o *Orders) ByCookiePage(ctx context.Context, cookieID string, limit, offset int) ([]OrderRow, error) {
 	if limit <= 0 {

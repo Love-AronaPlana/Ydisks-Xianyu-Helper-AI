@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"xianyu-go/internal/db"
+	"xianyu-go/internal/xianyu/mtop"
 )
 
 // TestAIBargainQuoteAutomaticallyAdjustsCreatedOrder 验证订单创建事件会消费四维匹配的 AI 报价并复用真实改价能力。
@@ -169,6 +170,38 @@ func TestAdjustOrderPriceActionRetriesTransientBusy(t *testing.T) {
 		db.AutomationAction{ActionType: ActionAdjustPrice, ConfigJSON: `{"target_price":"9.9"}`})
 	if err != nil || sent != 1 || fake.adjustCalls != 2 {
 		t.Fatalf("sent=%d calls=%d err=%v", sent, fake.adjustCalls, err)
+	}
+}
+
+// TestAdjustOrderPriceActionRetriesTypedBusinessFailure 验证真实 MTOP 客户端返回带分类的业务错误时，暂时性改价失败仍会重试而不进入人工核对。
+func TestAdjustOrderPriceActionRetriesTypedBusinessFailure(t *testing.T) {
+	// previousGap 保存生产重试间隔，测试结束后恢复，避免影响同包其他用例的等待语义。
+	previousGap := adjustPriceTransientRetryGap
+	adjustPriceTransientRetryGap = time.Millisecond
+	t.Cleanup(func() {
+		adjustPriceTransientRetryGap = previousGap
+	})
+	// store、cleanup 保存自动化改价测试数据库及关闭责任。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	// businessFailure 模拟 MTOP 已收到并确认的暂时性平台业务拒绝，而不是网络或解析错误。
+	businessFailure := &mtop.MTopResponseError{
+		API:  "订单改价接口",
+		Kind: mtop.MTopErrorBusiness,
+		Ret:  []string{"FAIL_BIZ_CANNOT_MODIFY_FEE::暂无法修改价格，请稍后重试"},
+	}
+	// fake 模拟真实 MTOP 客户端第一次返回分类业务错误、第二次成功。
+	fake := &fakeMTop{adjustResults: []fakeAdjustPriceResult{
+		{err: businessFailure},
+		{ok: true, ret: []string{"SUCCESS::调用成功"}},
+	}}
+	// center 保存注入分类业务错误替身的自动化中心。
+	center := NewWithDependencies(store, nil, nil, CenterDependencies{MTop: fake})
+	// sent、err 保存业务错误被正确重试后的动作结果。
+	sent, err := center.executeAction(context.Background(), Task{AccountID: "cid", OrderID: "typed-business-retry"},
+		db.AutomationAction{ActionType: ActionAdjustPrice, ConfigJSON: `{"target_price":"9.9"}`})
+	if err != nil || sent != 1 || fake.adjustCalls != 2 {
+		t.Fatalf("分类业务错误未按暂时性失败重试: sent=%d calls=%d err=%v", sent, fake.adjustCalls, err)
 	}
 }
 

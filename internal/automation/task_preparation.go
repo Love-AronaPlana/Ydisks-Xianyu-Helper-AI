@@ -2,10 +2,30 @@ package automation
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"xianyu-go/internal/db"
 )
+
+// resolvePaidTaskOrder 为只有会话标识的简化付款消息回填本账号最近待发货订单，避免缺少订单号时无法匹配商品规则。
+func (c *Center) resolvePaidTaskOrder(ctx context.Context, task Task) (Task, error) {
+	if c == nil || c.store == nil || c.store.Orders == nil || task.TriggerType != TriggerOrderPaid || task.OrderID != "" || task.ChatID == "" {
+		return task, nil
+	}
+	// order 保存按账号、会话以及可选买家和商品条件命中的待发货订单。
+	order, err := c.store.Orders.FindLatestPendingByChat(ctx, task.AccountID, task.ChatID, task.BuyerID, task.ItemID)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return task, nil
+		}
+		return task, fmt.Errorf("按会话回填自动发货订单: %w", err)
+	}
+	if order == nil {
+		return task, nil
+	}
+	return mergeOrderIntoTask(task, order), nil
+}
 
 // prepareBuyerNickname 补齐模板渲染所需的买家昵称摘要。
 func (c *Center) prepareBuyerNickname(ctx context.Context, task Task) (Task, error) {
@@ -23,6 +43,9 @@ func (c *Center) prepareBuyerNickname(ctx context.Context, task Task) (Task, err
 
 // mergeOrderIntoTask 用本地订单事实补全自动化任务中尚未获得的字段。
 func mergeOrderIntoTask(task Task, order *db.Order) Task {
+	if task.OrderID == "" {
+		task.OrderID = order.OrderID
+	}
 	if task.ItemID == "" {
 		task.ItemID = order.ItemID
 	}

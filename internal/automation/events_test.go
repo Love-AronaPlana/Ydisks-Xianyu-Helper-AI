@@ -76,6 +76,7 @@ func TestExtractTaskFromWS_OrderPaid(t *testing.T) {
 	raw := mustMap(t, `{
 	  "1": {
 	    "2": "63107041124@goofish",
+	    "7": 1,
 	    "10": {
 	      "redReminder": "等待卖家发货",
 	      "reminderContent": "[我已付款，等待你发货]",
@@ -89,6 +90,157 @@ func TestExtractTaskFromWS_OrderPaid(t *testing.T) {
 	task := ExtractTaskFromWS("acc1", "cookie", raw)
 	if task == nil || task.TriggerType != TriggerOrderPaid || task.OrderID != "3310145690545023994" {
 		t.Fatalf("task=%+v", task)
+	}
+}
+
+// TestExtractTaskFromWS_OrderPaidSignalVariants 验证参考项目明确允许的付款文案和成功小刀卡片触发条件。
+func TestExtractTaskFromWS_OrderPaidSignalVariants(t *testing.T) {
+	// cases 覆盖参考项目的四个直接发货文案、成功小刀系统卡片，以及不应直接发货的相似字段。
+	cases := []struct {
+		// name 表示当前付款信号样本的可读场景名称。
+		name string
+		// raw 表示当前样本的解密 WS 原始报文。
+		raw string
+		// want 表示当前样本是否应生成付款自动化任务。
+		want bool
+	}{
+		{
+			name: "我已付款等待发货",
+			raw:  `{"1":{"7":1,"10":{"reminderContent":"[我已付款，等待你发货]"}}}`,
+			want: true,
+		},
+		{
+			name: "已付款待发货",
+			raw:  `{"1":{"7":1,"10":{"reminderContent":"[已付款，待发货]"}}}`,
+			want: true,
+		},
+		{
+			name: "无方括号付款文案",
+			raw:  `{"1":{"7":1,"10":{"reminderContent":"我已付款，等待你发货"}}}`,
+			want: true,
+		},
+		{
+			name: "记得及时发货",
+			raw:  `{"1":{"7":1,"10":{"reminderContent":"[记得及时发货]"}}}`,
+			want: true,
+		},
+		{
+			name: "成功小刀系统卡片标题",
+			raw:  `{"1":{"7":1,"6":{"3":{"5":"{\"dxCard\":{\"item\":{\"main\":{\"exContent\":{\"title\":\"我已成功小刀，待发货\",\"button\":{\"text\":\"去发货\"}},\"targetUrl\":\"fleamarket://order_detail?id=3310145690545023994&role=seller\"}}}}"}}}}`,
+			want: true,
+		},
+		{
+			name: "买家已付款相似文案不触发",
+			raw:  `{"1":{"7":1,"10":{"reminderContent":"[买家已付款]"}}}`,
+			want: false,
+		},
+		{
+			name: "付款完成待发货相似文案不触发",
+			raw:  `{"1":{"7":1,"10":{"redReminder":"付款完成待发货"}}}`,
+			want: false,
+		},
+		{
+			name: "付款业务键不单独触发",
+			raw:  `{"1":{"7":1,"10":{"extJson":"{\"updateKey\":\"chat:3310145690545023994:10:TRADE_PAID_DONE_SELLER:26\"}"}}}`,
+			want: false,
+		},
+		{
+			name: "待刀成前置卡片不直接发货",
+			raw:  `{"1":{"7":1,"6":{"3":{"5":"{\"dxCard\":{\"item\":{\"main\":{\"exContent\":{\"title\":\"我已小刀，待刀成\"}}}}}"}}}}`,
+			want: false,
+		},
+		{
+			name: "成功小刀普通文本不触发",
+			raw:  `{"1":{"7":2,"10":{"reminderContent":"我已成功小刀，待发货"}}}`,
+			want: false,
+		},
+	}
+	// testCase 表示当前平台信号样本及其预期是否生成付款任务。
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			// raw 保存当前样本的解密 WS 结构。
+			raw := mustMap(t, testCase.raw)
+			// task 保存统一事件入口解析出的付款任务。
+			task := ExtractTaskFromWS("acc1", "cookie", raw)
+			if (task != nil) != testCase.want {
+				t.Fatalf("task=%+v want task=%v", task, testCase.want)
+			}
+			if task != nil && task.TriggerType != TriggerOrderPaid {
+				t.Fatalf("trigger=%q want %q", task.TriggerType, TriggerOrderPaid)
+			}
+		})
+	}
+}
+
+// TestExtractTaskFromWS_BargainReadyBuyerIgnored 验证成功小刀卡片的买家副本不会进入卖家自动发货。
+func TestExtractTaskFromWS_BargainReadyBuyerIgnored(t *testing.T) {
+	// raw 保存带有买家角色订单链接的成功小刀卡片。
+	raw := mustMap(t, `{"1":{"7":1,"6":{"3":{"5":"{\"dxCard\":{\"item\":{\"main\":{\"exContent\":{\"title\":\"我已成功小刀，待发货\"},\"targetUrl\":\"fleamarket://order_detail?id=3310145690545023994&role=buyer\"}}}}"}}}}`)
+	if // task 表示买家侧卡片经卖家自动化入口解析后的结果。
+	task := ExtractTaskFromWS("acc1", "cookie", raw); task != nil {
+		t.Fatalf("买家成功小刀卡片不应触发自动发货: %+v", task)
+	}
+}
+
+// TestExtractCardSignals_DynamicOperation 验证平台把交易卡片包在 dynamicOperation 时仍能提取付款信号。
+func TestExtractCardSignals_DynamicOperation(t *testing.T) {
+	// content 保存动态操作协议中的交易卡片 JSON，不包含外层聊天字段。
+	content := `{"dynamicOperation":{"changeContent":{"dxCard":{"item":{"main":{"exContent":{"title":"我已成功小刀，待发货","button":{"text":"去发货"}}}}}}}}`
+	// cardTitle、buttonText 保存动态卡片解析出的标题和按钮文案。
+	cardTitle, buttonText := extractCardSignals(content)
+	if cardTitle != "我已成功小刀，待发货" || buttonText != "去发货" {
+		t.Fatalf("cardTitle=%q buttonText=%q", cardTitle, buttonText)
+	}
+}
+
+// TestExtractTaskFromWS_ReferenceDeliveryFields 验证路由候选字段不会越权成为直接自动发货触发条件。
+func TestExtractTaskFromWS_ReferenceDeliveryFields(t *testing.T) {
+	// cases 覆盖参考项目的候选字段来源，只有精确发货文案且具备系统方向时才生成付款任务。
+	cases := []struct {
+		// name 表示当前字段来源场景。
+		name string
+		// raw 表示当前解密 WS 报文。
+		raw string
+		// want 表示当前字段是否满足直接自动发货触发条件。
+		want bool
+	}{
+		{name: "reminderNotice相似文案", raw: `{"1":{"7":1,"10":{"reminderNotice":"买家已付款"}}}`, want: false},
+		{name: "taskName相似文案", raw: `{"1":{"7":1,"10":{"bizTag":"{\"taskName\":\"付款完成待发货_卖家\"}"}}}`, want: false},
+		{name: "旁路卡片文案不作为直接触发", raw: `{"1":{"7":1,"6":{"3":{"2":"[已付款，待发货]"}}}}`, want: false},
+	}
+	// testCase 表示当前字段来源样本。
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			// task 保存字段兼容解析出的统一自动化任务。
+			task := ExtractTaskFromWS("acc1", "cookie", mustMap(t, testCase.raw))
+			if (task != nil) != testCase.want {
+				t.Fatalf("task=%+v want task=%v", task, testCase.want)
+			}
+			if task != nil && task.TriggerType != TriggerOrderPaid {
+				t.Fatalf("trigger=%q want %q", task.TriggerType, TriggerOrderPaid)
+			}
+		})
+	}
+}
+
+// TestExtractTaskFromWS_SimplifiedPaidMessage 验证 message["1"] 为会话字符串时仍提取会话、商品和买家事实。
+func TestExtractTaskFromWS_SimplifiedPaidMessage(t *testing.T) {
+	// raw 保存参考项目专门处理的简化“等待卖家发货”消息结构。
+	raw := mustMap(t, `{"1":"63107041124@goofish","3":{"redReminder":"等待卖家发货"},"4":{"senderUserId":"buyer-1","reminderUrl":"fleamarket://message_chat?itemId=item-1&peerUserId=buyer-1&sid=63107041124"}}`)
+	// task 保存简化消息经统一入口解析后的交易任务。
+	task := ExtractTaskFromWS("acc1", "cookie", raw)
+	if task == nil || task.TriggerType != TriggerOrderPaid || task.ChatID != "63107041124" || task.ItemID != "item-1" || task.BuyerID != "buyer-1" {
+		t.Fatalf("simplified task=%+v", task)
+	}
+}
+
+// TestExtractTaskFromWS_UserPaidTextIgnored 验证明确的普通用户消息不会伪造系统付款触发。
+func TestExtractTaskFromWS_UserPaidTextIgnored(t *testing.T) {
+	// raw 明确标记为普通接收消息，正文却包含系统付款文案。
+	raw := mustMap(t, `{"1":{"7":2,"10":{"reminderContent":"[我已付款，等待你发货]","extJson":"{\"contentType\":\"1\"}"}}}`)
+	// task 保存普通消息经过自动化入口后的解析结果。
+	if task := ExtractTaskFromWS("acc1", "cookie", raw); task != nil {
+		t.Fatalf("普通用户消息不应触发自动发货: %+v", task)
 	}
 }
 

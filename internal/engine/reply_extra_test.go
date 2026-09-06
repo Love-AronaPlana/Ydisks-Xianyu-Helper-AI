@@ -364,6 +364,12 @@ func TestIsNonUserChatNotice(t *testing.T) {
 	if !isNonUserChatNotice(map[string]any{}, map[string]any{"extJson": `{"contentType":"26"}`}, "[卡片]") {
 		t.Error("contentType=26 应判为系统提示")
 	}
+	if !isNonUserChatNotice(map[string]any{}, map[string]any{"extJson": `{"contentType":"25"}`}, "快给ta一个评价吧～") {
+		t.Error("contentType=25 评价提醒应判为系统提示")
+	}
+	if !isNonUserChatNotice(map[string]any{}, map[string]any{}, "快给ta一个评价吧～") {
+		t.Error("评价提醒文案即使缺少扩展字段也不应进入聊天回复")
+	}
 	if isNonUserChatNotice(map[string]any{}, map[string]any{}, "[买家说你好]") {
 		t.Error("普通消息不应判为系统提示")
 	}

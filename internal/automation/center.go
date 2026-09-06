@@ -261,6 +261,13 @@ func (c *Center) handleTask(ctx context.Context, task Task) (bool, error) {
 	if task.TriggerType == "" || task.AccountID == "" {
 		return false, nil
 	}
+	// 简化付款消息只有会话标识，先从本账号待发货订单回填订单事实，再记录事件和匹配规则。
+	if // resolveErr 保存简化消息订单事实回填错误
+	resolvedTask, resolveErr := c.resolvePaidTaskOrder(ctx, task); resolveErr != nil {
+		return false, resolveErr
+	} else {
+		task = resolvedTask
+	}
 	if // err 用于本次流程后续判断的err
 	err := c.facts.record(ctx, task); err != nil {
 		if errors.Is(err, db.ErrForbidden) {
@@ -299,6 +306,17 @@ func (c *Center) handleTask(ctx context.Context, task Task) (bool, error) {
 	if !enabled {
 		c.logger.Info("账号已停用，记录事件事实但不执行自动化", "account", task.AccountID, "trigger", task.TriggerType)
 		return false, nil
+	}
+	if task.TriggerType == TriggerOrderPaid && !task.ForceConfirmShipment {
+		// autoConfirm、autoConfirmErr 分别保存参考项目自动发货入口要求的账号开关和读取错误。
+		autoConfirm, autoConfirmErr := c.store.Cookies.GetAutoConfirm(ctx, task.AccountID)
+		if autoConfirmErr != nil {
+			return false, fmt.Errorf("读取自动确认发货设置: %w", autoConfirmErr)
+		}
+		if !autoConfirm {
+			c.logger.Info("账号未启用自动确认发货，跳过付款自动发货", "account", task.AccountID, "order_id", task.OrderID)
+			return false, nil
+		}
 	}
 	// aiPricingActive 表示订单创建事件已由互斥的 AI 议价模式接管；aiPricingErr 是报价执行或状态收口错误。
 	if aiPricingActive, aiPricingErr := c.handleAIPricingMode(ctx, task); aiPricingActive || aiPricingErr != nil {

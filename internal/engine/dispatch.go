@@ -393,6 +393,7 @@ func isSelfUserID(senderUserID, selfUserID string) bool {
 // 典型样本：
 // - contentType=14：“有蚂蚁森林能量可领”“不想宝贝被砍价?设置不砍价回复”“退款成功”
 // - contentType=26：交易卡片，如“我已拍下，待付款”“我发起了退款申请”
+// - contentType=25：确认收货后的评价提醒，如“快给ta一个评价吧～”
 // 付款待发货卡片已经在 handleMessage 前半段进入 automation.Center，这里不能再进入聊天回复链。
 // isNonUserChatNotice 封装isNon用户聊天Notice业务协调。
 func isNonUserChatNotice(m1, m10 map[string]any, reminder string) bool {
@@ -400,6 +401,9 @@ func isNonUserChatNotice(m1, m10 map[string]any, reminder string) bool {
 		return true
 	}
 	if strings.TrimSpace(reminder) == "发来一条新消息" {
+		return true
+	}
+	if strings.TrimSpace(reminder) == "快给ta一个评价吧～" || strings.TrimSpace(reminder) == "快给ta一个评价吧~" {
 		return true
 	}
 	if // sessionType 用于本次流程后续判断的会话类型
@@ -411,7 +415,7 @@ func isNonUserChatNotice(m1, m10 map[string]any, reminder string) bool {
 	switch contentType {
 	case "14":
 		return true
-	case "26":
+	case "25", "26":
 		return true
 	}
 	return false

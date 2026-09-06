@@ -662,18 +662,21 @@ func extractMessageContent(raw map[string]any, fallback string) (string, string)
 
 // isOfficialSystemMessage recognizes platform-generated IM content using the
 // protocol metadata, rather than matching a growing list of Chinese prompts.
-// contentType=14 is a platform notice and contentType=26 is an official trade
-// card.  User 1400 is 闲小蜜, whose messages are also not peer chat.
+// contentType=14 is a platform notice, contentType=25 is an official review
+// reminder, and contentType=26 is an official trade card. User 1400 is 闲小蜜,
+// whose messages are also not peer chat.
 // isOfficialSystemMessage 封装isOfficial系统消息业务协调。
 func isOfficialSystemMessage(raw map[string]any, senderID, fallback string) bool {
 	if strings.TrimSuffix(strings.TrimSpace(senderID), "@goofish") == "1400" {
 		return true
 	}
 	if // contentType 用于本次流程后续判断的内容类型
-	contentType := findOfficialContentType(raw); contentType == "14" || contentType == "26" {
+	contentType := findOfficialContentType(raw); contentType == "14" || contentType == "25" || contentType == "26" {
 		return true
 	}
-	return strings.TrimSpace(fallback) == "发来一条新消息"
+	// trimmedFallback 保存历史摘要的标准化文本，用于兼容缺少卡片载荷的评价提醒。
+	trimmedFallback := strings.TrimSpace(fallback)
+	return trimmedFallback == "发来一条新消息" || trimmedFallback == "快给ta一个评价吧～" || trimmedFallback == "快给ta一个评价吧~"
 }
 
 // findOfficialContentType walks decoded history content as well as live WS
@@ -699,7 +702,7 @@ func findOfficialContentType(value any) string {
 			}
 		case map[string]any:
 			if // candidate 用于本次流程后续判断的candidate
-			candidate := strings.TrimSpace(fmt.Sprint(typed["contentType"])); candidate == "14" || candidate == "26" {
+			candidate := strings.TrimSpace(fmt.Sprint(typed["contentType"])); candidate == "14" || candidate == "25" || candidate == "26" {
 				found = candidate
 				return
 			}

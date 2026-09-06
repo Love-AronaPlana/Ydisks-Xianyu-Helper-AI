@@ -259,7 +259,7 @@ func (e *automationActionExecutor) adjustOrderPrice(ctx context.Context, task Ta
 	return 1, nil
 }
 
-// adjustOrderPriceWithRetry 为规则改价和 AI 报价共用平台暂忙重试；传输结果未知和明确业务拒绝均不得自动重放。
+// adjustOrderPriceWithRetry 为规则改价和 AI 报价共用平台暂忙重试；不可确认的传输结果和终态业务拒绝不得自动重放。
 func (e *automationActionExecutor) adjustOrderPriceWithRetry(ctx context.Context, task Task, priceCents int64) error {
 	// attempt 是当前已发送的改价请求次数，最多执行预设次数以避免无限占用自动化工作线程。
 	for attempt := 1; attempt <= adjustPriceTransientRetryLimit; attempt++ {
@@ -337,6 +337,14 @@ func (e *automationActionExecutor) adjustOrderPriceAttempt(ctx context.Context, 
 		return fmt.Errorf("%w: 订单改价 Session 已失效且凭证恢复失败: %v", errActionNotPerformed, sessionErr)
 	}
 	if result.callErr != nil {
+		// errorKind、hasErrorKind 保存 MTOP 错误分类；普通业务拒绝已经由平台明确确认，不属于结果未知。
+		errorKind, hasErrorKind := mtop.MTopErrorKindOf(result.callErr)
+		if hasErrorKind && errorKind == mtop.MTopErrorBusiness {
+			if len(persistenceErrs) > 0 {
+				return errors.Join(result.callErr, errors.Join(persistenceErrs...))
+			}
+			return result.callErr
+		}
 		if len(persistenceErrs) > 0 {
 			result.callErr = errors.Join(result.callErr, errors.Join(persistenceErrs...))
 		}
