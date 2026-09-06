@@ -246,6 +246,8 @@ type MTopResponseError struct {
 	Ret []string
 	// Detail 是不含凭证的本地诊断，例如 JSON 解析失败原因。
 	Detail string
+	// cause 保存响应读取或解码失败的底层错误，仅供 errors.Is/errors.As 沿错误链查询，不参与错误文本输出。
+	cause error
 }
 
 // Error 返回可直接展示给用户的 MTOP 失败原因，同时保留平台错误码便于排查。
@@ -293,6 +295,14 @@ func (e *MTopResponseError) Error() string {
 	return message
 }
 
+// Unwrap 返回 MTOP 响应错误对应的底层读取或解码错误，保持取消、超时和 JSON 错误的可判定性。
+func (e *MTopResponseError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
 // mtopFailureLabel 生成兼容既有中文提示的失败接口名称；英文 API 名称保留可读空格。
 func mtopFailureLabel(api string) string {
 	// label 保存适合展示给用户的接口失败标题。
@@ -331,6 +341,12 @@ func IsMTopTokenExpiredErr(err error) bool {
 
 // mtopResponseFailure 按统一规则分类 MTOP 失败响应；它不参与成功响应处理。
 func (c *ClientImpl) mtopResponseFailure(api string, status int, ret []string, detail string) error {
+	return c.mtopResponseFailureWithCause(api, status, ret, detail, nil)
+}
+
+// mtopResponseFailureWithCause 按统一规则分类 MTOP 失败响应，并保留安全的底层错误链。
+// cause 只用于 errors.Is/errors.As，不会写入错误文本、日志或 HTTP 响应，避免泄露响应正文和凭证。
+func (c *ClientImpl) mtopResponseFailureWithCause(api string, status int, ret []string, detail string, cause error) error {
 	// kind 保存根据 ret 和 HTTP 状态计算出的失败类别。
 	kind := MTopErrorBusiness
 	switch {
@@ -346,7 +362,7 @@ func (c *ClientImpl) mtopResponseFailure(api string, status int, ret []string, d
 		kind = MTopErrorDecode
 	}
 	// failure 保存统一的 MTOP 失败错误；复制 ret 防止调用方后续修改诊断内容。
-	failure := &MTopResponseError{API: api, Kind: kind, HTTPStatus: status, Ret: append([]string(nil), ret...), Detail: detail}
+	failure := &MTopResponseError{API: api, Kind: kind, HTTPStatus: status, Ret: append([]string(nil), ret...), Detail: detail, cause: cause}
 	// logger 保存当前客户端的安全日志器。
 	logger := c.Logger
 	if logger == nil {
@@ -354,6 +370,18 @@ func (c *ClientImpl) mtopResponseFailure(api string, status int, ret []string, d
 	}
 	logger.Error("MTOP 响应失败", "api", api, "category", string(kind), "http_status", status, "ret", formatMTopRet(ret), "detail", sanitizeMTopText(detail))
 	return failure
+}
+
+// isMTopBusinessRet 判断非 2xx 响应中的 ret 是否明确属于平台普通业务结果。
+// 只有带有 FAIL_BIZ 前缀的错误码可以覆盖 HTTP 分类，网关和系统错误仍保持 HTTP 错误语义。
+func isMTopBusinessRet(ret []string) bool {
+	// value 表示当前待判断的 MTOP 返回标记。
+	for _, value := range ret {
+		if strings.Contains(strings.ToUpper(value), "FAIL_BIZ_") {
+			return true
+		}
+	}
+	return false
 }
 
 // mtopSensitivePattern 脱敏 MTOP 诊断中可能出现的 Token、Cookie 和风控参数值。

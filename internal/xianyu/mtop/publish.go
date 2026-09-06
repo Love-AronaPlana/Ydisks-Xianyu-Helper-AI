@@ -80,20 +80,7 @@ func sanitizeMTopRet(ret []string) []string {
 
 // isPublishTokenFailure 判断发布流程是否因 MTOP Token 过期或刷新失败而终止。
 func isPublishTokenFailure(err error) bool {
-	if IsMTopTokenExpiredErr(err) {
-		return true
-	}
-	// message 兼容 Token 刷新失败的外层包装，避免把发布认证失败降级为未知错误。
-	message := strings.ToLower(errString(err))
-	return strings.Contains(message, "token") && strings.Contains(message, "刷新")
-}
-
-// errString 返回错误文本；nil 错误转换为空字符串以便失败路径安全判断。
-func errString(err error) string {
-	if err == nil {
-		return ""
-	}
-	return err.Error()
+	return IsMTopTokenExpiredErr(err)
 }
 
 // PublishImage 用于本次流程后续判断的发布图片

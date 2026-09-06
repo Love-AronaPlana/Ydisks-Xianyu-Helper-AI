@@ -81,6 +81,8 @@ git diff --check
 
 ## 后续窄范围安全修复记录
 
+- 2026-09-06（本地修复，未发布）：修复 MTOP 错误响应调整造成的五项错误处理回归。确认发货普通业务失败恢复为 `ok/ret` 确定性结果，避免被 automation 当作远端动作不确定并保留非 2xx `FAIL_BIZ_*` 的业务语义；登录状态和 Token 刷新先处理可恢复的 Session、Token 和风控 ret，非 2xx 风控保留验证 URL；发布流程仅依据类型化 Token 错误映射 `auth_expired`，不再把刷新阶段网络、HTTP、取消或风控错误误报为认证过期；`MTopResponseError` 增加底层错误链，保留 `errors.Is/errors.As` 能力且不泄露敏感文本。补充真实本地 HTTP 响应、上层调用契约、非 2xx 状态、验证码 URL、发布错误分类、JSON 解析错误链和脱敏断言。未修改冻结 CAPTCHA、HTTP/OpenAPI、数据库或前端行为；架构门禁、注释门禁和历史基线保持不变。`make check`、全库 `go test ./... -count=1`、`make cover` 通过；Go statement 覆盖率 81.5%，MTOP 包 89.9%，无真实账号和外部平台调用例外。`golangci-lint` 报告 0 issues，仅保留仓库外 `Ydisks-Xianyu-Helper-multi-spec` worktree 文件缺失导致的既有 generated-file-filter warning。
+
 - 2026-09-05（本地修复，未发布）：修复再次审查确认的两项订单同步回归。恢复写入把平台 `unknown` 当作未提供状态，防止同账号软删除恢复和历史错绑修正覆盖本地已完成状态；会话匹配始终同时查询裸买家标识与 `@goofish` 后缀，保留候选歧义及账号、商品隔离。补充真实 SQLite 恢复和重复同步测试、状态转换单测及三方言会话匹配用例。无需迁移或契约变更，冻结 CAPTCHA、六阶段状态、注释基线和架构门禁不变；本轮验证记录见 `order-sync-ownership-fix-plan.md` 第 8 节。
 
 - 2026-09-05（本地修复，未发布）：修复未提交内容审查确认的五项回归。规则删除保护补齐部分发送后的 `[safe_retry]` 与 `action_started` 未知结果，判定与 00043 升级清理一致；联系人分页允许向历史递减，按已见游标及页数预算阻止停滞和循环；订单同步在凭证锁外补联系人，重新持锁后复核取消、凭证及发现代次，再执行本地提交。通知编辑在脱敏配置加载完成后才开放表单，并隔离关闭、新建和切换后的旧响应；兼容旧版 SMTP 覆盖，默认通过新增可选 `email_recipient` 更新语义保留所有服务端 SMTP 字段及秘密，仅在用户选择重新配置时替换完整配置。同步更新 OpenAPI、生成类型、真实 handler 契约、前端适配器及嵌入资源。六阶段状态、冻结 CAPTCHA、白名单和注释基线保持不变。验证命令、覆盖率和已知基线例外见 `order-sync-ownership-fix-plan.md` 第 7 节。

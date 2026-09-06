@@ -140,7 +140,7 @@ func (c *ClientImpl) adjustOrderPriceOnce(ctx context.Context, cookiesStr, order
 	// raw、err 分别是响应正文和读取错误。
 	raw, err := readMTopBody(resp)
 	if err != nil {
-		return false, nil, updated, c.mtopResponseFailure("订单改价接口", resp.StatusCode, nil, fmt.Sprintf("读取响应失败: %v", err))
+		return false, nil, updated, c.mtopResponseFailureWithCause("订单改价接口", resp.StatusCode, nil, "读取响应失败", err)
 	}
 	// res 是改价响应的最小解析结构；data.success 是平台的业务成功标志。
 	var res struct {
@@ -151,7 +151,7 @@ func (c *ClientImpl) adjustOrderPriceOnce(ctx context.Context, cookiesStr, order
 	}
 	if // err 是响应 JSON 解析错误。
 	err := json.Unmarshal(raw, &res); err != nil {
-		return false, nil, updated, c.mtopResponseFailure("订单改价接口", resp.StatusCode, nil, fmt.Sprintf("JSON 解析失败: %v", err))
+		return false, nil, updated, c.mtopResponseFailureWithCause("订单改价接口", resp.StatusCode, nil, "JSON 解析失败", err)
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return false, res.Ret, updated, c.mtopResponseFailure("订单改价接口", resp.StatusCode, res.Ret, "HTTP 状态异常")

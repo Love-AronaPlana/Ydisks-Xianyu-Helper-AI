@@ -1,7 +1,9 @@
 package mtop
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"testing"
 )
 
@@ -26,6 +28,20 @@ func TestPublishPayloadBuilders(t *testing.T) {
 	if // got 用于本次流程后续判断的got
 	got := postageDTO(PublishItemRequest{PostageMode: "distance"}); got["templateId"] != "-100" {
 		t.Fatalf("distance postage = %#v", got)
+	}
+}
+
+// TestPublishTokenFailureUsesTypedClassification 验证发布错误只接受统一 Token 类型，不依赖可变的错误文本。
+func TestPublishTokenFailureUsesTypedClassification(t *testing.T) {
+	// tokenErr 保存统一 Token 过期错误，代表可以安全刷新后重试的错误。
+	tokenErr := &MTopResponseError{Kind: MTopErrorTokenExpired, API: "publish"}
+	if !isPublishTokenFailure(fmt.Errorf("外层包装: %w", tokenErr)) {
+		t.Fatal("统一 Token 错误应被识别")
+	}
+	// canceledErr 模拟“Token 过期且刷新失败”文本中包装了取消错误的情况。
+	canceledErr := fmt.Errorf("publish Token 过期且刷新失败: %w", context.Canceled)
+	if isPublishTokenFailure(canceledErr) {
+		t.Fatal("取消错误不能因错误文本包含 Token 和刷新而被归类为认证过期")
 	}
 }
 

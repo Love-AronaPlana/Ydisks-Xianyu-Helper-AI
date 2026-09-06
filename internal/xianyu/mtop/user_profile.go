@@ -102,7 +102,7 @@ func (c *ClientImpl) fetchUserProfileOnce(ctx context.Context, cookiesStr string
 	// raw、err 用于本次流程后续判断的raw、err
 	raw, err := readMTopBody(resp)
 	if err != nil {
-		return nil, nil, updated, c.mtopResponseFailure("账号资料接口", resp.StatusCode, nil, fmt.Sprintf("读取响应失败: %v", err))
+		return nil, nil, updated, c.mtopResponseFailureWithCause("账号资料接口", resp.StatusCode, nil, "读取响应失败", err)
 	}
 
 	// decoded 用于本次流程后续判断的decoded
@@ -112,7 +112,7 @@ func (c *ClientImpl) fetchUserProfileOnce(ctx context.Context, cookiesStr string
 	}
 	if // err 用于本次流程后续判断的err
 	err := json.Unmarshal(raw, &decoded); err != nil {
-		return nil, nil, updated, c.mtopResponseFailure("账号资料接口", resp.StatusCode, nil, fmt.Sprintf("JSON 解析失败: %v", err))
+		return nil, nil, updated, c.mtopResponseFailureWithCause("账号资料接口", resp.StatusCode, nil, "JSON 解析失败", err)
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return nil, decoded.Ret, updated, c.mtopResponseFailure("账号资料接口", resp.StatusCode, decoded.Ret, "HTTP 状态异常")

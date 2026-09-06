@@ -57,6 +57,10 @@ func (c *ClientImpl) ConsignContextWithDelivery(ctx context.Context, cookiesStr,
 				return true, ret, currentCookies, nil
 			}
 			requestErr = c.mtopResponseFailure("确认发货接口", http.StatusOK, ret, "平台 ret 未包含 SUCCESS")
+			// kind、classified 保存普通业务错误分类及其识别结果。
+			if kind, classified := MTopErrorKindOf(requestErr); classified && kind == MTopErrorBusiness {
+				return false, ret, currentCookies, nil
+			}
 			if !IsMTopTokenExpiredErr(requestErr) {
 				return false, ret, currentCookies, requestErr
 			}
@@ -151,7 +155,7 @@ func (c *ClientImpl) consignOnce(ctx context.Context, cookiesStr, orderID, trade
 	// raw、err 用于本次流程后续判断的raw、err
 	raw, err := readMTopBody(resp)
 	if err != nil {
-		return false, nil, updated, c.mtopResponseFailure("确认发货接口", resp.StatusCode, nil, fmt.Sprintf("读取响应失败: %v", err))
+		return false, nil, updated, c.mtopResponseFailureWithCause("确认发货接口", resp.StatusCode, nil, "读取响应失败", err)
 	}
 	// res 用于本次流程后续判断的响应
 	var res struct {
@@ -159,10 +163,15 @@ func (c *ClientImpl) consignOnce(ctx context.Context, cookiesStr, orderID, trade
 	}
 	if // err 用于本次流程后续判断的err
 	err := json.Unmarshal(raw, &res); err != nil {
-		return false, nil, updated, c.mtopResponseFailure("确认发货接口", resp.StatusCode, nil, fmt.Sprintf("JSON 解析失败: %v", err))
+		return false, nil, updated, c.mtopResponseFailureWithCause("确认发货接口", resp.StatusCode, nil, "JSON 解析失败", err)
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return false, res.Ret, updated, c.mtopResponseFailure("确认发货接口", resp.StatusCode, res.Ret, "HTTP 状态异常")
+		// failure 保存非业务型非 2xx 响应的统一错误。
+		failure := c.mtopResponseFailure("确认发货接口", resp.StatusCode, res.Ret, "HTTP 状态异常")
+		if isMTopBusinessRet(res.Ret) {
+			return false, res.Ret, updated, nil
+		}
+		return false, res.Ret, updated, failure
 	}
 	// r 表示当前遍历过程中的r
 	for _, r := range res.Ret {

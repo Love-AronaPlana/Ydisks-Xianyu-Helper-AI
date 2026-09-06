@@ -166,7 +166,7 @@ func (c *ClientImpl) fetchSoldOrdersPageOnce(ctx context.Context, cookies string
 	// raw、err 保存受大小上限保护的响应体和读取错误；正文仅用于解析，禁止回显。
 	raw, err := readMTopBody(resp)
 	if err != nil {
-		return nil, c.mtopResponseFailure("订单列表接口", resp.StatusCode, nil, fmt.Sprintf("读取响应失败: %v", err))
+		return nil, c.mtopResponseFailureWithCause("订单列表接口", resp.StatusCode, nil, "读取响应失败", err)
 	}
 	// decoded 仅接收现有 data.module 结构，不推测其他平台格式。
 	var decoded struct {
@@ -180,7 +180,7 @@ func (c *ClientImpl) fetchSoldOrdersPageOnce(ctx context.Context, cookies string
 	}
 	// decodeErr 保存 JSON 语法或结构错误，错误值可能含平台输入，不能直接传播。
 	if decodeErr := json.Unmarshal(raw, &decoded); decodeErr != nil {
-		return nil, c.mtopResponseFailure("订单列表接口", resp.StatusCode, nil, fmt.Sprintf("JSON 解析失败: %v", decodeErr))
+		return nil, c.mtopResponseFailureWithCause("订单列表接口", resp.StatusCode, nil, "JSON 解析失败", decodeErr)
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return nil, c.mtopResponseFailure("订单列表接口", resp.StatusCode, decoded.Ret, "HTTP 状态异常")

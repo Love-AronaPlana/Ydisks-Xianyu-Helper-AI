@@ -76,6 +76,42 @@ func TestCheckLoginStatusTokenRefreshed(t *testing.T) {
 	}
 }
 
+// TestCheckLoginStatusNon2xxSessionStillDrivesRecovery 验证非 2xx 的 Session ret 仍进入登录状态机。
+func TestCheckLoginStatusNon2xxSessionStillDrivesRecovery(t *testing.T) {
+	// server 返回可操作的 Session 失效 ret，但使用非 2xx HTTP 状态模拟平台响应。
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprint(w, `{"ret":["FAIL_SYS_SESSION_EXPIRED::Session过期"],"data":{}}`)
+	}))
+	defer server.Close()
+
+	// client 保存注入本地测试端点的 MTOP 客户端。
+	client := &ClientImpl{HTTPClient: server.Client(), LoginUserURL: server.URL}
+	// result、err 保存登录状态检查结果及调用错误。
+	result, err := client.CheckLoginStatusContext(context.Background(), consignCookies)
+	if err != nil || result == nil || result.Status != LoginStatusSessionExpired {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+}
+
+// TestCheckLoginStatusNon2xxGenericFailureRemainsHTTPError 验证没有可操作 ret 的非 2xx 仍保持 HTTP 错误。
+func TestCheckLoginStatusNon2xxGenericFailureRemainsHTTPError(t *testing.T) {
+	// server 返回无法驱动登录恢复的普通失败 ret。
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		fmt.Fprint(w, `{"ret":["FAIL_SYS_GATEWAY::网关错误"],"data":{}}`)
+	}))
+	defer server.Close()
+
+	// client 保存注入本地测试端点的 MTOP 客户端。
+	client := &ClientImpl{HTTPClient: server.Client(), LoginUserURL: server.URL}
+	// err 保存非 2xx 普通失败。
+	_, err := client.CheckLoginStatusContext(context.Background(), consignCookies)
+	if err == nil || !strings.Contains(err.Error(), "HTTP 502") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
 // TestCheckLoginStatusFailureMessageIncludesPlatformReason 验证登录态失败状态保留平台错误码和原因，供前端与日志排障。
 func TestCheckLoginStatusFailureMessageIncludesPlatformReason(t *testing.T) {
 	// srv 返回普通业务失败，不触发 Token 自动恢复状态。

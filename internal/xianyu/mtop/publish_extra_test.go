@@ -261,7 +261,7 @@ func TestPublishItemUploadImageFailure(t *testing.T) {
 	}
 }
 
-// TestPublishItemRecommendCategoryFailure: 类目推荐失败。
+// TestPublishItemRecommendCategoryRefreshFailureRemainsTyped: 类目推荐 Token 刷新阶段的 HTTP 失败不应伪装成认证过期。
 func TestPublishItemRecommendCategoryFailure(t *testing.T) {
 	// png1 用于本次流程后续判断的png1
 	png1 := tinyPNG(t)
@@ -290,8 +290,8 @@ func TestPublishItemRecommendCategoryFailure(t *testing.T) {
 	}
 	// pe 用于本次流程后续判断的pe
 	var pe *PublishError
-	if !errors.As(err, &pe) || pe.Code != PublishErrorTokenExpired {
-		t.Fatalf("err=%v want PublishErrorTokenExpired", err)
+	if errors.As(err, &pe) || !strings.Contains(err.Error(), "HTTP 404") {
+		t.Fatalf("err=%v want underlying HTTP refresh failure", err)
 	}
 }
 
@@ -499,7 +499,7 @@ func TestPublishVirtualItemUsesElectronicMaterialsWhenRecommendationIsEmpty(t *t
 	}
 }
 
-// TestPublishItemFinalPublishFailure: 发布接口返回 token 过期错误。
+// TestPublishItemFinalPublishRefreshFailureRemainsTyped: 最终发布 Token 刷新阶段的 HTTP 失败不应伪装成认证过期。
 func TestPublishItemFinalPublishFailure(t *testing.T) {
 	// png1 用于本次流程后续判断的png1
 	png1 := tinyPNG(t)
@@ -534,8 +534,8 @@ func TestPublishItemFinalPublishFailure(t *testing.T) {
 	}
 	// pe 用于本次流程后续判断的pe
 	var pe *PublishError
-	if !errors.As(err, &pe) || pe.Code != PublishErrorTokenExpired {
-		t.Fatalf("err=%v want PublishErrorTokenExpired", err)
+	if errors.As(err, &pe) || !strings.Contains(err.Error(), "HTTP 404") {
+		t.Fatalf("err=%v want underlying HTTP refresh failure", err)
 	}
 }
 

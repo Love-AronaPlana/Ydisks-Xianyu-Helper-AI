@@ -115,7 +115,7 @@ func (c *ClientImpl) detectItemMultiSpecOnce(ctx context.Context, cookies, itemI
 	// raw、err 用于本次流程后续判断的raw、err
 	raw, err := readMTopBody(resp)
 	if err != nil {
-		return false, c.mtopResponseFailure("商品详情接口", resp.StatusCode, nil, fmt.Sprintf("读取响应失败: %v", err))
+		return false, c.mtopResponseFailureWithCause("商品详情接口", resp.StatusCode, nil, "读取响应失败", err)
 	}
 	// decoded 用于本次流程后续判断的decoded
 	var decoded struct {
@@ -124,7 +124,7 @@ func (c *ClientImpl) detectItemMultiSpecOnce(ctx context.Context, cookies, itemI
 	}
 	if // err 用于本次流程后续判断的err
 	err := json.Unmarshal(raw, &decoded); err != nil {
-		return false, c.mtopResponseFailure("商品详情接口", resp.StatusCode, nil, fmt.Sprintf("JSON 解析失败: %v", err))
+		return false, c.mtopResponseFailureWithCause("商品详情接口", resp.StatusCode, nil, "JSON 解析失败", err)
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return false, c.mtopResponseFailure("商品详情接口", resp.StatusCode, decoded.Ret, "HTTP 状态异常")

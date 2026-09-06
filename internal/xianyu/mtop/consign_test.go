@@ -95,7 +95,7 @@ func TestConsignWrapper(t *testing.T) {
 	}
 }
 
-// TestConsignRetFailure: 非 token 过期的失败 ret，不重试，并返回平台错误码和原因。
+// TestConsignRetFailure: 普通业务失败由 ok/ret 表达，不应被误判为远端执行不确定。
 func TestConsignRetFailure(t *testing.T) {
 	// requests 用于本次流程后续判断的请求列表
 	var requests atomic.Int32
@@ -110,11 +110,29 @@ func TestConsignRetFailure(t *testing.T) {
 	client := &ClientImpl{HTTPClient: server.Client(), ConsignURL: server.URL + "/"}
 	// ok、ret、err 用于本次流程后续判断的ok、ret、err
 	ok, ret, _, err := client.ConsignContext(context.Background(), consignCookies, "order-1")
-	if err == nil || ok || len(ret) == 0 || !strings.Contains(err.Error(), "订单状态错误") {
+	if err != nil || ok || len(ret) == 0 || !strings.Contains(ret[0], "订单状态错误") {
 		t.Fatalf("ok=%v ret=%v err=%v", ok, ret, err)
 	}
 	if requests.Load() != 1 {
 		t.Fatalf("requests=%d want 1（非 token 过期不应重试）", requests.Load())
+	}
+}
+
+// TestConsignBusinessFailureOnNon2xxPreservesDeterministicResult 验证有效 MTOP 业务错误不因 HTTP 状态而变成不确定动作。
+func TestConsignBusinessFailureOnNon2xxPreservesDeterministicResult(t *testing.T) {
+	// server 返回带业务 ret 的非 2xx 响应，模拟平台网关状态与 MTOP 业务结果并存的情况。
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `{"ret":["FAIL_BIZ_ORDER_STATUS_ERROR::订单状态错误"]}`)
+	}))
+	defer server.Close()
+
+	// client 保存注入本地测试端点的 MTOP 客户端。
+	client := &ClientImpl{HTTPClient: server.Client(), ConsignURL: server.URL + "/"}
+	// ok、ret、updated、err 保存确认发货的确定性业务结果。
+	ok, ret, updated, err := client.ConsignContext(context.Background(), consignCookies, "order-1")
+	if err != nil || ok || len(ret) == 0 || !strings.Contains(ret[0], "订单状态错误") {
+		t.Fatalf("ok=%v ret=%v updated=%q err=%v", ok, ret, updated, err)
 	}
 }
 
