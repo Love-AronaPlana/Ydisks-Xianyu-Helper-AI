@@ -7505,6 +7505,10 @@ components:
         postage_mode: {type: string}
         postage: {type: string}
         location: {type: string}
+        category_id: {type: string, description: 可选的闲鱼类目主键}
+        category_name: {type: string, description: 可选的闲鱼类目名称}
+        channel_category_id: {type: string, description: 可选的闲鱼频道类目主键}
+        tb_category_id: {type: string, description: 可选的淘宝类目主键}
         images:
           type: array
           items: {type: string, format: binary}

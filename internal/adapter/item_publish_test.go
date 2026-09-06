@@ -73,6 +73,33 @@ func TestItemPublishPortRejectsUnsupportedCategoryRecommendation(t *testing.T) {
 	}
 }
 
+// TestItemPublishPortMapsPreferredCategory 验证应用层类目会完整转换为 MTOP 发布请求。
+func TestItemPublishPortMapsPreferredCategory(t *testing.T) {
+	// store、cleanup 保存当前测试使用的 SQLite 存储及清理函数。
+	store, cleanup := newAdapterTestStore(t)
+	defer cleanup()
+	// receivedCategory 保存适配器转换后的 MTOP 类目。
+	var receivedCategory *mtop.PublishCategory
+	// client 是检查人工类目映射结果的平台客户端替身。
+	client := itemPublishClientStub{publish: func(_ context.Context, _ string, request mtop.PublishItemRequest) (*mtop.PublishItemResult, error) {
+		receivedCategory = request.PreferredCategory
+		return &mtop.PublishItemResult{ItemID: "category-item", Title: "类目商品"}, nil
+	}}
+	// port 是绑定测试数据库和平台替身的商品发布端口。
+	port := NewItemPublishPort(store, func() mtop.Client { return client }, nil, nil, nil)
+	// outcome、err 保存带人工类目发布的结果。
+	outcome, err := port.Publish(context.Background(), itemapp.PublishInput{
+		UserID: 1, CookieID: "cid", Title: "类目商品", PriceCents: 100, Quantity: 1,
+		Category: &itemapp.PublishCategory{CatID: "5001", CatName: "虚拟服务", ChannelCatID: "6001", TBCatID: "7001"},
+	})
+	if err != nil || outcome.Result == nil || receivedCategory == nil {
+		t.Fatalf("人工类目发布失败: outcome=%+v err=%v category=%+v", outcome, err, receivedCategory)
+	}
+	if receivedCategory.CatID != "5001" || receivedCategory.CatName != "虚拟服务" || receivedCategory.ChannelCatID != "6001" || receivedCategory.TBCatID != "7001" {
+		t.Fatalf("人工类目转换错误: %+v", receivedCategory)
+	}
+}
+
 // TestItemPublishPortReleasesCredentialLockDuringRemoteCall 验证单商品发布远端调用期间不占用凭证锁。
 func TestItemPublishPortReleasesCredentialLockDuringRemoteCall(t *testing.T) {
 	// store、cleanup 保存当前测试使用的 SQLite 存储及清理函数。

@@ -108,6 +108,12 @@ func (s *Server) publishItem(w http.ResponseWriter, r *http.Request) {
 		}
 		selectedLocation = &location
 	}
+	// applicationCategory 是 HTTP 类目字段转换后的应用模型；为空时保留自动识别和电子资料兜底。
+	applicationCategory, categoryErr := parseItemPublishCategory(r)
+	if categoryErr != nil {
+		writeErr(w, http.StatusBadRequest, categoryErr.Error())
+		return
+	}
 	// applicationLocation 是 HTTP DTO 转换后的应用发货地模型。
 	var applicationLocation *itemapp.Location
 	if selectedLocation != nil {
@@ -127,7 +133,8 @@ func (s *Server) publishItem(w http.ResponseWriter, r *http.Request) {
 	outcome, callErr := s.itemSinglePublishApplication().PublishSingle(r.Context(), itemapp.PublishInput{
 		UserID: userID, CookieID: cookieID, Title: title, Description: description,
 		PriceCents: priceCents, OriginalPriceCents: origCents, Quantity: quantity,
-		PostageMode: postageMode, PostageCents: postageCents, Location: applicationLocation, Images: applicationImages,
+		PostageMode: postageMode, PostageCents: postageCents, Location: applicationLocation,
+		Category: applicationCategory, Images: applicationImages,
 	})
 	// res 用于本次流程后续判断的响应
 	res := outcome.Result
@@ -181,6 +188,34 @@ func (s *Server) publishItem(w http.ResponseWriter, r *http.Request) {
 		ItemImage: res.ImageURL, ItemTitle: res.Title, ItemPrice: res.PriceText, Quantity: res.Quantity,
 		CategoryID: res.CategoryID, CategoryName: res.CategoryName,
 	})
+}
+
+// parseItemPublishCategory 解析单商品发布的可选类目，并拒绝不完整的覆盖配置。
+func parseItemPublishCategory(r *http.Request) (*itemapp.PublishCategory, error) {
+	// category 保存 multipart 字段组成的类目 DTO。
+	category := itemPublishCategoryRequest{
+		CatID: strings.TrimSpace(r.FormValue("category_id")), CatName: strings.TrimSpace(r.FormValue("category_name")),
+		ChannelCatID: strings.TrimSpace(r.FormValue("channel_category_id")), TBCatID: strings.TrimSpace(r.FormValue("tb_category_id")),
+	}
+	if category.CatID == "" && category.CatName == "" && category.ChannelCatID == "" && category.TBCatID == "" {
+		return nil, nil
+	}
+	if category.CatID == "" || category.CatName == "" || category.ChannelCatID == "" {
+		return nil, errors.New("商品类目信息不完整，请同时提供类目 ID、类目名称和频道类目 ID")
+	}
+	return &itemapp.PublishCategory{CatID: category.CatID, CatName: category.CatName, ChannelCatID: category.ChannelCatID, TBCatID: category.TBCatID}, nil
+}
+
+// itemPublishCategoryRequest 是单商品 multipart 请求中的类目字段 DTO。
+type itemPublishCategoryRequest struct {
+	// CatID 是闲鱼类目主键。
+	CatID string
+	// CatName 是闲鱼类目名称。
+	CatName string
+	// ChannelCatID 是闲鱼频道类目主键。
+	ChannelCatID string
+	// TBCatID 是可选的淘宝类目主键。
+	TBCatID string
 }
 
 // readPublishImages 封装read发布Images业务协调。

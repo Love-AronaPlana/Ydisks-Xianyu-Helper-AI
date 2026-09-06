@@ -90,6 +90,18 @@ type Location struct {
 	Province string `json:"province"`
 }
 
+// PublishCategory 是单商品发布时可人工指定的闲鱼类目；未指定时由平台推荐并使用电子资料兜底。
+type PublishCategory struct {
+	// CatID 是闲鱼类目主键。
+	CatID string
+	// CatName 是闲鱼类目名称。
+	CatName string
+	// ChannelCatID 是闲鱼频道类目主键。
+	ChannelCatID string
+	// TBCatID 是可选的淘宝类目主键。
+	TBCatID string
+}
+
 // PublishInput 是单商品发布用例输入，携带已由 HTTP 层验证的业务字段。
 type PublishInput struct {
 	// UserID 是发起发布操作的用户标识。
@@ -112,6 +124,8 @@ type PublishInput struct {
 	PostageCents int64
 	// Location 是可选的发货地。
 	Location *Location
+	// Category 是用户通过类目推荐选中的类目；为空时保留自动推荐和电子资料兜底策略。
+	Category *PublishCategory
 	// Images 是待上传的商品图片。
 	Images []Image
 }

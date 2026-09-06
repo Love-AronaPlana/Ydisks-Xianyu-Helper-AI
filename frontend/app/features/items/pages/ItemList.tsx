@@ -121,6 +121,11 @@ const ItemList: React.FC<ItemListProps> = ({ onConfigureDelivery }) => {
     setPublishLocations,
     publishLocation,
     setPublishLocation,
+    publishCategoryKeyword,
+    setPublishCategoryKeyword,
+    publishCategoryLoading,
+    publishCategory,
+    setPublishCategory,
     selectedItem,
     editForm,
     setEditForm,
@@ -135,6 +140,7 @@ const ItemList: React.FC<ItemListProps> = ({ onConfigureDelivery }) => {
     handleDelete,
     handleAddItem,
     handlePublishItem,
+    handleRecommendPublishCategory,
     downloadPublishTemplate,
     openAddModal,
     openPublishModal,
@@ -470,6 +476,8 @@ const ItemList: React.FC<ItemListProps> = ({ onConfigureDelivery }) => {
                 <label className="block text-sm font-bold text-gray-700">发布账号</label>
                 <select className="w-full ios-input px-4 py-3 rounded-xl" value={publishForm.cookie_id} onChange={/* 当前回调处理用户交互或异步状态变化。 */ e => {
 				  setPublishForm({...publishForm, cookie_id: e.target.value});
+				  setPublishCategoryKeyword('');
+				  setPublishCategory(null);
 				  setPublishLocations([]);
 				  setPublishLocation(null);
 				}}>
@@ -490,6 +498,24 @@ const ItemList: React.FC<ItemListProps> = ({ onConfigureDelivery }) => {
               <div className="space-y-2">
                 <label className="block text-sm font-bold text-gray-700">商品描述</label>
                 <textarea className="w-full ios-input px-4 py-3 rounded-xl h-28 resize-none" placeholder="描述会用于自动识别类目；留空时使用标题" value={publishForm.description} onChange={/* 当前回调处理用户交互或异步状态变化。 */ e => setPublishForm({...publishForm, description: e.target.value})} />
+              </div>
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 space-y-3">
+                <div>
+                  <div className="text-sm font-extrabold text-gray-900">发布类目（可选）</div>
+                  <p className="mt-1 text-xs leading-5 text-amber-800">填写关键词获取准确类目；留空时由闲鱼自动识别，识别不到时默认使用“电子资料”兜底。</p>
+                </div>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <input className="w-full ios-input rounded-xl bg-white px-4 py-3" placeholder="例如：课程资料、电子书" value={publishCategoryKeyword} onChange={/* 当前回调处理用户交互或异步状态变化。 */ e => { setPublishCategoryKeyword(e.target.value); setPublishCategory(null); }} onKeyDown={/* 当前回调处理用户交互或异步状态变化。 */ e => { if (e.key === 'Enter') { e.preventDefault(); void handleRecommendPublishCategory(); } }} />
+                  <button type="button" disabled={publishCategoryLoading || !publishForm.cookie_id || !publishCategoryKeyword.trim()} onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => void handleRecommendPublishCategory()} className="shrink-0 rounded-xl bg-amber-500 px-4 py-3 text-sm font-bold text-white hover:bg-amber-600 disabled:opacity-50">
+                    {publishCategoryLoading ? '匹配中...' : '获取类目'}
+                  </button>
+                </div>
+                {publishCategory ? (
+                  <div className="flex items-center justify-between gap-3 rounded-xl bg-white px-3 py-2 text-sm">
+                    <div><span className="font-bold text-gray-900">{publishCategory.cat_name}</span><span className="ml-2 font-mono text-xs text-gray-500">{publishCategory.cat_id} · 频道 {publishCategory.channel_cat_id}</span></div>
+                    <button type="button" className="text-xs font-bold text-gray-500 hover:text-red-600" onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => setPublishCategory(null)}>清除，使用自动识别</button>
+                  </div>
+                ) : <div className="text-xs text-gray-500">当前未指定类目，最终识别失败时会使用电子资料兜底。</div>}
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div className="space-y-2">

@@ -2243,6 +2243,14 @@ export interface components {
             postage_mode: string;
             postage: string;
             location?: string;
+            /** @description 可选的闲鱼类目主键 */
+            category_id?: string;
+            /** @description 可选的闲鱼类目名称 */
+            category_name?: string;
+            /** @description 可选的闲鱼频道类目主键 */
+            channel_category_id?: string;
+            /** @description 可选的淘宝类目主键 */
+            tb_category_id?: string;
             images: string[];
         };
         ItemPublishBatchPreviewRow: {
