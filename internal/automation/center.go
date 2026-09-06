@@ -209,6 +209,7 @@ func NewWithDependencies(store *db.Store, senders SenderProvider, logger *slog.L
 		current: func() Notifier {
 			return center.dependencies.notifier
 		},
+		logger: center.logger,
 	}
 	center.taskRunner = accountTaskCoordinator{
 		repository: newStoreAccountTaskRepository(store),

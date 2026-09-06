@@ -99,6 +99,9 @@ func (n *Notifier) Start(ctx context.Context) {
 		defer close(n.done)
 		n.runOutbox(ctx)
 	}()
+	if n.logger != nil {
+		n.logger.Info("通知 outbox worker 已启动")
+	}
 }
 
 // Wait 等待 outbox worker 随生命周期 context 退出，并兼容旧调用方。
@@ -155,6 +158,9 @@ func (n *Notifier) NotifyDelivery(accountID, buyerName, buyerID, itemID, message
 // 状态改变时保留独立通知，便于人工核对后继续执行的运行报告最终结果。
 func (n *Notifier) NotifyAutomationRun(ctx context.Context, runID int64, accountID, buyerID, itemID, status, message, chatID string) {
 	if n == nil || runID <= 0 || strings.TrimSpace(status) == "" {
+		if n != nil && n.logger != nil {
+			n.logger.Warn("忽略无效的自动化终态通知", "run_id", runID, "account_id", accountID, "status", status)
+		}
 		return
 	}
 	// idempotencyKey 绑定自动化运行主键与终态，避免恢复扫描或状态收口重试创建新 outbox 消息。
@@ -203,6 +209,9 @@ func (n *Notifier) NotifyEvent(ctx context.Context, ev NotificationEvent) {
 // notifyEvent 根据事件类型筛选渠道并发送通知；idempotencyKey 只用于 outbox 持久化去重，不能为空时必须来自稳定业务事实。
 func (n *Notifier) notifyEvent(ctx context.Context, ev NotificationEvent, idempotencyKey string) {
 	if n == nil || n.repository == nil {
+		if n != nil && n.logger != nil {
+			n.logger.Warn("通知入队跳过：通知仓储未初始化", "event_type", ev.Type, "account_id", ev.AccountID)
+		}
 		return
 	}
 	if ctx == nil {
@@ -214,7 +223,12 @@ func (n *Notifier) notifyEvent(ctx context.Context, ev NotificationEvent, idempo
 	}
 	// channels、err 用于本次流程后续判断的channels、err
 	channels, err := n.repository.AccountChannels(ctx, ev.AccountID)
-	if err != nil || len(channels) == 0 {
+	if err != nil {
+		n.logger.Error("查询通知渠道失败", "event_type", ev.Type, "account_id", ev.AccountID, "err", logsafe.Error(err))
+		return
+	}
+	if len(channels) == 0 {
+		n.logger.Info("通知事件未找到已启用渠道", "event_type", ev.Type, "account_id", ev.AccountID)
 		return
 	}
 	// full 用于本次流程后续判断的full
@@ -234,6 +248,10 @@ func (n *Notifier) notifyEvent(ctx context.Context, ev NotificationEvent, idempo
 		}
 		eligible = append(eligible, ch)
 	}
+	if len(eligible) == 0 {
+		n.logger.Info("通知事件没有匹配的订阅渠道", "event_type", ev.Type, "account_id", ev.AccountID, "channel_count", len(channels))
+		return
+	}
 	// 自动化运行终态必须先进入 outbox：即使 worker 尚未随应用生命周期启动，也不能回退到
 	// 同步网络发送，否则会绕过业务幂等键和发送成功后的 uncertain 隔离。
 	if n.started.Load() || strings.TrimSpace(idempotencyKey) != "" {
@@ -245,7 +263,9 @@ func (n *Notifier) notifyEvent(ctx context.Context, ev NotificationEvent, idempo
 		}
 		if // err 用于本次流程后续判断的err
 		err := n.repository.EnqueueOutbox(ctx, messages); err != nil {
-			n.logger.Error("持久化通知失败", "event_type", ev.Type, "err", err)
+			n.logger.Error("持久化通知失败", "event_type", ev.Type, "account_id", ev.AccountID, "channel_count", len(eligible), "err", logsafe.Error(err))
+		} else {
+			n.logger.Info("自动化通知已写入 outbox", "event_type", ev.Type, "account_id", ev.AccountID, "channel_count", len(eligible), "idempotency_key", idempotencyKey)
 		}
 		return
 	}
@@ -254,6 +274,8 @@ func (n *Notifier) notifyEvent(ctx context.Context, ev NotificationEvent, idempo
 		if // err 用于本次流程后续判断的err
 		err := n.send(ch, full); err != nil {
 			n.logger.Error("发送通知失败", "channel", ch.Type, "event_type", ev.Type, "err", logsafe.ExternalError(err))
+		} else {
+			n.logger.Info("通知已发送", "channel", ch.Type, "channel_id", ch.ID, "event_type", ev.Type)
 		}
 	}
 }
@@ -327,6 +349,8 @@ func (n *Notifier) drainOutbox(ctx context.Context) {
 			}
 		} else if !completed {
 			n.logger.Warn("通知 outbox 租约已转移", "outbox_id", message.ID)
+		} else {
+			n.logger.Info("通知 outbox 发送成功", "outbox_id", message.ID, "channel_id", message.ChannelID, "channel", channel.Type, "event_type", message.EventType, "attempt", message.AttemptCount)
 		}
 	}
 }

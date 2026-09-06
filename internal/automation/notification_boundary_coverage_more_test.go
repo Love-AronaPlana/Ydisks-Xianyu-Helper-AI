@@ -2,6 +2,7 @@ package automation
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"xianyu-go/internal/db"
@@ -22,14 +23,14 @@ func TestAutomationNotificationsCoverOptionalAndTerminalBranches(t *testing.T) {
 	// task 保存成功通知展示所需的订单事实。
 	task := Task{AccountID: "account", BuyerID: "buyer", ItemID: "item", ChatID: "chat", OrderID: "order", TriggerType: TriggerOrderPaid}
 	delivery.notifyResult(ctx, task, 2, "success", 0, "empty")
-	if len(notifier.messages()) != 0 {
-		t.Fatal("成功但没有发送内容时不应通知")
+	if len(notifier.messages()) != 1 || !strings.Contains(notifier.messages()[0], "已发送 0 条") {
+		t.Fatalf("成功终态即使 sent 为零也应通知: %v", notifier.messages())
 	}
 	delivery.notifyResult(ctx, task, 2, "success", 1, "")
 	delivery.notifyResult(ctx, Task{TriggerType: "unknown_trigger", OrderID: "order"}, 3, "failed", 0, "failed")
 	delivery.notifyRunNeedsReview(ctx, db.AutomationRun{ID: 4, CookieID: "account", BuyerID: "buyer", ItemID: "item", ChatID: "chat", OrderID: "order", TriggerType: TriggerBuyerReviewed}, "uncertain")
-	if len(notifier.messages()) != 3 {
-		t.Fatalf("终态通知数量=%d want 3", len(notifier.messages()))
+	if len(notifier.messages()) != 4 {
+		t.Fatalf("终态通知数量=%d want 4", len(notifier.messages()))
 	}
 	// nilCenter 验证 Center 兼容通知入口的空接收者保护。
 	var nilCenter *Center

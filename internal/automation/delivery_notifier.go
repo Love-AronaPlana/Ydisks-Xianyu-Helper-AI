@@ -3,6 +3,7 @@ package automation
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"xianyu-go/internal/db"
 )
@@ -11,15 +12,23 @@ import (
 type deliveryNotifier struct {
 	// current 返回构造期固定的通知器实例；为空时不发送外部通知。
 	current func() Notifier
+	// logger 记录自动化终态通知是否进入统一通知器；不记录通知正文或渠道凭据。
+	logger *slog.Logger
 }
 
-// notifyResult 根据规则执行结果发送通知，成功且实际发出内容时才发送成功通知。
+// notifyResult 根据规则执行终态发送通知；只要运行进入 success，就通知自动化已完成，避免 sent_count 为零时静默丢失结果。
 // runID 与 status 会传给持久化 outbox，防止恢复扫描对同一运行重复排队。
 func (n deliveryNotifier) notifyResult(ctx context.Context, task Task, runID int64, status string, sent int, errMsg string) {
 	// notifier 是当前可选的外部通知器。
 	notifier := n.current()
 	if notifier == nil {
+		if n.logger != nil {
+			n.logger.Warn("自动化终态通知未触发：通知器未注入", "run_id", runID, "account_id", task.AccountID, "status", status)
+		}
 		return
+	}
+	if n.logger != nil {
+		n.logger.Info("自动化终态通知已触发", "run_id", runID, "account_id", task.AccountID, "status", status, "sent_count", sent)
 	}
 	// triggerName 是面向用户展示的自动化触发类型名称。
 	triggerName := map[string]string{
@@ -32,9 +41,6 @@ func (n deliveryNotifier) notifyResult(ctx context.Context, task Task, runID int
 		triggerName = task.TriggerType
 	}
 	if status == "success" {
-		if sent <= 0 {
-			return
-		}
 		// message 是成功通知正文。
 		message := fmt.Sprintf("✅ %s成功（订单 %s，已发送 %d 条）", triggerName, task.OrderID, sent)
 		notifier.NotifyAutomationRun(ctx, runID, task.AccountID, task.BuyerID, task.ItemID, status, message, task.ChatID)
