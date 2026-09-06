@@ -25,7 +25,7 @@ const formatItemPrice = (price?: string) => {
 };
 
 // ItemList 渲染商品列表组件。
-const ItemList: React.FC<ItemListProps> = ({ onConfigureDelivery }) => {
+const ItemList: React.FC<ItemListProps> = ({ onConfigureDelivery, publishImagesEditor: ImagesEditor, publishSpecsEditor: SpecsEditor }) => {
   // [items, 解构得到当前 Hook 返回的状态和操作函数。
   const [items, setItems] = useState<Item[]>([]);
   // [shippingRules, 解构得到当前 Hook 返回的状态和操作函数。
@@ -462,7 +462,7 @@ const ItemList: React.FC<ItemListProps> = ({ onConfigureDelivery }) => {
             <div className="modal-header flex items-center justify-between">
               <div>
                 <h3 className="text-xl font-extrabold text-gray-900">发布商品到闲鱼</h3>
-                <p className="text-xs text-gray-500 mt-1">普通单规格发布；库存数量会写入闲鱼发布参数，用于判断账号库存能力。</p>
+                <p className="text-xs text-gray-500 mt-1">支持单规格和多规格；多规格按组合维护价格与库存。</p>
               </div>
               <button onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => setShowPublishModal(false)} className="p-2 rounded-xl hover:bg-gray-100 transition-colors" title="关闭">
                 <X className="w-5 h-5 text-gray-500" />
@@ -470,7 +470,7 @@ const ItemList: React.FC<ItemListProps> = ({ onConfigureDelivery }) => {
             </div>
             <div className="modal-body space-y-5">
               <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 leading-6">
-                发布时必须填写库存。若账号没有库存发布能力，后端会返回明确的“库存权限不足”错误，不会误报为普通发布失败。
+                单规格填写总库存；多规格在组合表逐行填写价格和库存。库存权限不足时会返回明确提示。
               </div>
               <div className="space-y-2">
                 <label className="block text-sm font-bold text-gray-700">发布账号</label>
@@ -492,7 +492,7 @@ const ItemList: React.FC<ItemListProps> = ({ onConfigureDelivery }) => {
                 </div>
                 <div className="space-y-2">
                   <label className="block text-sm font-bold text-gray-700">库存数量</label>
-                  <input className="w-full ios-input px-4 py-3 rounded-xl" type="number" min="1" placeholder="必须大于 0" value={publishForm.quantity} onChange={/* 当前回调处理用户交互或异步状态变化。 */ e => setPublishForm({...publishForm, quantity: e.target.value})} />
+                  {publishForm.specs.length === 0 ? <input className="w-full ios-input px-4 py-3 rounded-xl" type="number" min="1" placeholder="必须大于 0" value={publishForm.quantity} onChange={/* 当前回调处理用户交互或异步状态变化。 */ e => setPublishForm({...publishForm, quantity: e.target.value})} /> : <div className="text-sm text-slate-500">库存由下方 SKU 组合汇总</div>}
                 </div>
               </div>
               <div className="space-y-2">
@@ -517,11 +517,12 @@ const ItemList: React.FC<ItemListProps> = ({ onConfigureDelivery }) => {
                   </div>
                 ) : <div className="text-xs text-gray-500">当前未指定类目，最终识别失败时会使用电子资料兜底。</div>}
               </div>
+              {SpecsEditor && <SpecsEditor specs={publishForm.specs} skuRows={publishForm.skuRows} onChange={/* publishSpecsChangeAction 将规格编辑器的结构变化写回发布草稿。 */ (next) => setPublishForm(/* previous 保存上一次发布草稿状态。 */ previous => ({ ...previous, specs: next.specs, skuRows: next.skuRows }))} />}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                <div className="space-y-2">
+                {publishForm.specs.length === 0 && <div className="space-y-2">
                   <label className="block text-sm font-bold text-gray-700">售价</label>
                   <input className="w-full ios-input px-4 py-3 rounded-xl" placeholder="99.00" value={publishForm.price} onChange={/* 当前回调处理用户交互或异步状态变化。 */ e => setPublishForm({...publishForm, price: e.target.value})} />
-                </div>
+                </div>}
                 <div className="space-y-2">
                   <label className="block text-sm font-bold text-gray-700">原价（可选）</label>
                   <input className="w-full ios-input px-4 py-3 rounded-xl" placeholder="129.00" value={publishForm.original_price} onChange={/* 当前回调处理用户交互或异步状态变化。 */ e => setPublishForm({...publishForm, original_price: e.target.value})} />
@@ -558,30 +559,7 @@ const ItemList: React.FC<ItemListProps> = ({ onConfigureDelivery }) => {
 				  {publishLocations.map(/* 当前回调处理集合中的单个元素。 */ (item, index) => <option key={`${item.division_id}-${item.poi_id}-${index}`} value={String(index)}>{[item.province, item.city, item.area, item.poi_name].filter(Boolean).join(' ')}</option>)}
 				</select>}
 			  </div>
-              <div className="space-y-2">
-                <label className="block text-sm font-bold text-gray-700">商品图片（1-9 张）</label>
-                <label className="flex min-h-[120px] cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed border-gray-200 bg-gray-50 px-4 py-6 text-center hover:border-emerald-300 hover:bg-emerald-50/50 transition-colors">
-                  <UploadCloud className="w-8 h-8 text-emerald-600 mb-2" />
-                  <span className="text-sm font-bold text-gray-800">选择图片</span>
-                  <span className="text-xs text-gray-500 mt-1">{publishForm.images.length ? '已选择 ' + publishForm.images.length + ' 张' : '支持 JPG / PNG / GIF'}</span>
-                  <input
-                    className="hidden"
-                    type="file"
-                    accept="image/*"
-                    multiple
-                    onChange={/* 当前回调处理用户交互或异步状态变化。 */ e => setPublishForm({...publishForm, images: Array.from(e.target.files || []).slice(0, 9)})}
-                  />
-                </label>
-                {publishImagePreviews.length > 0 && (
-                  <div className="grid grid-cols-4 sm:grid-cols-6 gap-3">
-                    {publishImagePreviews.map(/* 当前回调处理集合中的单个元素。 */ (preview) => (
-                      <div key={preview.key} className="aspect-square rounded-xl bg-gray-100 overflow-hidden border border-gray-100">
-                        <img src={preview.url} alt="" className="w-full h-full object-cover" />
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
+              {ImagesEditor && <ImagesEditor images={publishForm.images} previews={publishImagePreviews} onChange={/* publishImagesChangeAction 将图片追加、删除或排序后的列表写回发布草稿。 */ (images) => setPublishForm(/* previous 保存上一次发布草稿状态。 */ previous => ({ ...previous, images }))} />}
             </div>
             <div className="modal-footer">
               <button disabled={publishing} onClick={handlePublishItem} className="w-full bg-emerald-500 hover:bg-emerald-600 disabled:opacity-60 text-white px-6 py-3.5 rounded-xl font-bold flex items-center justify-center gap-2">

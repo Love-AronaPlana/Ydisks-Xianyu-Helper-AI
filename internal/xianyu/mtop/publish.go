@@ -150,6 +150,12 @@ type PublishItemRequest struct {
 	PreferredCategory *PublishCategory
 	Location          *PublishLocation
 	Images            []PublishImage
+	// Specs 是多规格商品的规格维度；为空时按单规格发布。
+	Specs []PublishSpec
+	// SKUs 是规格组合的逐行价格和库存。
+	SKUs []PublishSKU
+	// SpecImages 是规格值图片，规格值通过 ImageIndex 引用。
+	SpecImages []PublishImage
 	// BeforePublish 在图片上传和类目准备完成后、最终商品发布请求发出前执行，可响应批次节流取消。
 	BeforePublish func(context.Context) error
 }
@@ -183,7 +189,7 @@ func (c *ClientImpl) PublishItem(ctx context.Context, cookiesStr string, req Pub
 	if strings.TrimSpace(req.Description) == "" {
 		req.Description = req.Title
 	}
-	if req.PriceCents <= 0 {
+	if len(req.Specs) == 0 && req.PriceCents <= 0 {
 		return nil, errors.New("商品价格必须大于 0")
 	}
 	if req.Quantity <= 0 {
@@ -194,6 +200,13 @@ func (c *ClientImpl) PublishItem(ctx context.Context, cookiesStr string, req Pub
 	}
 	if len(req.Images) > 9 {
 		return nil, errors.New("商品图片最多 9 张")
+	}
+	// err 表示规格、SKU 和规格图片引用的校验结果。
+	if err := validatePublishSKUs(req.Specs, req.SKUs, len(req.SpecImages)); err != nil {
+		return nil, err
+	}
+	if len(req.SKUs) > 0 {
+		req.Quantity = publishSKUQuantity(req.SKUs)
 	}
 	if req.PreferredCategory != nil && !validPublishCategory(*req.PreferredCategory) {
 		return nil, errors.New("默认类目必须同时包含类目 ID、类目名称和频道类目 ID")
@@ -217,6 +230,20 @@ func (c *ClientImpl) PublishItem(ctx context.Context, cookiesStr string, req Pub
 			currentCookies = updated
 		}
 		uploaded = append(uploaded, res)
+	}
+	// uploadedSpecImages 保存规格值图片上传后的平台地址，顺序与请求图片索引一致。
+	uploadedSpecImages := make([]uploadedImage, 0, len(req.SpecImages))
+	// img 表示当前待上传的规格值图片。
+	for _, img := range req.SpecImages {
+		// res、updated、err 保存当前规格图片的上传结果、Cookie 更新和错误。
+		res, updated, err := c.uploadPublishImage(ctx, currentCookies, img)
+		if err != nil {
+			return nil, err
+		}
+		if updated != "" {
+			currentCookies = updated
+		}
+		uploadedSpecImages = append(uploadedSpecImages, res)
 	}
 	// category 用于本次流程后续判断的分类
 	var category map[string]any
@@ -245,7 +272,7 @@ func (c *ClientImpl) PublishItem(ctx context.Context, cookiesStr string, req Pub
 			return nil, err
 		}
 	}
-	return c.publishItemOnce(ctx, currentCookies, req, uploaded, category)
+	return c.publishItemOnce(ctx, currentCookies, req, uploaded, uploadedSpecImages, category)
 }
 
 // RecommendPublishCategory 根据关键词调用闲鱼推荐接口，返回可直接用于发布的完整类目。
@@ -519,7 +546,7 @@ func validPublishLocation(loc PublishLocation) bool {
 }
 
 // publishItemOnce 封装发布商品Once业务协调。
-func (c *ClientImpl) publishItemOnce(ctx context.Context, cookiesStr string, req PublishItemRequest, images []uploadedImage, category map[string]any) (*PublishItemResult, error) {
+func (c *ClientImpl) publishItemOnce(ctx context.Context, cookiesStr string, req PublishItemRequest, images, specImages []uploadedImage, category map[string]any) (*PublishItemResult, error) {
 	// imagePayloads 用于本次流程后续判断的图片Payloads
 	imagePayloads := make([]any, 0, len(images))
 	// i、img 表示当前遍历过程中的i、img
@@ -553,6 +580,15 @@ func (c *ClientImpl) publishItemOnce(ctx context.Context, cookiesStr string, req
 		"sourceId":     "pcMainPublish",
 		"bizcode":      "pcMainPublish",
 		"publishScene": "pcMainPublish",
+	}
+	if len(req.Specs) > 0 {
+		data["itemProperties"] = publishPropertiesPayload(req.Specs, specImages)
+		data["itemSkuList"] = publishSKUListPayload(req.SKUs)
+		// propertyImages 保存规格值图片的官方引用列表。
+		propertyImages := publishPropertyImageList(req.Specs, specImages)
+		if len(propertyImages) > 0 {
+			data["propertyImageList"] = propertyImages
+		}
 	}
 	if req.Location != nil {
 		if !validPublishLocation(*req.Location) {
@@ -653,30 +689,6 @@ func setBrowserHeaders(req *http.Request, cookiesStr string) {
 	req.Header.Set("origin", "https://www.goofish.com")
 	req.Header.Set("referer", "https://www.goofish.com/")
 	req.Header.Set("cookie", cookiesStr)
-}
-
-// publishImagePayload 封装发布图片请求载荷业务协调。
-func publishImagePayload(img uploadedImage, major bool) map[string]any {
-	return map[string]any{
-		"extraInfo":  map[string]any{"isH": "false", "isT": "false", "raw": "false"},
-		"isQrCode":   false,
-		"url":        img.URL,
-		"heightSize": img.Height,
-		"widthSize":  img.Width,
-		"major":      major,
-		"type":       0,
-		"status":     "done",
-	}
-}
-
-// publishPriceDTO 封装发布PriceDTO业务协调。
-func publishPriceDTO(req PublishItemRequest) map[string]any {
-	// out 用于本次流程后续判断的out
-	out := map[string]any{"priceInCent": strconv.FormatInt(req.PriceCents, 10)}
-	if req.OriginalPriceCents > 0 {
-		out["origPriceInCent"] = strconv.FormatInt(req.OriginalPriceCents, 10)
-	}
-	return out
 }
 
 // postageDTO 封装postageDTO业务协调。
