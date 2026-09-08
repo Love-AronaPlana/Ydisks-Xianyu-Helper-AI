@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"errors"
 
 	"xianyu-go/internal/db"
 )
@@ -45,7 +46,12 @@ func (r storeRepository) ListOwnedIDs(ctx context.Context, userID int64) ([]stri
 
 // GetOwnerID 委托只读账号归属查询。
 func (r storeRepository) GetOwnerID(ctx context.Context, accountID string) (int64, error) {
-	return r.store.Cookies.GetOwnerID(ctx, accountID)
+	// ownerID 和 err 保存账号归属查询结果；账号已删除属于正常缺失，不应关闭其他管理订阅。
+	ownerID, err := r.store.Cookies.GetOwnerID(ctx, accountID)
+	if errors.Is(err, db.ErrNotFound) {
+		return 0, nil
+	}
+	return ownerID, err
 }
 
 // SetSessionVisible 委托聊天会话可见状态更新，隐藏会话仍保留本地历史消息。

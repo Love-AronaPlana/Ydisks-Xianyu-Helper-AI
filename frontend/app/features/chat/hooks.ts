@@ -151,6 +151,8 @@ export const useChat = (): UseChatResult => {
   const activeAccountRef = useRef('');
   // activeChatRef 供实时回调读取最新会话。
   const activeChatRef = useRef('');
+  // sessionsByAccountRef 保存最近一次已提交的本地会话快照，实时消息只用它判断是否允许平台补齐。
+  const sessionsByAccountRef = useRef<SessionsByAccount>({});
   // scrollRef 指向消息滚动容器。
   const scrollRef = useRef<HTMLDivElement | null>(null);
   // scrollContextRef 保存滚动上下文。
@@ -187,11 +189,21 @@ export const useChat = (): UseChatResult => {
 	const deleteSequence = useRef(0);
   // deleteController 保存当前会话删除请求控制器，生命周期由本 Hook 独占。
   const deleteController = useRef<AbortController | null>(null);
-	// suppressAutoSelectRef 表示本地删除恢复期间不应自动选择新出现的首个会话。
-	const suppressAutoSelectRef = useRef(false);
+	// suppressAutoSelectAccountRef 保存删除当前会话后禁止自动选择的账号，直到用户主动选择新会话。
+	const suppressAutoSelectAccountRef = useRef('');
+	// deletingAccountIDRef 保存正在删除的账号，供实时事件同步判断删除隔离边界。
+	const deletingAccountIDRef = useRef('');
+	// deletingSessionIDRef 保存正在删除的会话，目标实时事件在删除收口前不得触发平台刷新。
+	const deletingSessionIDRef = useRef('');
+	// deletionNeedsLocalReloadRef 记录删除隔离期间是否收到目标事件，收口后只追加一次本地读取。
+	const deletionNeedsLocalReloadRef = useRef(false);
 
   useEffect(/* 当前回调同步 React 副作用和资源生命周期。 */ () => { activeAccountRef.current = activeAccountID; }, [activeAccountID]);
-  useEffect(/* 当前回调同步 React 副作用和资源生命周期。 */ () => { activeChatRef.current = activeChatID; }, [activeChatID]);
+  useEffect(/* 当前回调同步当前会话并在用户主动选择后解除该账号的自动选择屏蔽。 */ () => {
+    activeChatRef.current = activeChatID;
+    if (activeChatID && suppressAutoSelectAccountRef.current === activeAccountID) suppressAutoSelectAccountRef.current = '';
+  }, [activeAccountID, activeChatID]);
+  useLayoutEffect(/* 当前回调在浏览器处理下一条实时事件前同步已经提交的会话列表快照。 */ () => { sessionsByAccountRef.current = sessionsByAccount; }, [sessionsByAccount]);
   useEffect(/* 当前回调在切换账号或会话时清理只针对旧会话的发送状态收口提示。 */ () => { setSendNotice(''); }, [activeAccountID, activeChatID]);
 
   /** 刷新指定账号的联系人列表，并丢弃过期响应。 */
@@ -332,10 +344,7 @@ export const useChat = (): UseChatResult => {
     window.localStorage.setItem('ydisks.chat.account.v1', activeAccountID);
     // sessions 会话列表。
     const sessions = sessionsByAccount[activeAccountID] || [];
-    if (suppressAutoSelectRef.current) {
-      suppressAutoSelectRef.current = false;
-      return;
-    }
+    if (suppressAutoSelectAccountRef.current === activeAccountID && !activeChatRef.current) return;
     setActiveChatID(/* 当前回调处理集合中的单个元素。 */ current => sessions.some(/* 当前回调处理集合中的单个元素。 */ session => session.chat_id === current) ? current : sessions[0]?.chat_id || '');
   }, [activeAccountID, sessionsByAccount]);
 
@@ -397,6 +406,9 @@ export const useChat = (): UseChatResult => {
 	useEffect(/* 当前回调在账号切换时取消旧账号的删除请求，防止迟到响应改写新账号列表。 */ () => {
 		deleteSequence.current += 1;
 		deleteController.current?.abort();
+		deletingAccountIDRef.current = '';
+		deletingSessionIDRef.current = '';
+		deletionNeedsLocalReloadRef.current = false;
 		setDeletingChatID('');
 		setDeleteError('');
 	}, [activeAccountID]);
@@ -427,6 +439,9 @@ export const useChat = (): UseChatResult => {
     sendController.current?.abort();
 		deleteSequence.current += 1;
 		deleteController.current?.abort();
+		deletingAccountIDRef.current = '';
+		deletingSessionIDRef.current = '';
+		deletionNeedsLocalReloadRef.current = false;
   }, []);
 
   useEffect(/* 当前回调负责图片预览临时地址的生命周期清理。 */ () => {
@@ -481,14 +496,17 @@ export const useChat = (): UseChatResult => {
   const handleLiveMessage = useCallback(/* 当前回调只处理类型化聊天消息，不解析原始 WebSocket 帧。 */ (message: ChatMessage): void => {
     // accountID 保存当前实时消息所属账号，用于隔离不同闲鱼账号的会话状态。
     const accountID = message.account_id;
-    // knownInLoadedSessions 记录消息是否已经存在于当前列表，平台刷新副作用在状态更新器外启动。
-    let knownInLoadedSessions = false;
+    if (deletingAccountIDRef.current === accountID && deletingSessionIDRef.current === message.chat_id) {
+      deletionNeedsLocalReloadRef.current = true;
+      return;
+    }
+    // knownInLoadedSessions 从已提交的内存快照判断消息是否属于当前已加载会话，不依赖 React 更新器执行时机。
+    const knownInLoadedSessions = (sessionsByAccountRef.current[accountID] || []).some(/* row 保存当前参与同步会话匹配的本地行。 */ row => row.chat_id === message.chat_id);
     setSessionsByAccount(/* 当前回调在对应账号会话列表中合并最新消息与未读计数。 */ current => {
       // rows 保存当前账号已有的会话行。
       const rows = current[accountID] || [];
       // found 表示推送消息是否能匹配当前已加载会话。
       const found = rows.some(/* row 保存当前参与会话匹配的联系人行。 */ row => row.chat_id === message.chat_id);
-      knownInLoadedSessions = found;
       if (!found) {
         return current;
       }
@@ -739,17 +757,24 @@ export const useChat = (): UseChatResult => {
 		deleteController.current?.abort();
 		// controller 负责取消本次本地删除请求，避免过期响应覆盖新状态。
 		const controller = new AbortController();
-		deleteController.current = controller;
-		setDeletingChatID(chatID);
+			deleteController.current = controller;
+			deletingAccountIDRef.current = accountID;
+			deletingSessionIDRef.current = chatID;
+			deletionNeedsLocalReloadRef.current = false;
+			setDeletingChatID(chatID);
 		setDeleteError('');
 		try {
-			suppressAutoSelectRef.current = true;
-			sessionSequence.current += 1;
+				sessionSequence.current += 1;
 			contactSequence.current += 1;
 			sessionController.current?.abort();
 			contactController.current?.abort();
-			await deleteChatSession(accountID, chatID, { signal: controller.signal });
-			if (!isCurrentChatRequest(deleteSequence.current, sequence, controller.signal)) return false;
+				await deleteChatSession(accountID, chatID, { signal: controller.signal });
+				if (!isCurrentChatRequest(deleteSequence.current, sequence, controller.signal)) return false;
+				sessionSequence.current += 1;
+				contactSequence.current += 1;
+				sessionController.current?.abort();
+				contactController.current?.abort();
+				if (activeAccountRef.current === accountID && activeChatRef.current === chatID) suppressAutoSelectAccountRef.current = accountID;
 			setSessionsByAccount(/* current 保存全部账号已加载会话，只从目标账号移除已删除行。 */ current => ({
 				...current,
 				[accountID]: (current[accountID] || []).filter(/* session 是目标账号当前参与删除筛选的会话。 */ session => session.chat_id !== chatID),
@@ -774,13 +799,27 @@ export const useChat = (): UseChatResult => {
 				setError('');
 				setSendNotice('');
 			}
-			await reloadLocalSessions(accountID);
-			return true;
+				await reloadLocalSessions(accountID);
+				// needsFollowupLocalReload 保存首次本地读取期间是否又收到目标实时事件。
+				const needsFollowupLocalReload = deletionNeedsLocalReloadRef.current;
+				deletingAccountIDRef.current = '';
+				deletingSessionIDRef.current = '';
+				deletionNeedsLocalReloadRef.current = false;
+				if (needsFollowupLocalReload && isCurrentChatRequest(deleteSequence.current, sequence, controller.signal)) await reloadLocalSessions(accountID);
+				return true;
 		} catch (/* deleteRequestError 保存本次删除请求失败原因；取消和过期响应保持静默。 */ deleteRequestError) {
 			if (isCurrentChatRequest(deleteSequence.current, sequence, controller.signal) && !isChatAbortError(deleteRequestError)) {
 				setDeleteError(deleteRequestError instanceof Error ? deleteRequestError.message : '删除会话失败，请重试');
 			}
-			if (isCurrentChatRequest(deleteSequence.current, sequence, controller.signal)) await reloadLocalSessions(accountID);
+				if (isCurrentChatRequest(deleteSequence.current, sequence, controller.signal)) {
+					await reloadLocalSessions(accountID);
+					// needsFollowupLocalReload 保存失败恢复读取期间是否又收到目标实时事件。
+					const needsFollowupLocalReload = deletionNeedsLocalReloadRef.current;
+					deletingAccountIDRef.current = '';
+					deletingSessionIDRef.current = '';
+					deletionNeedsLocalReloadRef.current = false;
+					if (needsFollowupLocalReload) await reloadLocalSessions(accountID);
+				}
 			return false;
 		} finally {
 			if (isCurrentChatRequest(deleteSequence.current, sequence, controller.signal)) {

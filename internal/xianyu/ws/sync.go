@@ -5,7 +5,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -278,15 +280,56 @@ func (c *Conn) sendChatContent(ctx context.Context, myID, cid, toID string, cont
 	if err != nil {
 		return &SendError{Kind: SendUncertain, Err: err}
 	}
-	// code 和 ok 保存平台发送确认状态码及其可解析性。
-	code, ok := responseCode(response["code"])
-	if !ok || code == http.StatusRequestTimeout || code < http.StatusOK || code >= http.StatusInternalServerError {
+	// code 和 ok 保存平台发送确认状态码及其严格可解析性。
+	code, ok := strictChatSendResponseCode(response["code"])
+	if !ok {
 		return &SendError{Kind: SendUncertain, Code: code}
 	}
-	if code >= http.StatusBadRequest {
+	if code == http.StatusOK {
+		return nil
+	}
+	if code >= http.StatusBadRequest && code < http.StatusInternalServerError && code != http.StatusRequestTimeout {
 		return &SendError{Kind: SendRejected, Code: code}
 	}
-	return nil
+	return &SendError{Kind: SendUncertain, Code: code}
+}
+
+// strictChatSendResponseCode 只接受完整整数形式的聊天发送状态码，避免截断浮点数或接受带尾随字符的字符串。
+func strictChatSendResponseCode(value any) (int, bool) {
+	switch // code 是当前待严格校验的平台状态码具体类型和值。
+	code := value.(type) {
+	case int:
+		return code, true
+	case float64:
+		if math.IsNaN(code) || math.IsInf(code, 0) || code != math.Trunc(code) || code > float64(math.MaxInt) || code < float64(math.MinInt) {
+			return 0, false
+		}
+		return int(code), true
+	case json.Number:
+		// parsed 和 err 保存不允许小数形式的 JSON 整数及解析错误。
+		parsed, err := code.Int64()
+		if err != nil || int64(int(parsed)) != parsed {
+			return 0, false
+		}
+		return int(parsed), true
+	case string:
+		// raw 保存去除协议外围空白后的完整状态码文本。
+		raw := strings.TrimSpace(code)
+		if raw == "" {
+			return 0, false
+		}
+		// digit 是当前参与严格数字校验的字符，不允许符号、小数点或尾随文本。
+		for _, digit := range raw {
+			if digit < '0' || digit > '9' {
+				return 0, false
+			}
+		}
+		// parsed 和 err 保存完整十进制状态码及溢出错误。
+		parsed, err := strconv.Atoi(raw)
+		return parsed, err == nil
+	default:
+		return 0, false
+	}
 }
 
 // stripGoofish 封装stripGoofish业务协调。

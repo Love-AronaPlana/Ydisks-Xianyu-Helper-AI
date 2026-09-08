@@ -275,6 +275,12 @@ describe('useChat', /* 当前回调处理聊天加载、分页、发送和实时
       () => publishChatConnectionState('online'),
     );
     expect(hook.result.current.liveState).toBe('online');
+    await waitFor(
+      // initialPlatformRefreshAssertion 等待账号首次选中允许的平台联系人刷新完成。
+      () => expect(getSessionPageMock.mock.calls.some(/* call 是用于识别 refresh=true 的会话请求参数。 */ call => call[3] === true)).toBe(true),
+    );
+    // platformRefreshCountBeforeMessage 记录已知会话收到消息前的平台刷新次数。
+    const platformRefreshCountBeforeMessage = getSessionPageMock.mock.calls.filter(/* call 是参与平台刷新计数的会话请求参数。 */ call => call[3] === true).length;
     // incomingMessage 是实时 WebSocket 推送的入站消息。
     const incomingMessage = { ...messageFixture, id: 3, message_key: 'message-3', sent_at: 3, content: '实时消息' };
     await act(
@@ -286,6 +292,7 @@ describe('useChat', /* 当前回调处理聊天加载、分页、发送和实时
     expect(markReadMock).toHaveBeenCalledWith('account-1', 'chat-1', [
       { messageId: 'message-3', sessionId: 'chat-1', cid: 'chat-1@goofish', conversationType: 1 },
     ]);
+    expect(getSessionPageMock.mock.calls.filter(/* call 是实时消息处理后参与平台刷新计数的会话请求参数。 */ call => call[3] === true)).toHaveLength(platformRefreshCountBeforeMessage);
     await act(
       // closeAction 触发应用壳全局连接断开事件。
       () => publishChatConnectionState('offline'),
@@ -621,10 +628,67 @@ describe('useChat', /* 当前回调处理聊天加载、分页、发送和实时
 		expect(hook.result.current.retryAvailable).toBe(false);
 		expect(deleteSessionMock).toHaveBeenNthCalledWith(1, 'account-1', 'chat-2', expect.objectContaining({ signal: expect.any(AbortSignal) }));
 		expect(deleteSessionMock).toHaveBeenNthCalledWith(2, 'account-1', 'chat-1', expect.objectContaining({ signal: expect.any(AbortSignal) }));
-		hook.unmount();
-	});
+			hook.unmount();
+		});
 
-	test('删除失败保留会话并提供独立可清除错误', /* 当前回调验证确认框可在失败后保留并重试。 */ async () => {
+		test('删除期间目标实时消息只触发本地恢复且不会自动选择其他会话', /* 当前回调验证删除交错不会进入平台联系人或历史读取链路。 */ async () => {
+			// secondSession 是删除当前会话后仍保留但不能自动选中的联系人。
+			const secondSession = { ...sessionFixture, chat_id: 'chat-2', buyer_id: 'buyer-2', buyer_name: '第二位买家', unread_count: 0 };
+			// deletionCommitted 表示服务端删除替身是否已经完成，用于控制本地读取返回值。
+			let deletionCommitted = false;
+			getSessionPageMock.mockImplementation(/* _accountID、_cursor、_options、refresh 分别是会话请求定位、取消和读取目的。 */ async (_accountID, _cursor, _options, refresh) => ({
+				sessions: deletionCommitted && refresh !== true ? [secondSession] : [sessionFixture, secondSession],
+				has_more: false,
+			}));
+			// resolveDeletion 在目标实时事件进入隔离后释放删除请求。
+			let resolveDeletion: (() => void) | undefined;
+			deleteSessionMock.mockImplementationOnce(/* _accountID、_chatID、_options 是延迟删除替身无需读取的调用参数。 */ (_accountID, _chatID, _options) => new Promise(/* resolve 保存删除请求的可控完成函数。 */ resolve => {
+				resolveDeletion = /* 当前回调提交服务端删除结果并释放等待。 */ () => {
+					deletionCommitted = true;
+					resolve({ success: true });
+				};
+			}));
+			// hook 是删除与实时消息交错场景的聊天 Hook。
+			const hook = renderHook(
+				// deletingLiveMessageHookFactory 创建包含当前和备用会话的聊天 Hook。
+				() => useChat(),
+			);
+			await waitFor(
+				// activeChatAssertion 等待删除目标成为当前会话。
+				() => expect(hook.result.current.activeChatID).toBe('chat-1'),
+			);
+			await waitFor(
+				// initialPlatformRefreshAssertion 等待本次挂载唯一允许的平台刷新完成。
+				() => expect(getSessionPageMock.mock.calls.some(/* call 是用于识别 refresh=true 的会话请求参数。 */ call => call[3] === true)).toBe(true),
+			);
+			// platformRefreshCountBeforeDeletion 记录删除开始前的平台刷新次数。
+			const platformRefreshCountBeforeDeletion = getSessionPageMock.mock.calls.filter(/* call 是删除前参与平台刷新计数的会话请求参数。 */ call => call[3] === true).length;
+			// deletionPromise 保存仍在等待服务端结果的删除操作。
+			let deletionPromise: Promise<boolean> | undefined;
+			await act(
+				// startDeletionAction 启动删除但保留可控的完成时机。
+				() => { deletionPromise = hook.result.current.deleteConversation('account-1', 'chat-1'); },
+			);
+			await act(
+				// targetLiveMessageAction 在删除窗口发布目标会话实时消息。
+				() => publishChatLiveMessage({ ...messageFixture, id: 9, message_key: 'during-delete', content: '删除期间消息' }),
+			);
+			expect(getSessionPageMock.mock.calls.filter(/* call 是删除窗口内参与平台刷新计数的会话请求参数。 */ call => call[3] === true)).toHaveLength(platformRefreshCountBeforeDeletion);
+			await act(
+				// finishDeletionAction 释放删除结果并等待本地恢复读完。
+				async () => {
+					resolveDeletion?.();
+					expect(await deletionPromise).toBe(true);
+				},
+			);
+			expect(hook.result.current.activeSessions.map(/* session 是删除后仍可见但不应自动打开的会话。 */ session => session.chat_id)).toEqual(['chat-2']);
+			expect(hook.result.current.activeChatID).toBe('');
+			expect(getSessionPageMock.mock.calls.filter(/* call 是删除收口后参与平台刷新计数的会话请求参数。 */ call => call[3] === true)).toHaveLength(platformRefreshCountBeforeDeletion);
+			expect(getSessionPageMock.mock.calls.some(/* call 是验证删除恢复固定使用 refresh=false 的会话请求参数。 */ call => call[3] === false)).toBe(true);
+			hook.unmount();
+		});
+
+		test('删除失败保留会话并提供独立可清除错误', /* 当前回调验证确认框可在失败后保留并重试。 */ async () => {
 		deleteSessionMock.mockRejectedValueOnce(new Error('数据库暂时不可用'));
 		// hook 是会话删除失败场景的聊天 Hook。
 		const hook = renderHook(
