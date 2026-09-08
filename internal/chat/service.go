@@ -302,12 +302,6 @@ type Event struct {
 	Session *db.ChatSession `json:"session,omitempty"`
 }
 
-// subscriber 用于本次流程后续判断的subscriber
-type subscriber struct {
-	accounts map[string]struct{}
-	ch       chan Event
-}
-
 // Service 用于本次流程后续判断的Service
 type Service struct {
 	// repository 提供聊天服务所需的最小持久化能力。
@@ -325,61 +319,6 @@ func New(store *db.Store) *Service {
 // NewWithRepository 使用窄 repository 构造聊天服务，便于应用层和测试隔离数据库聚合器。
 func NewWithRepository(repository Repository) *Service {
 	return &Service{repository: repository, subs: make(map[uint64]subscriber)}
-}
-
-// Subscribe 封装Subscribe业务协调。
-func (s *Service) Subscribe(ctx context.Context, userID int64) (<-chan Event, func(), error) {
-	accountIDs, err := s.repository.ListOwnedIDs(ctx, userID) // accountIDs 和 err 是用户账号 ID 列表及查询错误。
-	if err != nil {
-		return nil, nil, err
-	}
-	// allowed 用于本次流程后续判断的allowed
-	allowed := make(map[string]struct{}, len(accountIDs))
-	for _, accountID := range accountIDs { // accountID 是当前订阅允许接收事件的账号。
-		allowed[accountID] = struct{}{}
-	}
-	s.mu.Lock()
-	s.next++
-	// id 用于本次流程后续判断的标识
-	id := s.next
-	// ch 用于本次流程后续判断的ch
-	ch := make(chan Event, 128)
-	s.subs[id] = subscriber{accounts: allowed, ch: ch}
-	s.mu.Unlock()
-	// once 用于本次流程后续判断的once
-	var once sync.Once
-	// cancel 用于本次流程后续判断的取消
-	cancel := func() {
-		once.Do(func() {
-			s.mu.Lock()
-			if // sub、ok 用于本次流程后续判断的sub、ok
-			sub, ok := s.subs[id]; ok {
-				delete(s.subs, id)
-				close(sub.ch)
-			}
-			s.mu.Unlock()
-		})
-	}
-	return ch, cancel, nil
-}
-
-// Publish 封装发布业务协调。
-func (s *Service) Publish(accountID string, event Event) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	// sub 表示当前遍历过程中的sub
-	for _, sub := range s.subs {
-		if // ok 用于本次流程后续判断的ok
-		_, ok := sub.accounts[accountID]; !ok {
-			continue
-		}
-		select {
-		case sub.ch <- event:
-		default:
-			// A slow browser must not block the account receive loop. The client
-			// reconnects and reloads authoritative history when its buffer fills.
-		}
-	}
 }
 
 // RecordIncoming 封装RecordIncoming业务协调。
@@ -431,7 +370,7 @@ func (s *Service) RecordIncoming(ctx context.Context, in Incoming) (*db.ChatMess
 	// stored、inserted、err 保存落库消息、首次插入标识及错误；系统消息永不增加用户红点。
 	stored, inserted, err := s.repository.SaveMessage(ctx, session, message, messageType != "system")
 	if err == nil && inserted {
-		s.Publish(in.AccountID, Event{Type: "message.created", Message: stored, Session: &session})
+		s.PublishContext(ctx, in.AccountID, Event{Type: "message.created", Message: stored, Session: &session})
 	}
 	return stored, inserted, err
 }
@@ -758,7 +697,7 @@ func (s *Service) CreateOutgoingMedia(ctx context.Context, session db.ChatSessio
 	// stored、err 用于本次流程后续判断的stored、err
 	stored, _, err := s.repository.SaveMessage(ctx, session, message, false)
 	if err == nil {
-		s.Publish(session.CookieID, Event{Type: "message.created", Message: stored, Session: &session})
+		s.PublishContext(ctx, session.CookieID, Event{Type: "message.created", Message: stored, Session: &session})
 	}
 	return stored, err
 }
@@ -768,7 +707,7 @@ func (s *Service) SetOutgoingStatus(ctx context.Context, accountID, key, status 
 	// message、err 用于本次流程后续判断的message、err
 	message, err := s.repository.UpdateMessageStatus(ctx, accountID, key, status)
 	if err == nil {
-		s.Publish(accountID, Event{Type: "message.updated", Message: message})
+		s.PublishContext(ctx, accountID, Event{Type: "message.updated", Message: message})
 	}
 	return message, err
 }
@@ -783,7 +722,7 @@ func (s *Service) MarkOutgoingRead(ctx context.Context, accountID, key string, r
 	if message == nil || message.Direction != "outgoing" {
 		return nil, nil
 	}
-	s.Publish(accountID, Event{Type: "message.updated", Message: message})
+	s.PublishContext(ctx, accountID, Event{Type: "message.updated", Message: message})
 	return message, nil
 }
 
@@ -792,7 +731,7 @@ func (s *Service) MarkLatestOutgoingRead(ctx context.Context, accountID, chatID 
 	// message、err 保存回退更新后的消息及持久化错误。
 	message, err := s.repository.MarkLatestOutgoingRead(ctx, accountID, chatID, readAt)
 	if err == nil {
-		s.Publish(accountID, Event{Type: "message.updated", Message: message})
+		s.PublishContext(ctx, accountID, Event{Type: "message.updated", Message: message})
 	}
 	return message, err
 }

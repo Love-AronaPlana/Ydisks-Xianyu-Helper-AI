@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"xianyu-go/internal/db"
+	"xianyu-go/internal/money"
 	"xianyu-go/internal/orderspec"
 	"xianyu-go/internal/xianyu/cookierefresh"
 	"xianyu-go/internal/xianyu/mtop"
@@ -389,39 +390,11 @@ func adjustPriceCentsFromConfig(configJSON string) (int64, error) {
 // parseYuanToCents 把以元为单位的十进制金额文本转换为整数分。
 // 允许 0.01 到 1000000 元、至多两位小数；非法格式返回错误。
 func parseYuanToCents(raw string) (int64, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return 0, errors.New("改价动作缺少目标价格")
-	}
-	// wholeText、fracText 分别是金额的整数部分与小数部分文本。
-	wholeText, fracText := raw, ""
-	if // dot 是小数点在金额文本中的位置。
-	dot := strings.IndexByte(raw, '.'); dot >= 0 {
-		wholeText, fracText = raw[:dot], raw[dot+1:]
-	}
-	if wholeText == "" || len(fracText) > 2 {
+	// cents 是统一金额解析器返回的整数分结果。
+	cents, parseErr := money.ParseYuanToCents(raw)
+	if parseErr != nil {
 		return 0, fmt.Errorf("目标价格格式非法: %q", raw)
 	}
-	// whole、wholeErr 分别是整数元部分的数值和解析错误。
-	whole, wholeErr := strconv.ParseInt(wholeText, 10, 64)
-	if wholeErr != nil || whole < 0 {
-		return 0, fmt.Errorf("目标价格格式非法: %q", raw)
-	}
-	// frac 是小数部分折算出的分值。
-	frac := int64(0)
-	if fracText != "" {
-		// fracValue、fracErr 分别是小数部分的数值和解析错误。
-		fracValue, fracErr := strconv.ParseInt(fracText, 10, 64)
-		if fracErr != nil || fracValue < 0 {
-			return 0, fmt.Errorf("目标价格格式非法: %q", raw)
-		}
-		frac = fracValue
-		if len(fracText) == 1 {
-			frac *= 10
-		}
-	}
-	// cents 是目标价格的整数分结果。
-	cents := whole*100 + frac
 	if cents <= 0 || cents > 100000000 {
 		return 0, fmt.Errorf("目标价格必须在 0.01 到 1000000 元之间: %q", raw)
 	}

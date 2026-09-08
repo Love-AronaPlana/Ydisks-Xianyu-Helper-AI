@@ -10,6 +10,7 @@ import (
 
 	"xianyu-go/internal/automation"
 	"xianyu-go/internal/xianyu/protocol"
+	"xianyu-go/internal/xianyu/ws"
 )
 
 // outgoingMessageCoordinator 拥有当前连接上的出站消息、聊天历史和会话查询边界。
@@ -41,7 +42,7 @@ func (c *outgoingMessageCoordinator) sendText(ctx context.Context, chatID, toUse
 	defer cancel()
 	// err 是平台文本发送失败原因；此时调用方按是否确定未发送决定重试或人工核对。
 	if err := conn.SendText(sendCtx, myID, chatID, toUserID, text); err != nil {
-		return err
+		return classifyPlatformSendError(err)
 	}
 	// observer、ok 是可选出站旁路观察器及其接口匹配结果；旁路失败不能改变平台发送成功结果。
 	if observer, ok := a.handler.(outgoingChatHandler); ok {
@@ -81,7 +82,7 @@ func (c *outgoingMessageCoordinator) sendImage(ctx context.Context, chatID, toUs
 	sendCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 	_ = cardID // cardID 由上层动作检查点持久化，协议图片发送本身不携带该字段。
-	return conn.SendImage(sendCtx, myID, chatID, toUserID, imageURL, width, height)
+	return classifyPlatformSendError(conn.SendImage(sendCtx, myID, chatID, toUserID, imageURL, width, height))
 }
 
 // sendItemCard 使用当前已注册 WebSocket 发送商品卡片，并将本地幂等键交给出站观察。
@@ -108,7 +109,7 @@ func (c *outgoingMessageCoordinator) sendItemCard(ctx context.Context, chatID, t
 	defer cancel()
 	// sendErr 表示底层 WebSocket 商品卡片投递是否失败。
 	if sendErr := itemSender.SendItemCard(sendCtx, myID, chatID, toUserID, itemID, title, imageURL, price); sendErr != nil {
-		return sendErr
+		return classifyPlatformSendError(sendErr)
 	}
 	// contentBytes 是与本地 item 消息格式一致的规范出站正文。
 	contentBytes, marshalErr := json.Marshal(struct {
@@ -131,6 +132,19 @@ func (c *outgoingMessageCoordinator) sendItemCard(ctx context.Context, chatID, t
 		}
 	}
 	return nil
+}
+
+// classifyPlatformSendError 将协议层确定未发送或明确拒绝转换为自动化可安全处理的错误；未知结果保留原错误链，禁止自动重放。
+func classifyPlatformSendError(err error) error {
+	if err == nil {
+		return nil
+	}
+	// kind 保存协议层已经判定的发送结果分类。
+	kind := ws.SendResultKind(err)
+	if kind == ws.SendNotSent || kind == ws.SendRejected {
+		return fmt.Errorf("%w: %v", automation.ErrMessageNotSent, err)
+	}
+	return err
 }
 
 // currentSenderState 返回可用 WebSocket 与账号 unb 身份快照；持锁范围只覆盖快照读取。

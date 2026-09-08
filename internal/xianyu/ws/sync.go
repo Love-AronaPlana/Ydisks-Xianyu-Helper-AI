@@ -223,57 +223,70 @@ func (c *Conn) SendItemCard(ctx context.Context, myID, cid, toID, itemID, title,
 
 // sendChatContent 封装send聊天内容业务协调。
 func (c *Conn) sendChatContent(ctx context.Context, myID, cid, toID string, content any) error {
+	// err 保存发送开始前的取消状态。
+	if err := ctx.Err(); err != nil {
+		return &SendError{Kind: SendNotSent, Err: err}
+	}
 	myID = stripGoofish(myID)
 	cid = stripGoofish(cid)
 	toID = stripGoofish(toID)
 	if myID == "" || cid == "" || toID == "" {
-		return fmt.Errorf("发送消息缺少必要参数: myID=%q cid=%q toID=%q", myID, cid, toID)
+		return &SendError{Kind: SendNotSent, Err: fmt.Errorf("发送消息缺少必要参数")}
 	}
 	// raw、err 用于本次流程后续判断的raw、err
 	raw, err := json.Marshal(content)
 	if err != nil {
-		return err
+		return &SendError{Kind: SendNotSent, Err: err}
 	}
 	// encoded 用于本次流程后续判断的encoded
 	encoded := base64.StdEncoding.EncodeToString(raw)
-	// msg 用于本次流程后续判断的msg
-	msg := map[string]any{
-		"lwp": "/r/MessageSend/sendByReceiverScope",
-		"headers": map[string]any{
-			"mid": protocol.GenerateMid(),
-		},
-		"body": []any{
-			map[string]any{
-				"uuid":             protocol.GenerateUUID(),
-				"cid":              cid + "@goofish",
-				"conversationType": 1,
-				"content": map[string]any{
-					"contentType": 101,
-					"custom": map[string]any{
-						"type": 1,
-						"data": encoded,
-					},
+	// headers 保存一次平台发送使用的 mid；请求确认必须使用同一个 mid。
+	headers := map[string]any{"mid": protocol.GenerateMid()}
+	// body 保存与既有协议完全一致的消息载荷。
+	body := []any{
+		map[string]any{
+			"uuid":             protocol.GenerateUUID(),
+			"cid":              cid + "@goofish",
+			"conversationType": 1,
+			"content": map[string]any{
+				"contentType": 101,
+				"custom": map[string]any{
+					"type": 1,
+					"data": encoded,
 				},
-				"redPointPolicy": 0,
-				"extension": map[string]any{
-					"extJson": "{}",
-				},
-				"ctx": map[string]any{
-					"appVersion": "1.0",
-					"platform":   "web",
-				},
-				"mtags":                map[string]any{},
-				"msgReadStatusSetting": 1,
 			},
-			map[string]any{
-				"actualReceivers": []string{
-					toID + "@goofish",
-					myID + "@goofish",
-				},
+			"redPointPolicy": 0,
+			"extension": map[string]any{
+				"extJson": "{}",
+			},
+			"ctx": map[string]any{
+				"appVersion": "1.0",
+				"platform":   "web",
+			},
+			"mtags":                map[string]any{},
+			"msgReadStatusSetting": 1,
+		},
+		map[string]any{
+			"actualReceivers": []string{
+				toID + "@goofish",
+				myID + "@goofish",
 			},
 		},
 	}
-	return c.sendJSON(ctx, msg)
+	// response 保存平台对本次发送的确认；该请求不会额外创建连接或增加闲鱼调用次数。
+	response, err := c.request(ctx, "/r/MessageSend/sendByReceiverScope", headers, body, regResponseTimeout)
+	if err != nil {
+		return &SendError{Kind: SendUncertain, Err: err}
+	}
+	// code 和 ok 保存平台发送确认状态码及其可解析性。
+	code, ok := responseCode(response["code"])
+	if !ok || code == http.StatusRequestTimeout || code < http.StatusOK || code >= http.StatusInternalServerError {
+		return &SendError{Kind: SendUncertain, Code: code}
+	}
+	if code >= http.StatusBadRequest {
+		return &SendError{Kind: SendRejected, Code: code}
+	}
+	return nil
 }
 
 // stripGoofish 封装stripGoofish业务协调。

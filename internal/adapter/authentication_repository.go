@@ -97,7 +97,61 @@ func (r *AuthenticationRepository) VerifyPassword(ctx context.Context, username,
 	if !matched || user == nil {
 		return accountapp.AuthUser{}, false, nil
 	}
-	return accountapp.AuthUser{ID: user.ID, Username: user.Username, IsAdmin: user.IsAdmin}, true, nil
+	return accountapp.AuthUser{ID: user.ID, Username: user.Username, IsAdmin: user.IsAdmin, AuthVersion: user.AuthVersion}, true, nil
+}
+
+// VerifyLogin 验证密码并保留认证代次，供事务化会话签发使用。
+func (r *AuthenticationRepository) VerifyLogin(ctx context.Context, username, password string) (accountapp.AuthUser, bool, error) {
+	// validationErr 表示认证用户仓储是否已装配。
+	if validationErr := r.validateUsers(); validationErr != nil {
+		return accountapp.AuthUser{}, false, validationErr
+	}
+	// user、matched 和 verifyErr 保存带认证代次的数据库验证结果。
+	user, matched, verifyErr := r.store.Users.VerifyAndUpgrade(ctx, username, password)
+	if verifyErr != nil {
+		if errors.Is(verifyErr, db.ErrPasswordMismatch) {
+			return accountapp.AuthUser{}, false, accountapp.ErrPasswordMismatch
+		}
+		return accountapp.AuthUser{}, false, verifyErr
+	}
+	if !matched || user == nil {
+		return accountapp.AuthUser{}, false, nil
+	}
+	return accountapp.AuthUser{ID: user.ID, Username: user.Username, IsAdmin: user.IsAdmin, AuthVersion: user.AuthVersion}, true, nil
+}
+
+// CreateVerifiedSession 以密码校验时的认证代次执行原子会话签发。
+func (r *AuthenticationRepository) CreateVerifiedSession(ctx context.Context, user accountapp.AuthUser) (string, error) {
+	if r == nil || r.store == nil || r.store.Sessions == nil {
+		return "", errors.New("认证会话数据库适配器未初始化")
+	}
+	// dbUser 是只供事务会话仓储使用的非敏感用户投影。
+	dbUser := &db.User{ID: user.ID, Username: user.Username, IsAdmin: user.IsAdmin}
+	// sessionID 和 err 保存认证代次确认后的会话结果。
+	sessionID, err := r.store.Sessions.CreateVerified(ctx, dbUser, user.AuthVersion)
+	if errors.Is(err, db.ErrStaleLogin) || errors.Is(err, db.ErrNotFound) {
+		return "", accountapp.ErrPasswordMismatch
+	}
+	return sessionID, err
+}
+
+// ValidateSession 只读取本地会话和用户有效状态，不触碰闲鱼 Cookie 或 Token。
+func (r *AuthenticationRepository) ValidateSession(ctx context.Context, sessionID string, userID int64) error {
+	if r == nil || r.store == nil || r.store.Sessions == nil {
+		return errors.New("认证会话数据库适配器未初始化")
+	}
+	// sess 和 err 保存本地会话读取结果。
+	sess, err := r.store.Sessions.Get(ctx, sessionID)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return accountapp.ErrSessionInvalid
+		}
+		return err
+	}
+	if sess.UserID != userID {
+		return accountapp.ErrSessionInvalid
+	}
+	return nil
 }
 
 // UpdatePassword 更新密码并撤销该用户全部旧会话。

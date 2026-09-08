@@ -170,9 +170,9 @@ func TestMigrate_ExistingAutomationRunsReceiveEmptyDeliveryProof(t *testing.T) {
 	if varProof != "" {
 		t.Fatalf("历史运行凭证应为空: %q", varProof)
 	}
-	// finalVersion、versionErr 验证升级到会话用户删除语义的 00044，不能仅证明旧 delivery_proof 列存在。
+	// finalVersion、versionErr 验证升级包含聊天删除截止线和认证代次迁移，不能仅证明旧 delivery_proof 列存在。
 	finalVersion, versionErr := goose.GetDBVersion(rawDB)
-	if versionErr != nil || finalVersion != 44 {
+	if versionErr != nil || finalVersion != 46 {
 		t.Fatalf("final migration version=%d err=%v", finalVersion, versionErr)
 	}
 	if !tableExists(t, rawDB, "order_ownership_repairs") {
@@ -235,8 +235,8 @@ func TestMigrate_UpgradesDatabaseWithMainChatVersions(t *testing.T) {
 	if versionErr != nil {
 		t.Fatalf("read final migration version: %v", versionErr)
 	}
-	if finalVersion != 44 {
-		t.Fatalf("final migration version=%d, want 44", finalVersion)
+	if finalVersion != 46 {
+		t.Fatalf("final migration version=%d, want 46", finalVersion)
 	}
 	if !tableExists(t, rawDB, "order_ownership_repairs") {
 		t.Fatal("已发布 main 数据库升级后必须创建订单归属修正审计表")

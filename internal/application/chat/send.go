@@ -16,6 +16,8 @@ var (
 	ErrOffline = errors.New("账号当前离线")
 	// ErrSend 表示平台发送动作失败，消息状态已尽力标记为失败。
 	ErrSend = errors.New("聊天消息发送失败")
+	// ErrSendUncertain 表示请求可能已经到达平台，调用方不得自动重试。
+	ErrSendUncertain = errors.New("聊天消息发送结果待确认")
 	// ErrStatusSave 表示平台动作已成功，但本地发送状态没有保存成功。
 	ErrStatusSave = errors.New("聊天发送状态保存失败")
 	// ErrSendInvalidInput 表示发送用例缺少会话标识或消息内容不符合限制。
@@ -189,6 +191,14 @@ func (s *Service) SendText(ctx context.Context, input OutgoingInput) (*Message, 
 	}
 	// sendErr 表示平台文字发送失败；失败分支会补写本地 failed 状态。
 	if sendErr := sender.SendText(ctx, session.ChatID, session.BuyerID, text, message.MessageKey); sendErr != nil {
+		if errors.Is(sendErr, ErrSendUncertain) {
+			// statusCtx 和 statusCancel 为未知结果状态收口提供独立五秒窗口。
+			statusCtx, statusCancel := outgoingStatusContext(ctx)
+			// uncertain 保存本地未知结果状态写入结果。
+			uncertain, _ := s.outgoing.SetOutgoingStatus(statusCtx, session.AccountID, message.MessageKey, "uncertain")
+			statusCancel()
+			return messagePointer(uncertain, message), fmt.Errorf("%w: %v", ErrSendUncertain, sendErr)
+		}
 		// failed 保存平台发送失败后的本地状态；状态保存失败不覆盖原始发送错误。
 		statusCtx, statusCancel := outgoingStatusContext(ctx)
 		// failed 保存平台发送失败后写入的最新消息状态，写入失败时仍保留原始发送错误。
@@ -243,6 +253,14 @@ func (s *Service) SendImage(ctx context.Context, input ImageInput) (*Message, er
 	}
 	// sendErr 表示平台图片发送失败；失败分支会补写本地 failed 状态。
 	if sendErr := sender.SendImage(ctx, session.ChatID, session.BuyerID, upload.URL, 0, upload.Width, upload.Height, message.MessageKey); sendErr != nil {
+		if errors.Is(sendErr, ErrSendUncertain) {
+			// statusCtx 和 statusCancel 为图片未知结果状态收口提供独立窗口。
+			statusCtx, statusCancel := outgoingStatusContext(ctx)
+			// uncertain 保存图片消息未知结果状态写入结果。
+			uncertain, _ := s.outgoing.SetOutgoingStatus(statusCtx, session.AccountID, message.MessageKey, "uncertain")
+			statusCancel()
+			return messagePointer(uncertain, message), fmt.Errorf("%w: %v", ErrSendUncertain, sendErr)
+		}
 		// failed 保存图片发送失败后的本地状态。
 		statusCtx, statusCancel := outgoingStatusContext(ctx)
 		// failed 保存平台图片发送失败后写入的最新消息状态，写入失败时仍保留原始发送错误。

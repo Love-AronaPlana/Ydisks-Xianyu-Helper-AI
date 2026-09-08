@@ -182,6 +182,14 @@ func (s *Service) SendItemCard(ctx context.Context, input ItemCardInput) (*Messa
 	}
 	// sendErr 表示平台商品卡片发送是否失败。
 	if sendErr := itemSender.SendItemCard(ctx, session.ChatID, session.BuyerID, item, message.MessageKey); sendErr != nil {
+		if errors.Is(sendErr, ErrSendUncertain) {
+			// statusCtx 和 statusCancel 为商品卡片未知结果状态收口提供独立窗口。
+			statusCtx, statusCancel := outgoingStatusContext(ctx)
+			// uncertain 保存商品卡片未知结果状态写入结果。
+			uncertain, _ := s.outgoing.SetOutgoingStatus(statusCtx, accountID, message.MessageKey, "uncertain")
+			statusCancel()
+			return messagePointer(uncertain, message), fmt.Errorf("%w: %v", ErrSendUncertain, sendErr)
+		}
 		// statusCtx 和 statusCancel 是平台失败后不受客户端断开影响的有界状态补偿上下文。
 		statusCtx, statusCancel := outgoingStatusContext(ctx)
 		// failed 是尽力标记为 failed 后的最新消息。

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"xianyu-go/internal/money"
 )
 
 // ErrRuleNotFound 表示规则不存在或不属于当前用户。
@@ -755,35 +757,11 @@ func validateAdjustPriceConfig(configJSON string) error {
 	if raw == "" {
 		return errors.New("改价动作必须填写目标价格")
 	}
-	// wholeText、fracText 分别是金额的整数部分与小数部分文本。
-	wholeText, fracText := raw, ""
-	if // dot 是小数点在金额文本中的位置。
-	dot := strings.IndexByte(raw, '.'); dot >= 0 {
-		wholeText, fracText = raw[:dot], raw[dot+1:]
-	}
-	if wholeText == "" || len(fracText) > 2 {
+	// cents 是经统一整数解析器计算出的目标价格分值。
+	cents, parseErr := money.ParseYuanToCents(raw)
+	if parseErr != nil {
 		return errors.New("目标价格必须是最多两位小数的金额")
 	}
-	// whole、wholeErr 分别是整数元部分的数值和解析错误。
-	whole, wholeErr := strconv.ParseInt(wholeText, 10, 64)
-	if wholeErr != nil || whole < 0 {
-		return errors.New("目标价格必须是最多两位小数的金额")
-	}
-	// frac 是小数部分折算出的分值。
-	frac := int64(0)
-	if fracText != "" {
-		// fracValue、fracErr 分别是小数部分的数值和解析错误。
-		fracValue, fracErr := strconv.ParseInt(fracText, 10, 64)
-		if fracErr != nil || fracValue < 0 {
-			return errors.New("目标价格必须是最多两位小数的金额")
-		}
-		frac = fracValue
-		if len(fracText) == 1 {
-			frac *= 10
-		}
-	}
-	// cents 是目标价格的整数分结果。
-	cents := whole*100 + frac
 	if cents <= 0 || cents > 100000000 {
 		return errors.New("目标价格必须在 0.01 到 1000000 元之间")
 	}

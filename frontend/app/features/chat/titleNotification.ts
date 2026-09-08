@@ -182,8 +182,14 @@ export const useChatTitleNotification = (): ChatTitleNotificationResult => {
           // 忽略非聊天格式帧，下一条合法广播仍可正常触发通知。
         }
       };
-      socket.onclose = /* 当前回调在连接非主动关闭时以有限指数退避重新订阅通知。 */ () => {
+      socket.onclose = /* 当前回调在连接非主动关闭时区分认证撤销与普通网络断开。 */ event => {
         if (disposed) return;
+        if (event.code === 1008 && event.reason === 'session_invalid') {
+          // authLogoutEvent 通知认证壳停止使用失效会话并清理管理登录。
+          window.dispatchEvent(new Event('auth:logout'));
+          publishChatConnectionState('offline');
+          return;
+        }
         publishChatConnectionState('offline');
         // delayMs 保存下一次重连等待时间，单位为毫秒，最长不超过十五秒。
         const delayMs = Math.min(15_000, 1_000 * 2 ** Math.min(retryCount++, 4));

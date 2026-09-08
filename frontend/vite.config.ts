@@ -58,6 +58,14 @@ export default defineConfig({
         manualChunks(id) {
           // modulePath 是统一分隔符后的模块绝对路径，用于稳定匹配依赖目录。
           const modulePath = id.split(path.sep).join('/');
+          // 聊天接口适配器在列表、发送和未知结果收口之间复用，独立分片保持聊天主页面预算稳定。
+          if (modulePath.includes('/app/features/chat/api.')) {
+            return 'chat-api';
+          }
+          // 聊天状态 Hook 含有分页与并发收口逻辑，独立分片避免状态机增长挤压页面预算。
+          if (modulePath.includes('/app/features/chat/hooks.')) {
+            return 'chat-runtime';
+          }
           // 聊天元数据包含快捷回复和备注弹窗等低频交互，独立分片可避免挤占会话阅读首屏。
           if (modulePath.includes('/app/features/chat/components/ChatMetadataFeature.') || modulePath.includes('/app/features/chat/metadata.')) {
             return 'chat-metadata';

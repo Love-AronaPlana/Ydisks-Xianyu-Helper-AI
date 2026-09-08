@@ -2,7 +2,7 @@
 import { act,renderHook,waitFor } from '@testing-library/react';
 import { beforeEach,describe,expect,test,vi } from 'vitest';
 import type { AccountDetail,ChatMessage,ChatSession } from './api';
-import { confirmedOutgoingMessageFromError,deleteChatSession,getAccountDetails,getAccountRuntimeStatuses,getChatMessagePage,getChatSessionPage,markChatRead,sendChatImage,sendChatMessage } from './api';
+import { confirmedOutgoingMessageFromError,deleteChatSession,getAccountDetails,getAccountRuntimeStatuses,getChatMessagePage,getChatSessionPage,markChatRead,sendChatImage,sendChatMessage,uncertainOutgoingMessageFromError } from './api';
 import { useChat } from './hooks';
 import { publishChatConnectionState,publishChatLiveMessage } from './liveEvents';
 
@@ -16,6 +16,7 @@ vi.mock('./api', /* chatApiMockFactory 提供聊天 Hook 的确定性 API 替身
   sendChatImage: vi.fn(),
   sendChatMessage: vi.fn(),
 	confirmedOutgoingMessageFromError: vi.fn(),
+	uncertainOutgoingMessageFromError: vi.fn(),
 }));
 
 // getDetailsMock 是聊天账号详情请求的可控替身。
@@ -36,6 +37,8 @@ const sendImageMock = vi.mocked(sendChatImage);
 const sendMessageMock = vi.mocked(sendChatMessage);
 // confirmedOutgoingMock 是远端已发送状态收口失败错误的可控适配器替身。
 const confirmedOutgoingMock = vi.mocked(confirmedOutgoingMessageFromError);
+// uncertainOutgoingMock 是未知发送结果状态的可控适配器替身。
+const uncertainOutgoingMock = vi.mocked(uncertainOutgoingMessageFromError);
 
 // accountFixture 是聊天 Hook 使用的启用账号对象。
 const accountFixture: AccountDetail = { id: 'account-1', enabled: true, auto_confirm: false, nickname: '测试账号' };
@@ -58,6 +61,7 @@ describe('useChat', /* 当前回调处理聊天加载、分页、发送和实时
     sendMessageMock.mockResolvedValue({ message: sentMessageFixture });
     sendImageMock.mockResolvedValue({ message: sentMessageFixture });
 	confirmedOutgoingMock.mockReturnValue(undefined);
+	uncertainOutgoingMock.mockReturnValue(undefined);
     publishChatConnectionState('connecting');
     // localStorageStub 是聊天 Hook 记忆账号选择所需的浏览器存储替身。
     Object.defineProperty(window, 'localStorage', { configurable: true, value: { getItem: vi.fn().mockReturnValue(''), setItem: vi.fn(), removeItem: vi.fn() } });
@@ -596,6 +600,7 @@ describe('useChat', /* 当前回调处理聊天加载、分页、发送和实时
 			// activeChatAssertion 等待默认会话完成选择和消息加载。
 			() => expect(hook.result.current.activeChatID).toBe('chat-1'),
 		);
+		getSessionPageMock.mockResolvedValueOnce({ sessions: [sessionFixture], has_more: false, next_cursor: undefined });
 		await act(
 			// deleteInactiveAction 删除非当前会话，不应清空正在查看的聊天。
 			async () => { expect(await hook.result.current.deleteConversation('account-1', 'chat-2')).toBe(true); },
@@ -605,7 +610,7 @@ describe('useChat', /* 当前回调处理聊天加载、分页、发送和实时
 		expect(hook.result.current.messages).toEqual([messageFixture]);
 		await act(
 			// deleteActiveAction 删除当前且最后一条会话，页面应进入空态。
-			async () => { expect(await hook.result.current.deleteConversation('account-1', 'chat-1')).toBe(true); },
+			async () => { getSessionPageMock.mockResolvedValueOnce({ sessions: [], has_more: false, next_cursor: undefined }); expect(await hook.result.current.deleteConversation('account-1', 'chat-1')).toBe(true); },
 		);
 		await waitFor(
 			// emptyChatAssertion 等待删除后的选中会话和消息列表完成清理。

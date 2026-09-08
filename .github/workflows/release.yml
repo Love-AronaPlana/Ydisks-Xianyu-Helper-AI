@@ -69,6 +69,9 @@ jobs:
       - desktop
       - docker
     runs-on: ubuntu-24.04
+    concurrency:
+      group: production-release-publish
+      cancel-in-progress: false
     environment:
       name: production-release
     steps:
@@ -139,6 +142,13 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 审批后再次校验最高版本与标签提交
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git fetch origin --tags --force
+          bash tools/release/check-version.sh "$GITHUB_REF_NAME" "$GITHUB_SHA"
 
       - name: 发布正式 Docker manifest
         shell: bash

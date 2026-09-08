@@ -116,7 +116,7 @@ export interface ChatMessage {
 	/** 语音消息的秒级时长；非语音或平台未提供时省略。 */
 	media_duration?: number;
 	/** 消息发送状态。 */
-	status: 'received' | 'sending' | 'sent' | 'failed';
+	status: 'received' | 'sending' | 'sent' | 'failed' | 'uncertain';
 	/** 平台已读状态；旧消息可能没有该字段。 */
 	read_status?: number;
 	/** 平台确认已读的 Unix 秒时间戳；未确认时省略。 */

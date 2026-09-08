@@ -20,6 +20,9 @@ var ErrUsernameTaken = errors.New("用户名已存在")
 // ErrForbidden 表示资源存在但不属于当前用户。
 var ErrForbidden = errors.New("无权限操作资源")
 
+// ErrStaleLogin 表示密码校验快照已被新的认证代次取代。
+var ErrStaleLogin = errors.New("认证代次已变更")
+
 // Users 用户相关查询。所有方法都直接接受 *sql.DB，由调用方控制事务边界。
 type Users struct {
 	DB *sql.DB
@@ -41,7 +44,7 @@ func (u *Users) IsSystemInitialized(ctx context.Context) (bool, error) {
 
 // GetAdmin 返回首个管理员账号。
 func (u *Users) GetAdmin(ctx context.Context) (*User, error) {
-	return u.scanUser(ctx, `SELECT id, username, email, password_hash, is_active, is_admin, created_at, updated_at
+	return u.scanUser(ctx, `SELECT id, username, email, password_hash, is_active, is_admin, auth_version, created_at, updated_at
 		FROM users WHERE is_admin=1 ORDER BY id LIMIT 1`)
 }
 
@@ -88,19 +91,19 @@ func isUniqueViolation(err error) bool {
 
 // GetByUsername 按用户名查询。
 func (u *Users) GetByUsername(ctx context.Context, username string) (*User, error) {
-	return u.scanUser(ctx, `SELECT id, username, email, password_hash, is_active, is_admin, created_at, updated_at
+	return u.scanUser(ctx, `SELECT id, username, email, password_hash, is_active, is_admin, auth_version, created_at, updated_at
 		FROM users WHERE username = ?`, username)
 }
 
 // GetByEmail 按邮箱查询。
 func (u *Users) GetByEmail(ctx context.Context, email string) (*User, error) {
-	return u.scanUser(ctx, `SELECT id, username, email, password_hash, is_active, is_admin, created_at, updated_at
+	return u.scanUser(ctx, `SELECT id, username, email, password_hash, is_active, is_admin, auth_version, created_at, updated_at
 		FROM users WHERE email = ?`, email)
 }
 
 // GetByID 按 ID 查询。
 func (u *Users) GetByID(ctx context.Context, id int64) (*User, error) {
-	return u.scanUser(ctx, `SELECT id, username, email, password_hash, is_active, is_admin, created_at, updated_at
+	return u.scanUser(ctx, `SELECT id, username, email, password_hash, is_active, is_admin, auth_version, created_at, updated_at
 		FROM users WHERE id = ?`, id)
 }
 
@@ -180,7 +183,7 @@ func (u *Users) UpdatePassword(ctx context.Context, username, plainPassword stri
 	var userID int64
 	// res、err 用于本次流程后续判断的res、err
 	res, err := tx.ExecContext(ctx,
-		`UPDATE users SET password_hash=?, updated_at=CURRENT_TIMESTAMP WHERE username=?`,
+		`UPDATE users SET password_hash=?, auth_version=auth_version+1, updated_at=CURRENT_TIMESTAMP WHERE username=?`,
 		hash, username)
 	if err != nil {
 		return false, err
@@ -230,11 +233,11 @@ func (u *Users) UpdateCredentials(ctx context.Context, userID int64, username, p
 			return fmt.Errorf("哈希密码: %w", hashErr)
 		}
 		res, err = tx.ExecContext(ctx,
-			`UPDATE users SET username=?, password_hash=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
+			`UPDATE users SET username=?, password_hash=?, auth_version=auth_version+1, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
 			username, hash, userID)
 	} else {
 		res, err = tx.ExecContext(ctx,
-			`UPDATE users SET username=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`, username, userID)
+			`UPDATE users SET username=?, auth_version=auth_version+1, updated_at=CURRENT_TIMESTAMP WHERE id=?`, username, userID)
 	}
 	if err != nil {
 		return err
@@ -336,7 +339,15 @@ func (u *Users) scanUser(ctx context.Context, query string, args ...any) (*User,
 	// err 用于本次流程后续判断的err
 	err := u.DB.QueryRowContext(ctx, query, args...).Scan(
 		&usr.ID, &usr.Username, &usr.Email, &usr.PasswordHash,
-		&isActive, &isAdmin, &usr.CreatedAt, &usr.UpdatedAt)
+		&isActive, &isAdmin, &usr.AuthVersion, &usr.CreatedAt, &usr.UpdatedAt)
+	if err != nil && strings.Contains(strings.ToLower(query), "auth_version") && strings.Contains(strings.ToLower(err.Error()), "auth_version") {
+		// legacyQuery 兼容尚未执行 00046 的迁移测试库；生产库仍以带代次的查询为准。
+		legacyQuery := strings.Replace(query, ", auth_version", "", 1)
+		usr.AuthVersion = 1
+		err = u.DB.QueryRowContext(ctx, legacyQuery, args...).Scan(
+			&usr.ID, &usr.Username, &usr.Email, &usr.PasswordHash,
+			&isActive, &isAdmin, &usr.CreatedAt, &usr.UpdatedAt)
+	}
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound

@@ -336,10 +336,16 @@ func (n *Notifier) drainOutbox(ctx context.Context) {
 			n.retryOutbox(ctx, message, workerToken, sendErr)
 			continue
 		}
+		// completionCtx 脱离 worker 取消但保留有界超时，确保外部成功后本地确认仍有机会完成。
+		completionCtx, completionCancel := notifierCompletionContext(ctx)
 		if // completed、completeErr 用于本次流程后续判断的completed、completeErr
-		completed, completeErr := n.repository.CompleteOutbox(ctx, message.ID, workerToken); completeErr != nil {
+		completed, completeErr := n.repository.CompleteOutbox(completionCtx, message.ID, workerToken); completeErr != nil {
+			completionCancel()
 			// uncertain、uncertainErr 保存发送成功后的隔离结果和隔离失败错误。
-			uncertain, uncertainErr := n.repository.MarkOutboxUncertain(ctx, message.ID, workerToken, completeErr.Error())
+			uncertainCtx, uncertainCancel := notifierCompletionContext(ctx)
+			// uncertain 和 uncertainErr 保存不确定隔离写入结果及基础设施错误。
+			uncertain, uncertainErr := n.repository.MarkOutboxUncertain(uncertainCtx, message.ID, workerToken, completeErr.Error())
+			uncertainCancel()
 			if uncertainErr != nil {
 				n.logger.Error("确认通知投递完成失败且无法隔离消息", "outbox_id", message.ID, "err", logsafe.Error(errors.Join(completeErr, uncertainErr)))
 			} else if !uncertain {
@@ -348,11 +354,20 @@ func (n *Notifier) drainOutbox(ctx context.Context) {
 				n.logger.Warn("通知已发送但本地确认失败，消息已隔离", "outbox_id", message.ID, "err", logsafe.Error(completeErr))
 			}
 		} else if !completed {
+			completionCancel()
 			n.logger.Warn("通知 outbox 租约已转移", "outbox_id", message.ID)
 		} else {
+			completionCancel()
 			n.logger.Info("通知 outbox 发送成功", "outbox_id", message.ID, "channel_id", message.ChannelID, "channel", channel.Type, "event_type", message.EventType, "attempt", message.AttemptCount)
 		}
 	}
+}
+
+// notifierCompletionContext 为外部通知已经成功后的本地 outbox 收口创建独立的有界上下文。
+func notifierCompletionContext(parent context.Context) (context.Context, context.CancelFunc) {
+	// base 是脱离 worker 取消但仍受本地超时限制的上下文根；调用方必须传入 worker 上下文。
+	base := context.WithoutCancel(parent)
+	return context.WithTimeout(base, 5*time.Second)
 }
 
 // retryOutbox 封装重试Outbox业务协调。

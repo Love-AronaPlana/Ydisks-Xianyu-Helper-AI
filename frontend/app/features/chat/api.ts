@@ -72,13 +72,22 @@ const isChatMessage = (value: unknown): value is ChatMessage => {
     && typeof candidate.message_key === 'string' && (candidate.direction === 'incoming' || candidate.direction === 'outgoing')
     && typeof candidate.sender_id === 'string' && typeof candidate.sender_name === 'string'
     && ['text', 'image', 'video', 'audio', 'item', 'system'].includes(String(candidate.message_type))
-    && typeof candidate.content === 'string' && ['received', 'sending', 'sent', 'failed'].includes(String(candidate.status))
+    && typeof candidate.content === 'string' && ['received', 'sending', 'sent', 'failed', 'uncertain'].includes(String(candidate.status))
     && typeof candidate.sent_at === 'number';
+};
+
+/** 从结果待确认错误中提取不可自动重试的外发消息。 */
+export const uncertainOutgoingMessageFromError = (error: unknown): ChatMessage | undefined => {
+	if (!(error instanceof ApiError) || !['chat_send_uncertain', 'chat_image_send_uncertain', 'chat_item_card_send_uncertain'].includes(error.code)) return undefined;
+	// outgoingMessage 保存后端错误详情中的待确认消息 DTO。
+	const outgoingMessage = error.details?.outgoing_message;
+	if (!isChatMessage(outgoingMessage)) return undefined;
+	return { ...outgoingMessage, status: 'uncertain' };
 };
 
 /** 从“远端已发送但状态收口失败”错误中提取不可重试的外发消息。 */
 export const confirmedOutgoingMessageFromError = (error: unknown): ChatMessage | undefined => {
-  if (!(error instanceof ApiError) || error.code !== 'chat_send_status_save_failed') return undefined;
+	if (!(error instanceof ApiError) || error.code !== 'chat_send_status_save_failed') return undefined;
   // outgoingMessage 保存后端统一错误详情中的 snake_case 消息 DTO。
   const outgoingMessage = error.details?.outgoing_message;
   if (!isChatMessage(outgoingMessage)) return undefined;

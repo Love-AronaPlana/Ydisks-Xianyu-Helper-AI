@@ -147,6 +147,7 @@ type AuthenticationPort interface {
 	VerifyPassword(context.Context, string, string) (accountapp.AuthUser, bool, error)
 	UpdatePassword(context.Context, string, string) (bool, error)
 	UpdateCredentials(context.Context, int64, string, string) error
+	ValidateSession(context.Context, string, int64) error
 }
 
 // LoginAuditPort 定义账号登录成功后的审计能力。

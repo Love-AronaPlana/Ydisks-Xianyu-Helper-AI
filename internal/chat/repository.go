@@ -43,6 +43,11 @@ func (r storeRepository) ListOwnedIDs(ctx context.Context, userID int64) ([]stri
 	return r.store.Cookies.ListOwnedIDs(ctx, userID)
 }
 
+// GetOwnerID 委托只读账号归属查询。
+func (r storeRepository) GetOwnerID(ctx context.Context, accountID string) (int64, error) {
+	return r.store.Cookies.GetOwnerID(ctx, accountID)
+}
+
 // SetSessionVisible 委托聊天会话可见状态更新，隐藏会话仍保留本地历史消息。
 func (r storeRepository) SetSessionVisible(ctx context.Context, cookieID, chatID string, visible bool) error {
 	return r.store.Chats.SetSessionVisible(ctx, cookieID, chatID, visible)

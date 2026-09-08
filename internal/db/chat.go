@@ -27,6 +27,8 @@ type ChatSession struct {
 	UserHiddenAt int64 `json:"-"`
 	// MessagesClearedAt 是本地消息永久清空的 Unix 毫秒截止时间，历史同步不得重新写入该时间及之前的消息。
 	MessagesClearedAt int64 `json:"-"`
+	// LocalMessagesClearedAt 是实时消息的本地接纳截止时间，恢复可见状态时也必须保留。
+	LocalMessagesClearedAt int64 `json:"-"`
 }
 
 // ChatSessionCursor 是聊天会话稳定键集分页的最后一条排序键。
@@ -183,20 +185,20 @@ func (s *ChatStore) HideAndClearSession(ctx context.Context, userID int64, cooki
 	}
 	defer tx.Rollback()
 	// hiddenAt 保存当前用户删除状态。
-	var hiddenAt int64
+	var hiddenAt, localMessagesClearedAt int64
 	// buyerName 保存自动化仍会读取的昵称快照。
 	var buyerName string
 	// lastMessageAt 保存删除前会话摘要的平台时间，用于推进历史消息永久水位。
 	var lastMessageAt int64
 	// lookupQuery 是带用户归属条件的会话读取语句；行锁数据库用它串行化删除与新消息保存。
-	lookupQuery := `SELECT cs.user_hidden_at,cs.buyer_name,cs.last_message_at
+	lookupQuery := `SELECT cs.user_hidden_at,cs.local_messages_cleared_at,cs.buyer_name,cs.last_message_at
 		FROM chat_sessions cs JOIN cookies c ON c.id=cs.cookie_id
 		WHERE c.user_id=? AND cs.cookie_id=? AND cs.chat_id=?`
 	if s.Dialect != DialectSQLite {
 		lookupQuery += ` FOR UPDATE`
 	}
 	// lookupErr 是带用户归属条件的会话读取结果，避免跨用户清空消息。
-	lookupErr := tx.QueryRowContext(ctx, lookupQuery, userID, cookieID, chatID).Scan(&hiddenAt, &buyerName, &lastMessageAt)
+	lookupErr := tx.QueryRowContext(ctx, lookupQuery, userID, cookieID, chatID).Scan(&hiddenAt, &localMessagesClearedAt, &buyerName, &lastMessageAt)
 	if errors.Is(lookupErr, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -225,6 +227,9 @@ func (s *ChatStore) HideAndClearSession(ctx context.Context, userID int64, cooki
 	if clearedAt <= 0 {
 		clearedAt = time.Now().UTC().UnixMilli()
 	}
+	if clearedAt < localMessagesClearedAt {
+		clearedAt = localMessagesClearedAt
+	}
 	// maximumMessageAt 保存事务开始前已存在消息的最大平台时间，未来偏移的旧消息也必须纳入历史水位。
 	var maximumMessageAt int64
 	// maximumErr 读取当前全部展示消息的最大平台时间；聚合查询总会返回一行。
@@ -240,11 +245,20 @@ func (s *ChatStore) HideAndClearSession(ctx context.Context, userID int64, cooki
 	if maximumMessageAt > historyCutoff {
 		historyCutoff = maximumMessageAt
 	}
+	// previousHistoryCutoff 防止平台时间偏移时第二次删除让历史水位倒退。
+	var previousHistoryCutoff int64
+	// err 保存读取历史截止线的数据库错误。
+	if err := tx.QueryRowContext(ctx, `SELECT messages_cleared_at FROM chat_sessions WHERE cookie_id=? AND chat_id=?`, cookieID, chatID).Scan(&previousHistoryCutoff); err != nil {
+		return false, err
+	}
+	if previousHistoryCutoff > historyCutoff {
+		historyCutoff = previousHistoryCutoff
+	}
 	// updateResult 以 user_hidden_at=0 领取本次删除，重复请求不会推进截止时间或删除后来恢复的消息。
 	updateResult, updateErr := tx.ExecContext(ctx, `UPDATE chat_sessions SET
-		buyer_name=CASE WHEN ?<>'' THEN ? ELSE buyer_name END,user_hidden_at=?,messages_cleared_at=?,
+		buyer_name=CASE WHEN ?<>'' THEN ? ELSE buyer_name END,user_hidden_at=?,local_messages_cleared_at=?,messages_cleared_at=?,
 		last_message='',last_message_at=0,unread_count=0,updated_at=?
-		WHERE cookie_id=? AND chat_id=? AND user_hidden_at=0`, preservedName, preservedName, clearedAt, historyCutoff,
+		WHERE cookie_id=? AND chat_id=? AND user_hidden_at=0`, preservedName, preservedName, clearedAt, clearedAt, historyCutoff,
 		time.Now().UTC().Unix(), cookieID, chatID)
 	if updateErr != nil {
 		return false, updateErr
@@ -399,19 +413,19 @@ func (s *ChatStore) SaveMessage(ctx context.Context, session ChatSession, messag
 		return nil, false, fmt.Errorf("建立聊天会话: %w", err)
 	}
 	// userHiddenAt 和 messagesClearedAt 分别是本地观察截止线与平台历史永久水位。
-	var userHiddenAt, messagesClearedAt int64
+	var userHiddenAt, localMessagesClearedAt, messagesClearedAt int64
 	// cutoffQuery 读取清空边界；行锁数据库借此与删除事务串行，SQLite 已由前面的写入取得事务写锁。
-	cutoffQuery := `SELECT user_hidden_at,messages_cleared_at FROM chat_sessions WHERE cookie_id=? AND chat_id=?`
+	cutoffQuery := `SELECT user_hidden_at,local_messages_cleared_at,messages_cleared_at FROM chat_sessions WHERE cookie_id=? AND chat_id=?`
 	if s.Dialect != DialectSQLite {
 		cutoffQuery += ` FOR UPDATE`
 	}
 	// cutoffErr 读取当前会话的清空边界；读取失败必须终止事务，避免绕过用户删除语义。
-	cutoffErr := tx.QueryRowContext(ctx, cutoffQuery, session.CookieID, session.ChatID).Scan(&userHiddenAt, &messagesClearedAt)
+	cutoffErr := tx.QueryRowContext(ctx, cutoffQuery, session.CookieID, session.ChatID).Scan(&userHiddenAt, &localMessagesClearedAt, &messagesClearedAt)
 	if cutoffErr != nil {
 		return nil, false, fmt.Errorf("读取聊天消息清空边界: %w", cutoffErr)
 	}
 	// liveAccepted 表示实时或人工消息在用户删除动作之后才被本进程接纳；它不依赖平台的秒级或偏移时间。
-	liveAccepted := message.ObservedAt > 0 && (userHiddenAt == 0 || message.ObservedAt > userHiddenAt)
+	liveAccepted := message.ObservedAt > 0 && (localMessagesClearedAt == 0 || message.ObservedAt > localMessagesClearedAt)
 	// historyAccepted 表示平台历史消息严格晚于删除时记录的最大历史水位。
 	historyAccepted := message.ObservedAt == 0 && (messagesClearedAt == 0 || message.SentAt > messagesClearedAt)
 	if !liveAccepted && !historyAccepted {

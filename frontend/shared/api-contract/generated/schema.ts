@@ -2782,7 +2782,7 @@ export interface components {
             content: string;
             media_duration?: number;
             /** @enum {string} */
-            status: "received" | "sending" | "sent" | "failed";
+            status: "received" | "sending" | "sent" | "failed" | "uncertain";
             read_status?: number;
             read_at?: number;
             sent_at: number;

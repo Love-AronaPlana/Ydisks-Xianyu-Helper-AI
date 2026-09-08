@@ -15,6 +15,7 @@ import (
 	"xianyu-go/internal/engine"
 	"xianyu-go/internal/xianyu/cookierefresh"
 	"xianyu-go/internal/xianyu/mtop"
+	"xianyu-go/internal/xianyu/ws"
 )
 
 // chatOutgoingRepository 将聊天领域服务适配为应用层外发消息端口。
@@ -170,7 +171,7 @@ func (s chatSender) SendText(ctx context.Context, chatID, toUserID, text, messag
 	if s.sender == nil {
 		return chatapp.ErrUnavailable
 	}
-	return s.sender.SendText(engine.WithOutgoingMessageKey(ctx, messageKey), chatID, toUserID, text)
+	return classifyChatPlatformError(s.sender.SendText(engine.WithOutgoingMessageKey(ctx, messageKey), chatID, toUserID, text))
 }
 
 // SendImage 发送图片并将应用层幂等键传递给运行时接口。
@@ -178,7 +179,7 @@ func (s chatSender) SendImage(ctx context.Context, chatID, toUserID, imageURL st
 	if s.sender == nil {
 		return chatapp.ErrUnavailable
 	}
-	return s.sender.SendImage(engine.WithOutgoingMessageKey(ctx, messageKey), chatID, toUserID, imageURL, cardID, width, height)
+	return classifyChatPlatformError(s.sender.SendImage(engine.WithOutgoingMessageKey(ctx, messageKey), chatID, toUserID, imageURL, cardID, width, height))
 }
 
 // SendItemCard 将应用层商品快照交给账号运行时的可选卡片发送能力。
@@ -193,7 +194,18 @@ func (s chatSender) SendItemCard(ctx context.Context, chatID, toUserID string, i
 	if !ok {
 		return chatapp.ErrUnavailable
 	}
-	return itemSender.SendItemCard(engine.WithOutgoingMessageKey(ctx, messageKey), chatID, toUserID, item.ItemID, item.Title, item.ImageURL, item.Price)
+	return classifyChatPlatformError(itemSender.SendItemCard(engine.WithOutgoingMessageKey(ctx, messageKey), chatID, toUserID, item.ItemID, item.Title, item.ImageURL, item.Price))
+}
+
+// classifyChatPlatformError 将平台无法确认的发送结果映射为聊天应用错误；不会触发凭证恢复或重发。
+func classifyChatPlatformError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if ws.SendResultKind(err) == ws.SendUncertain {
+		return fmt.Errorf("%w: %v", chatapp.ErrSendUncertain, err)
+	}
+	return err
 }
 
 // chatCredentialRepository 将 Cookie 读取与写回限制在平台适配器内。

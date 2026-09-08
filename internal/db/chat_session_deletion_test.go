@@ -75,8 +75,8 @@ func TestMultiDBChatSessionDeletionMigration(t *testing.T) {
 				t.Fatal(dialectErr)
 			}
 			goose.SetBaseFS(migrationsFS)
-			// downErr 回滚唯一的 44 迁移，用于验证旧列表索引和字段结构可以恢复。
-			if downErr := goose.Down(target.store.DB, "migrations/"+subdir); downErr != nil {
+			// downErr 回滚到 43，先撤销 46、45 再撤销 44，验证旧列表索引和字段结构可以恢复。
+			if downErr := goose.DownTo(target.store.DB, "migrations/"+subdir, 43); downErr != nil {
 				t.Fatal(downErr)
 			}
 			if columnExistsForDialect(t, target.store.DB, target.dialect, "chat_sessions", "user_hidden_at") ||

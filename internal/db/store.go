@@ -78,7 +78,7 @@ func NewStore(db *sql.DB, dialect Dialect) *Store {
 		DB:                db,
 		Dialect:           dialect,
 		Users:             &Users{DB: db},
-		Sessions:          &Sessions{DB: db},
+		Sessions:          &Sessions{DB: db, Dialect: dialect},
 		Cookies:           &Cookies{DB: db, Dialect: dialect, codec: codec},
 		Items:             items,
 		Cards:             &Cards{DB: db, Dialect: dialect, codec: codec},

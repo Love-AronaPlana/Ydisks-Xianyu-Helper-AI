@@ -15,6 +15,7 @@ import (
 	"github.com/coder/websocket/wsjson"
 	"github.com/go-chi/chi/v5"
 
+	accountapp "xianyu-go/internal/application/account"
 	chatapp "xianyu-go/internal/application/chat"
 	"xianyu-go/internal/auth"
 )
@@ -205,6 +206,8 @@ func (s *Server) sendChatImage(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusServiceUnavailable, "图片上传服务未启用")
 		} else if errors.Is(err, chatapp.ErrOffline) {
 			writeErr(w, http.StatusConflict, "账号当前离线，无法发送图片")
+		} else if errors.Is(err, chatapp.ErrSendUncertain) {
+			writeErrDetails(w, http.StatusBadGateway, "chat_image_send_uncertain", "图片发送结果待确认，请先到闲鱼核对，避免重复发送", "", map[string]any{"outgoing_message": sent})
 		} else if errors.Is(err, chatapp.ErrSend) {
 			writeErrDetails(w, http.StatusBadGateway, "chat_image_send_failed", "图片发送失败，请重试", "", map[string]any{"outgoing_message": sent})
 		} else if errors.Is(err, chatapp.ErrStatusSave) {
@@ -326,6 +329,8 @@ func (s *Server) sendChatMessage(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusServiceUnavailable, "聊天服务未启用")
 		} else if errors.Is(err, chatapp.ErrOffline) {
 			writeErr(w, http.StatusConflict, "账号当前离线，无法发送消息")
+		} else if errors.Is(err, chatapp.ErrSendUncertain) {
+			writeErrDetails(w, http.StatusBadGateway, "chat_send_uncertain", "发送结果待确认，请先到闲鱼核对，避免重复发送", "", map[string]any{"outgoing_message": sent})
 		} else if errors.Is(err, chatapp.ErrSend) {
 			writeErrDetails(w, http.StatusBadGateway, "chat_message_send_failed", "发送失败，请重试", "", map[string]any{"outgoing_message": sent})
 		} else if errors.Is(err, chatapp.ErrStatusSave) {
@@ -443,6 +448,26 @@ func findChatPlatformMessageID(value any, chatID, legacyID string) string {
 func (s *Server) chatWebSocket(w http.ResponseWriter, r *http.Request) {
 	// sess 用于本次流程后续判断的sess
 	sess := auth.SessionFromContext(r.Context())
+	// sessionID 是后续每次写帧前校验的本地管理会话标识，不包含闲鱼凭证。
+	sessionCookie, cookieErr := r.Cookie(auth.CookieName)
+	if cookieErr != nil || strings.TrimSpace(sessionCookie.Value) == "" {
+		writeErr(w, http.StatusUnauthorized, "管理会话已失效")
+		return
+	}
+	// sessionID 是后续每次写帧前校验的本地管理会话标识，不包含闲鱼凭证。
+	sessionID := sessionCookie.Value
+	// validateSession 在数据库边界内重新确认管理会话，最长等待三秒且不会触发平台调用。
+	validateSession := func(parent context.Context) error {
+		// checkCtx 和 checkCancel 将单次本地授权查询限制为三秒。
+		checkCtx, checkCancel := context.WithTimeout(parent, 3*time.Second)
+		defer checkCancel()
+		return s.authenticationApplication().ValidateSession(checkCtx, sessionID, sess.UserID)
+	}
+	// validationErr 保存连接建立前的本地授权检查结果。
+	if validationErr := validateSession(r.Context()); validationErr != nil {
+		writeErr(w, http.StatusUnauthorized, "管理会话已失效")
+		return
+	}
 	// events、unsubscribe、err 保存应用层实时事件、清理函数和订阅错误。
 	events, unsubscribe, err := s.chatApplication().Subscribe(r.Context(), sess.UserID)
 	if err != nil {
@@ -483,17 +508,71 @@ func (s *Server) chatWebSocket(w http.ResponseWriter, r *http.Request) {
 		unsubscribe()
 	}
 	defer cleanup()
+	// validationErr 保存 ready 写出前的授权检查结果。
+	if validationErr := validateSession(ctx); validationErr != nil {
+		if errors.Is(validationErr, accountapp.ErrSessionInvalid) {
+			_ = conn.Close(websocket.StatusPolicyViolation, "session_invalid")
+		} else {
+			_ = conn.Close(websocket.StatusInternalError, "session_validation_failed")
+		}
+		return
+	}
 	if // err 用于本次流程后续判断的err
 	err := wsjson.Write(ctx, conn, map[string]any{"type": "ready", "at": time.Now().UTC().UnixMilli()}); err != nil {
 		return
 	}
+	// validationTicker 每五秒检查一次空闲连接的管理会话截止时间。
+	validationTicker := time.NewTicker(5 * time.Second)
+	defer validationTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-validationTicker.C:
+			// validationErr 保存空闲连接定时授权检查结果。
+			if validationErr := validateSession(ctx); validationErr != nil {
+				if errors.Is(validationErr, accountapp.ErrSessionInvalid) {
+					_ = conn.Close(websocket.StatusPolicyViolation, "session_invalid")
+				} else {
+					_ = conn.Close(websocket.StatusInternalError, "session_validation_failed")
+				}
+				return
+			}
 		case // event、ok 用于本次流程后续判断的event、ok
 		event, ok := <-events:
-			if !ok || wsjson.Write(ctx, conn, newChatEventDTOFromApplication(event)) != nil {
+			if !ok {
+				return
+			}
+			// validationErr 保存业务帧写出前的授权检查结果。
+			if validationErr := validateSession(ctx); validationErr != nil {
+				if errors.Is(validationErr, accountapp.ErrSessionInvalid) {
+					_ = conn.Close(websocket.StatusPolicyViolation, "session_invalid")
+				} else {
+					_ = conn.Close(websocket.StatusInternalError, "session_validation_failed")
+				}
+				return
+			}
+			// accountID 保存事件中待校验的非敏感账号标识。
+			accountID := ""
+			if event.Message != nil {
+				accountID = event.Message.AccountID
+			}
+			if event.Session != nil {
+				if accountID != "" && event.Session.AccountID != "" && accountID != event.Session.AccountID {
+					continue
+				}
+				if accountID == "" {
+					accountID = event.Session.AccountID
+				}
+			}
+			if accountID != "" {
+				// owned 和 ownershipErr 保存事件账号归属校验结果。
+				owned, ownershipErr := s.chatApplication().OwnsAccount(ctx, sess.UserID, accountID)
+				if ownershipErr != nil || !owned {
+					continue
+				}
+			}
+			if wsjson.Write(ctx, conn, newChatEventDTOFromApplication(event)) != nil {
 				return
 			}
 		}

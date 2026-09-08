@@ -8355,7 +8355,7 @@ components:
         message_type: {type: string, enum: [text, image, video, audio, item, system]}
         content: {type: string}
         media_duration: {type: integer}
-        status: {type: string, enum: [received, sending, sent, failed]}
+        status: {type: string, enum: [received, sending, sent, failed, uncertain]}
         read_status: {type: integer}
         read_at: {type: integer}
         sent_at: {type: integer}

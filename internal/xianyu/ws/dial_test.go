@@ -49,7 +49,8 @@ func startRegServer(t *testing.T) (*httptest.Server, chan map[string]any) {
 				case got <- m:
 				default:
 				}
-				if m["lwp"] == "/reg" {
+				switch m["lwp"] {
+				case "/reg":
 					// headers 用于本次流程后续判断的headers
 					headers, _ := m["headers"].(map[string]any)
 					// response 用于本次流程后续判断的响应
@@ -61,9 +62,21 @@ func startRegServer(t *testing.T) (*httptest.Server, chan map[string]any) {
 						},
 					}
 					// raw 用于本次流程后续判断的原始
+					// raw 保存 ACK 的 JSON 字节。
 					raw, _ := json.Marshal(response)
 					if // err 用于本次流程后续判断的err
 					err := c.Write(ctx, websocket.MessageText, raw); err != nil {
+						return
+					}
+				case "/r/MessageSend/sendByReceiverScope":
+					// response 模拟平台对单次消息发送的明确成功确认。
+					headers, _ := m["headers"].(map[string]any)
+					// response 和 raw 保存发送成功 ACK 及其 JSON 帧。
+					response := map[string]any{"code": 200, "headers": map[string]any{"mid": headers["mid"]}}
+					// raw 保存 ACK 的 JSON 字节。
+					raw, _ := json.Marshal(response)
+					// err 保存 ACK 帧写入错误。
+					if err := c.Write(ctx, websocket.MessageText, raw); err != nil {
 						return
 					}
 				}
@@ -816,6 +829,18 @@ func TestSendText_ServerReceives(t *testing.T) {
 				case got <- m:
 				default:
 				}
+				if m["lwp"] == "/r/MessageSend/sendByReceiverScope" {
+					// response 模拟平台对本次发送的明确成功确认。
+					headers, _ := m["headers"].(map[string]any)
+					// response 和 raw 保存文本消息成功 ACK 及其 JSON 帧。
+					response := map[string]any{"code": 200, "headers": map[string]any{"mid": headers["mid"]}}
+					// raw 保存 ACK 的 JSON 字节。
+					raw, _ := json.Marshal(response)
+					// err 保存 ACK 帧写入错误。
+					if err := c.Write(ctx, websocket.MessageText, raw); err != nil {
+						return
+					}
+				}
 			}
 		}
 	}))
@@ -920,6 +945,18 @@ func TestSendImage_ServerReceivesAndDefaults(t *testing.T) {
 				case got <- m:
 				default:
 				}
+				if m["lwp"] == "/r/MessageSend/sendByReceiverScope" {
+					// response 模拟平台对本次图片发送的明确成功确认。
+					headers, _ := m["headers"].(map[string]any)
+					// response 和 raw 保存默认尺寸图片成功 ACK 及其 JSON 帧。
+					response := map[string]any{"code": 200, "headers": map[string]any{"mid": headers["mid"]}}
+					// raw 保存 ACK 的 JSON 字节。
+					raw, _ := json.Marshal(response)
+					// err 保存 ACK 帧写入错误。
+					if err := c.Write(ctx, websocket.MessageText, raw); err != nil {
+						return
+					}
+				}
 			}
 		}
 	}))
@@ -1009,6 +1046,18 @@ func TestSendImage_ExplicitDimensions(t *testing.T) {
 				select {
 				case got <- m:
 				default:
+				}
+				if m["lwp"] == "/r/MessageSend/sendByReceiverScope" {
+					// response 模拟平台对本次图片发送的明确成功确认。
+					headers, _ := m["headers"].(map[string]any)
+					// response 和 raw 保存指定尺寸图片成功 ACK 及其 JSON 帧。
+					response := map[string]any{"code": 200, "headers": map[string]any{"mid": headers["mid"]}}
+					// raw 保存 ACK 的 JSON 字节。
+					raw, _ := json.Marshal(response)
+					// err 保存 ACK 帧写入错误。
+					if err := c.Write(ctx, websocket.MessageText, raw); err != nil {
+						return
+					}
 				}
 			}
 		}

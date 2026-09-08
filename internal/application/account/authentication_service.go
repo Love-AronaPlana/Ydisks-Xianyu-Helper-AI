@@ -8,6 +8,9 @@ import (
 // ErrPasswordMismatch 表示当前密码未通过校验，调用方应返回认证失败而不是基础设施错误。
 var ErrPasswordMismatch = errors.New("密码错误")
 
+// ErrSessionInvalid 表示管理会话已撤销、过期或不属于声明用户。
+var ErrSessionInvalid = errors.New("管理会话无效")
+
 // ErrUsernameTaken 表示新的用户名已经被其他用户占用。
 var ErrUsernameTaken = errors.New("用户名已存在")
 
@@ -19,6 +22,19 @@ type AuthUser struct {
 	Username string
 	// IsAdmin 表示用户是否拥有管理员权限。
 	IsAdmin bool
+	// AuthVersion 是密码验证时读取的本地认证代次，仅供同一事务创建会话。
+	AuthVersion int64
+}
+
+// verifiedAuthenticationRepository 是支持认证代次闭环的持久化扩展端口。
+type verifiedAuthenticationRepository interface {
+	VerifyLogin(context.Context, string, string) (AuthUser, bool, error)
+	CreateVerifiedSession(context.Context, AuthUser) (string, error)
+}
+
+// sessionValidationRepository 是管理连接持续校验本地会话的持久化扩展端口。
+type sessionValidationRepository interface {
+	ValidateSession(context.Context, string, int64) error
 }
 
 // AuthenticationRepository 定义认证用例需要的最小用户与会话端口。
@@ -82,6 +98,20 @@ func (s *AuthenticationService) Login(ctx context.Context, username, password st
 	if s == nil || s.repository == nil {
 		return "", nil, errors.New("认证服务未初始化")
 	}
+	// verified 和 ok 表示持久化端口是否支持代次闭环。
+	if verified, ok := s.repository.(verifiedAuthenticationRepository); ok {
+		// user、matched 和 verifyErr 保存带认证代次的密码验证结果。
+		user, matched, verifyErr := verified.VerifyLogin(ctx, username, password)
+		if verifyErr != nil || !matched {
+			return "", nil, verifyErr
+		}
+		// sessionID 和 sessionErr 保存事务校验后签发的会话结果。
+		sessionID, sessionErr := verified.CreateVerifiedSession(ctx, user)
+		if sessionErr != nil {
+			return "", nil, sessionErr
+		}
+		return sessionID, &user, nil
+	}
 	// user、matched、verifyErr 保存密码校验得到的身份、匹配结果和基础设施错误。
 	user, matched, verifyErr := s.repository.VerifyPassword(ctx, username, password)
 	if verifyErr != nil {
@@ -104,6 +134,19 @@ func (s *AuthenticationService) VerifyPassword(ctx context.Context, username, pa
 		return AuthUser{}, false, errors.New("认证服务未初始化")
 	}
 	return s.repository.VerifyPassword(ctx, username, password)
+}
+
+// ValidateSession 在不读取闲鱼凭证的前提下确认本地会话仍属于指定用户。
+func (s *AuthenticationService) ValidateSession(ctx context.Context, sessionID string, userID int64) error {
+	if s == nil || s.repository == nil {
+		return errors.New("认证服务未初始化")
+	}
+	// validator 和 ok 保存本地会话校验扩展及其支持状态。
+	validator, ok := s.repository.(sessionValidationRepository)
+	if !ok {
+		return errors.New("认证 repository 不支持会话校验")
+	}
+	return validator.ValidateSession(ctx, sessionID, userID)
 }
 
 // UpdatePassword 保存新密码并撤销旧会话，返回值保持数据库层“用户是否存在”的兼容语义。

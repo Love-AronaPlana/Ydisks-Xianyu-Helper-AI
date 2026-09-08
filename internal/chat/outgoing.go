@@ -52,7 +52,7 @@ func (s *Service) RecordOutgoingMessageSent(ctx context.Context, session db.Chat
 	// stored、saveErr 保存幂等写入的出站消息及其错误；只有首次写入才广播创建事件。
 	stored, inserted, saveErr := s.repository.SaveMessage(ctx, session, message, false)
 	if saveErr == nil && inserted {
-		s.Publish(session.CookieID, Event{Type: "message.created", Message: stored, Session: &session})
+		s.PublishContext(ctx, session.CookieID, Event{Type: "message.created", Message: stored, Session: &session})
 	}
 	return stored, saveErr
 }

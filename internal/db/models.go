@@ -8,8 +8,10 @@ type User struct {
 	PasswordHash string
 	IsActive     bool
 	IsAdmin      bool
-	CreatedAt    string
-	UpdatedAt    string
+	// AuthVersion 是密码或登录凭据变更时递增的本地认证代次。
+	AuthVersion int64
+	CreatedAt   string
+	UpdatedAt   string
 }
 
 // Session 对应 sessions 表（HttpOnly Cookie 会话）。
