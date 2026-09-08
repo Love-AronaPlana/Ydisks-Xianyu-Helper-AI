@@ -2,7 +2,7 @@
 import { act,renderHook,waitFor } from '@testing-library/react';
 import { beforeEach,describe,expect,test,vi } from 'vitest';
 import type { AccountDetail,ChatMessage,ChatSession } from './api';
-import { confirmedOutgoingMessageFromError,getAccountDetails,getAccountRuntimeStatuses,getChatMessagePage,getChatSessionPage,markChatRead,sendChatImage,sendChatMessage } from './api';
+import { confirmedOutgoingMessageFromError,deleteChatSession,getAccountDetails,getAccountRuntimeStatuses,getChatMessagePage,getChatSessionPage,markChatRead,sendChatImage,sendChatMessage } from './api';
 import { useChat } from './hooks';
 import { publishChatConnectionState,publishChatLiveMessage } from './liveEvents';
 
@@ -11,6 +11,7 @@ vi.mock('./api', /* chatApiMockFactory 提供聊天 Hook 的确定性 API 替身
   getAccountRuntimeStatuses: vi.fn(),
   getChatMessagePage: vi.fn(),
   getChatSessionPage: vi.fn(),
+	deleteChatSession: vi.fn(),
   markChatRead: vi.fn(),
   sendChatImage: vi.fn(),
   sendChatMessage: vi.fn(),
@@ -25,6 +26,8 @@ const getRuntimeMock = vi.mocked(getAccountRuntimeStatuses);
 const getMessagePageMock = vi.mocked(getChatMessagePage);
 // getSessionPageMock 是聊天会话分页请求的可控替身。
 const getSessionPageMock = vi.mocked(getChatSessionPage);
+// deleteSessionMock 是本地会话删除请求的可控替身。
+const deleteSessionMock = vi.mocked(deleteChatSession);
 // markReadMock 是聊天已读请求的可控替身。
 const markReadMock = vi.mocked(markChatRead);
 // sendImageMock 是聊天图片发送请求的可控替身。
@@ -50,6 +53,7 @@ describe('useChat', /* 当前回调处理聊天加载、分页、发送和实时
     getRuntimeMock.mockResolvedValue({ 'account-1': { state: 'online', connected: true, failures: 0, updated_at: '2026-08-15T00:00:00Z' } });
     getSessionPageMock.mockResolvedValue({ sessions: [sessionFixture], has_more: true, next_cursor: 2 });
     getMessagePageMock.mockResolvedValue({ messages: [messageFixture], has_more: true, next_cursor: 2, session: sessionFixture });
+		deleteSessionMock.mockResolvedValue({ success: true });
     markReadMock.mockResolvedValue({ success: true });
     sendMessageMock.mockResolvedValue({ message: sentMessageFixture });
     sendImageMock.mockResolvedValue({ message: sentMessageFixture });
@@ -148,6 +152,26 @@ describe('useChat', /* 当前回调处理聊天加载、分页、发送和实时
     );
     hook.unmount();
   });
+
+	test('独立发送器只允许把结果合入当前账号和会话', /* 当前回调验证旧商品请求不能污染切换后的消息列表。 */ async () => {
+		// secondSession 是切换后成为当前上下文的另一条会话。
+		const secondSession: ChatSession = { ...sessionFixture, chat_id: 'chat-2', buyer_id: 'buyer-2', buyer_name: '买家二', last_message: '第二会话' };
+		getSessionPageMock.mockResolvedValue({ sessions: [sessionFixture, secondSession], has_more: false });
+		// hook 是验证独立发送结果归属门禁的聊天状态。
+		const hook = renderHook(/* chatHookFactory 创建包含两个会话的聊天 Hook。 */ () => useChat());
+		await waitFor(/* activeAssertion 等待默认会话选中。 */ () => expect(hook.result.current.activeChatID).toBe('chat-1'));
+		await act(/* switchAction 切换到第二条会话。 */ () => hook.result.current.setActiveChatID('chat-2'));
+		await waitFor(/* switchedAssertion 等待最新会话引用同步。 */ () => expect(hook.result.current.activeChatID).toBe('chat-2'));
+		// staleMessage 模拟第一条会话商品弹窗在切换后返回的迟到结果。
+		const staleMessage: ChatMessage = { ...sentMessageFixture, chat_id: 'chat-1', message_key: 'stale-item', message_type: 'item' };
+		await act(/* staleResultAction 尝试合并旧会话发送结果。 */ () => hook.result.current.acceptOutgoingMessage(staleMessage));
+		expect(hook.result.current.messages.some(/* message 是当前列表中待检查的消息。 */ message => message.message_key === 'stale-item')).toBe(false);
+		// currentMessage 是与当前会话一致的合法独立发送结果。
+		const currentMessage: ChatMessage = { ...staleMessage, chat_id: 'chat-2', message_key: 'current-item' };
+		await act(/* currentResultAction 合并当前会话发送结果。 */ () => hook.result.current.acceptOutgoingMessage(currentMessage));
+		expect(hook.result.current.messages).toContainEqual(currentMessage);
+		hook.unmount();
+	});
 
   test('联系人分页和发送失败都提供可重试状态', /* 当前回调验证聊天分页和错误重试路径。 */ async () => {
     // hook 是聊天失败场景的 Hook 渲染结果。
@@ -558,4 +582,124 @@ describe('useChat', /* 当前回调处理聊天加载、分页、发送和实时
     expect(historySignal?.aborted).toBe(true);
     hook.unmount();
   });
+
+	test('删除非当前会话保持聊天上下文，删除当前会话清空消息并选择剩余会话', /* 当前回调验证会话删除成功后的局部状态收口。 */ async () => {
+		// secondSession 是用于先验证非当前会话删除的联系人。
+		const secondSession = { ...sessionFixture, chat_id: 'chat-2', buyer_id: 'buyer-2', buyer_name: '第二位买家', unread_count: 3 };
+		getSessionPageMock.mockResolvedValue({ sessions: [sessionFixture, secondSession], has_more: false });
+		// hook 是会话删除成功场景的聊天 Hook。
+		const hook = renderHook(
+			// deletionHookFactory 创建包含两条会话的聊天 Hook。
+			() => useChat(),
+		);
+		await waitFor(
+			// activeChatAssertion 等待默认会话完成选择和消息加载。
+			() => expect(hook.result.current.activeChatID).toBe('chat-1'),
+		);
+		await act(
+			// deleteInactiveAction 删除非当前会话，不应清空正在查看的聊天。
+			async () => { expect(await hook.result.current.deleteConversation('account-1', 'chat-2')).toBe(true); },
+		);
+		expect(hook.result.current.activeChatID).toBe('chat-1');
+		expect(hook.result.current.activeSessions.map(/* session 是删除非当前会话后保留的列表行。 */ session => session.chat_id)).toEqual(['chat-1']);
+		expect(hook.result.current.messages).toEqual([messageFixture]);
+		await act(
+			// deleteActiveAction 删除当前且最后一条会话，页面应进入空态。
+			async () => { expect(await hook.result.current.deleteConversation('account-1', 'chat-1')).toBe(true); },
+		);
+		await waitFor(
+			// emptyChatAssertion 等待删除后的选中会话和消息列表完成清理。
+			() => expect(hook.result.current.activeChatID).toBe(''),
+		);
+		expect(hook.result.current.activeSessions).toEqual([]);
+		expect(hook.result.current.messages).toEqual([]);
+		expect(hook.result.current.retryAvailable).toBe(false);
+		expect(deleteSessionMock).toHaveBeenNthCalledWith(1, 'account-1', 'chat-2', expect.objectContaining({ signal: expect.any(AbortSignal) }));
+		expect(deleteSessionMock).toHaveBeenNthCalledWith(2, 'account-1', 'chat-1', expect.objectContaining({ signal: expect.any(AbortSignal) }));
+		hook.unmount();
+	});
+
+	test('删除失败保留会话并提供独立可清除错误', /* 当前回调验证确认框可在失败后保留并重试。 */ async () => {
+		deleteSessionMock.mockRejectedValueOnce(new Error('数据库暂时不可用'));
+		// hook 是会话删除失败场景的聊天 Hook。
+		const hook = renderHook(
+			// failedDeletionHookFactory 创建删除失败场景的聊天 Hook。
+			() => useChat(),
+		);
+		await waitFor(
+			// activeChatAssertion 等待默认会话加载完成。
+			() => expect(hook.result.current.activeChatID).toBe('chat-1'),
+		);
+		await act(
+			// failedDeleteAction 提交会失败的本地会话删除。
+			async () => { expect(await hook.result.current.deleteConversation('account-1', 'chat-1')).toBe(false); },
+		);
+		expect(hook.result.current.activeSessions).toHaveLength(1);
+		expect(hook.result.current.deleteError).toBe('数据库暂时不可用');
+		await act(
+			// clearDeleteErrorAction 模拟重新打开确认框前清除旧错误。
+			() => hook.result.current.clearDeleteError(),
+		);
+		expect(hook.result.current.deleteError).toBe('');
+		hook.unmount();
+	});
+
+	test('切换账号会取消删除请求并丢弃过期成功响应', /* 当前回调验证旧账号删除响应不能改写新账号聊天状态。 */ async () => {
+		// secondAccount 是切换后的目标账号，保持在线以完整加载其会话状态。
+		const secondAccount: AccountDetail = { ...accountFixture, id: 'account-2', nickname: '第二账号' };
+		// secondSession 是目标账号必须在过期删除响应后继续保留的会话。
+		const secondSession: ChatSession = { ...sessionFixture, account_id: 'account-2', chat_id: 'chat-2', buyer_id: 'buyer-2', buyer_name: '第二位买家' };
+		getDetailsMock.mockResolvedValue([accountFixture, secondAccount]);
+		getRuntimeMock.mockResolvedValue({
+			'account-1': { state: 'online', connected: true, failures: 0, updated_at: '2026-08-15T00:00:00Z' },
+			'account-2': { state: 'online', connected: true, failures: 0, updated_at: '2026-08-15T00:00:00Z' },
+		});
+		getSessionPageMock.mockImplementation(/* accountID 决定当前初始化请求返回哪个账号的隔离会话。 */ async accountID => ({ sessions: accountID === 'account-2' ? [secondSession] : [sessionFixture], has_more: false }));
+		// deletionSignal 保存删除 API 收到的信号，用于断言账号切换已主动取消旧请求。
+		let deletionSignal: AbortSignal | undefined;
+		// resolveDeletion 在测试完成账号切换后释放模拟的迟到成功响应。
+		let resolveDeletion: (() => void) | undefined;
+		deleteSessionMock.mockImplementationOnce(/* _accountID、_chatID 和 options 分别是本次延迟删除的定位参数与取消选项。 */ (_accountID, _chatID, options) => {
+			deletionSignal = options?.signal;
+			return new Promise(/* resolve 保存延迟响应的完成函数，直到账号切换后才调用。 */ resolve => { resolveDeletion = /* 当前回调用成功响应释放延迟删除 Promise。 */ () => resolve({ success: true }); });
+		});
+		// hook 是同时加载两个账号的聊天 Hook。
+		const hook = renderHook(
+			// staleDeletionHookFactory 创建用于验证账号隔离的 Hook。
+			() => useChat(),
+		);
+		await waitFor(
+			// initialChatAssertion 等待默认账号会话完成选择。
+			() => expect(hook.result.current.activeChatID).toBe('chat-1'),
+		);
+		// deletionPromise 保存仍在等待后端响应的删除结果。
+		let deletionPromise: Promise<boolean> | undefined;
+		await act(
+			// startDeletionAction 启动旧账号删除，但不等待被测试控制的延迟响应。
+			() => { deletionPromise = hook.result.current.deleteConversation('account-1', 'chat-1'); },
+		);
+		await waitFor(
+			// deletionStartedAssertion 等待删除请求建立可取消信号。
+			() => expect(deletionSignal).toBeDefined(),
+		);
+		await act(
+			// switchAccountAction 在删除完成前切换到另一个账号。
+			() => hook.result.current.setActiveAccountID('account-2'),
+		);
+		expect(deletionSignal?.aborted).toBe(true);
+		await act(
+			// finishStaleDeletionAction 释放旧请求并确认调用方收到失败结果而非提交旧状态。
+			async () => {
+				resolveDeletion?.();
+				expect(await deletionPromise).toBe(false);
+			},
+		);
+		await waitFor(
+			// secondAccountAssertion 等待新账号会话成为当前聊天。
+			() => expect(hook.result.current.activeChatID).toBe('chat-2'),
+		);
+		expect(hook.result.current.activeSessions.map(/* session 是过期响应完成后新账号仍保留的会话。 */ session => session.chat_id)).toEqual(['chat-2']);
+		expect(hook.result.current.deleteError).toBe('');
+		hook.unmount();
+	});
 });

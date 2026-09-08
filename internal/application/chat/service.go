@@ -26,6 +26,12 @@ var ErrRefreshUnavailable = errors.New("聊天刷新服务未启用")
 // ErrRefreshPersist 表示平台刷新成功但本地聊天历史持久化失败。
 var ErrRefreshPersist = errors.New("聊天刷新结果保存失败")
 
+// ErrSessionForbidden 表示当前用户不拥有目标聊天账号。
+var ErrSessionForbidden = errors.New("无权访问聊天账号")
+
+// ErrChatSessionNotFound 表示指定账号下不存在可操作的聊天会话。
+var ErrChatSessionNotFound = errors.New("聊天会话不存在")
+
 // Message 是聊天历史用例对外暴露的非敏感消息模型。
 type Message struct {
 	// ID 是本地消息主键。
@@ -54,7 +60,7 @@ type Message struct {
 	ReadStatus int
 	// ReadAt 是平台确认对方已读的 Unix 毫秒时间戳；零值表示尚未收到回执。
 	ReadAt int64
-	// SentAt 是消息发送时间的 Unix 秒时间戳。
+	// SentAt 是消息发送时间的 Unix 毫秒时间戳，与平台消息时间及本地清空截止线使用同一单位。
 	SentAt int64
 }
 
@@ -78,7 +84,7 @@ type Session struct {
 	ItemImageURL string
 	// LastMessage 是最近消息摘要。
 	LastMessage string
-	// LastMessageAt 是最近消息时间的 Unix 秒时间戳。
+	// LastMessageAt 是最近消息时间的 Unix 毫秒时间戳，与平台会话摘要时间保持一致。
 	LastMessageAt int64
 	// UnreadCount 是当前会话未读消息数量。
 	UnreadCount int
@@ -204,6 +210,20 @@ type SessionRepository interface {
 	MarkRead(ctx context.Context, userID int64, accountID, chatID string) error
 }
 
+// SessionDeletionRepository 定义用户删除会话所需的最小归属与原子清空能力。
+type SessionDeletionRepository interface {
+	// ExistsOwned 只判断账号是否归属于当前用户，不读取或解密平台凭证。
+	ExistsOwned(ctx context.Context, userID int64, accountID string) (bool, error)
+	// HideAndClearSession 原子隐藏会话并物理清空展示消息；false 表示当前用户范围内不存在该会话。
+	HideAndClearSession(ctx context.Context, userID int64, accountID, chatID string, clearedAt int64) (bool, error)
+}
+
+// SessionLookupRepository 定义发送类用例所需的精确会话归属查询。
+type SessionLookupRepository interface {
+	// FindSession 返回当前用户在指定账号下的可见会话；不存在时返回仓储错误。
+	FindSession(ctx context.Context, userID int64, accountID, chatID string) (Session, error)
+}
+
 // ReadMessageIDResolver 定义旧版聊天关联标识解析需要的最小诊断查询能力。
 type ReadMessageIDResolver interface {
 	// FindInboundParsedJSONContaining 返回可能包含旧关联标识的有限已解密入站诊断帧。
@@ -228,16 +248,20 @@ type Service struct {
 	refresh RefreshProvider
 	// readReporter 保存可选的平台已读上报端口，本地已读持久化不依赖该外部动作。
 	readReporter PlatformReadReporter
+	// itemCatalog 保存个人会话商品查询端口，凭证和平台响应由适配器封装。
+	itemCatalog ChatItemCatalog
+	// sessionOperations 按账号和会话串行化人工发送与本地删除，不影响不同会话或后台自动化。
+	sessionOperations *sessionOperationGate
 }
 
 // New 创建聊天历史应用服务；空端口会导致构造结果不可用。
 func New(repository Repository) *Service {
-	return &Service{repository: repository}
+	return &Service{repository: repository, sessionOperations: newSessionOperationGate()}
 }
 
 // NewWithIdentity 创建支持平台会话身份补全的聊天应用服务。
 func NewWithIdentity(repository Repository, resolver IdentityResolver) *Service {
-	return &Service{repository: repository, identityResolver: resolver}
+	return &Service{repository: repository, identityResolver: resolver, sessionOperations: newSessionOperationGate()}
 }
 
 // ListStoredMessages 查询当前用户有权访问的本地聊天历史。
@@ -476,10 +500,53 @@ func (s *Service) MarkRead(ctx context.Context, userID int64, accountID, chatID 
 	return repository.MarkRead(ctx, userID, accountID, chatID)
 }
 
+// DeleteConversation 隐藏当前用户拥有的会话并物理清空聊天页消息，保留自动化定位和独立 AI 记忆。
+// userID、accountID 和 chatID 共同限制删除范围；无权访问和会话不存在分别返回稳定应用错误。
+func (s *Service) DeleteConversation(ctx context.Context, userID int64, accountID, chatID string) error {
+	// normalizedAccountID 和 normalizedChatID 是去除首尾空白后的本地会话定位字段。
+	normalizedAccountID, normalizedChatID := strings.TrimSpace(accountID), strings.TrimSpace(chatID)
+	if s == nil || s.repository == nil || userID <= 0 || normalizedAccountID == "" || normalizedChatID == "" {
+		return ErrInvalidInput
+	}
+	// repository 是同时提供账号归属和原子会话清空能力的消费者窄端口。
+	repository, supported := s.repository.(SessionDeletionRepository)
+	if !supported {
+		return ErrSessionUnavailable
+	}
+	// owned 和 ownershipErr 保存账号归属判断及底层读取错误。
+	owned, ownershipErr := repository.ExistsOwned(ctx, userID, normalizedAccountID)
+	if ownershipErr != nil {
+		return ownershipErr
+	}
+	if !owned {
+		return ErrSessionForbidden
+	}
+	// unlockOperation 保证同一会话已经开始的人工发送先完成，随后删除才能成为最终可见状态。
+	unlockOperation := s.sessionOperations.lock(normalizedAccountID, normalizedChatID)
+	defer unlockOperation()
+	// found 和 deleteErr 保存使用服务端毫秒截止时间执行原子隐藏清空的结果。
+	found, deleteErr := repository.HideAndClearSession(ctx, userID, normalizedAccountID, normalizedChatID, time.Now().UTC().UnixMilli())
+	if deleteErr != nil {
+		return deleteErr
+	}
+	if !found {
+		return ErrChatSessionNotFound
+	}
+	return nil
+}
+
 // WithPlatformReadReporter 为已构造的聊天应用服务注入可选的平台已读上报端口。
 func WithPlatformReadReporter(service *Service, reporter PlatformReadReporter) *Service {
 	if service != nil {
 		service.readReporter = reporter
+	}
+	return service
+}
+
+// WithChatItemCatalog 为已构造的聊天应用服务注入个人会话商品查询能力。
+func WithChatItemCatalog(service *Service, catalog ChatItemCatalog) *Service {
+	if service != nil {
+		service.itemCatalog = catalog
 	}
 	return service
 }

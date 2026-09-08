@@ -37,6 +37,9 @@ const UserPageNavAPI = "https://h5api.m.goofish.com/h5/mtop.idle.web.user.page.n
 // ItemListAPI 是卖家商品列表端点。
 const ItemListAPI = "https://h5api.m.goofish.com/h5/mtop.idle.web.xyh.item.list/1.0/"
 
+// ChatItemSearchAPI 是个人会话中查询对方或当前账号在售商品的端点。
+const ChatItemSearchAPI = "https://h5api.m.goofish.com/h5/mtop.taobao.idlemessage.pc.tool.item.search/1.0/"
+
 // SoldOrdersAPI 是闲鱼卖家工作台的已售订单列表端点。
 const SoldOrdersAPI = "https://h5api.m.goofish.com/h5/mtop.taobao.idle.trade.merchant.sold.get/1.0/"
 
@@ -84,6 +87,8 @@ type ClientImpl struct {
 	PolishItemURL       string
 	PolishItemBackupURL string
 	ChatUserQueryURL    string
+	// ChatItemSearchURL 允许测试将聊天商品查询指向本地 HTTP 服务；生产空值使用官方端点。
+	ChatItemSearchURL string
 }
 
 // httpClient 返回带统一请求/响应日志的 HTTP 客户端副本。统一放在传输层，
@@ -229,6 +234,8 @@ const (
 	MTopErrorSessionExpired MTopErrorKind = "session_expired"
 	// MTopErrorRiskVerification 表示平台要求安全验证，不能盲目重试。
 	MTopErrorRiskVerification MTopErrorKind = "risk_verification"
+	// MTopErrorSystem 表示平台或网关在 HTTP 成功信封中返回了暂时性 FAIL_SYS 错误。
+	MTopErrorSystem MTopErrorKind = "system"
 	// MTopErrorBusiness 表示平台返回了具体的普通业务错误。
 	MTopErrorBusiness MTopErrorKind = "business"
 )
@@ -283,6 +290,8 @@ func (e *MTopResponseError) Error() string {
 		message = fmt.Sprintf("%s 的登录 Session 已失效，请重新登录账号", api)
 	case MTopErrorRiskVerification:
 		message = fmt.Sprintf("%s 触发闲鱼安全验证，请完成验证后重试", api)
+	case MTopErrorSystem:
+		message = mtopFailureLabel(api) + "（平台系统错误）"
 	default:
 		message = mtopFailureLabel(api) + "（业务错误）"
 	}
@@ -347,8 +356,8 @@ func (c *ClientImpl) mtopResponseFailure(api string, status int, ret []string, d
 // mtopResponseFailureWithCause 按统一规则分类 MTOP 失败响应，并保留安全的底层错误链。
 // cause 只用于 errors.Is/errors.As，不会写入错误文本、日志或 HTTP 响应，避免泄露响应正文和凭证。
 func (c *ClientImpl) mtopResponseFailureWithCause(api string, status int, ret []string, detail string, cause error) error {
-	// kind 保存根据 ret 和 HTTP 状态计算出的失败类别。
-	kind := MTopErrorBusiness
+	// kind 保存根据 ret 和 HTTP 状态计算出的失败类别；未知成功信封失败按系统错误处理，不能伪装成终态业务拒绝。
+	kind := MTopErrorSystem
 	switch {
 	case isRiskVerificationRet(ret):
 		kind = MTopErrorRiskVerification
@@ -360,6 +369,8 @@ func (c *ClientImpl) mtopResponseFailureWithCause(api string, status int, ret []
 		kind = MTopErrorHTTP
 	case detail != "" && len(ret) == 0:
 		kind = MTopErrorDecode
+	case isMTopBusinessRet(ret):
+		kind = MTopErrorBusiness
 	}
 	// failure 保存统一的 MTOP 失败错误；复制 ret 防止调用方后续修改诊断内容。
 	failure := &MTopResponseError{API: api, Kind: kind, HTTPStatus: status, Ret: append([]string(nil), ret...), Detail: detail, cause: cause}
@@ -372,8 +383,8 @@ func (c *ClientImpl) mtopResponseFailureWithCause(api string, status int, ret []
 	return failure
 }
 
-// isMTopBusinessRet 判断非 2xx 响应中的 ret 是否明确属于平台普通业务结果。
-// 只有带有 FAIL_BIZ 前缀的错误码可以覆盖 HTTP 分类，网关和系统错误仍保持 HTTP 错误语义。
+// isMTopBusinessRet 判断 ret 是否用 FAIL_BIZ 前缀明确声明平台普通业务结果。
+// 只有明确业务码可以进入终态业务语义；网关和未知 FAIL_SYS 错误仍保持 HTTP 或系统错误分类。
 func isMTopBusinessRet(ret []string) bool {
 	// value 表示当前待判断的 MTOP 返回标记。
 	for _, value := range ret {

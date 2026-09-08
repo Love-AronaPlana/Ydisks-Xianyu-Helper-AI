@@ -1,6 +1,8 @@
 import {
 AccountDetail,
 ChatBuyerNote,
+ChatItem,
+ChatItemPage,
 ChatMessage,
 ChatQuickReply,
 ChatSession,
@@ -54,6 +56,13 @@ export const getChatSessionPage = async (accountId: string, cursor?: number, opt
 export const getChatSessions = async (accountId: string, options?: RequestControlOptions): Promise<ChatSession[]> =>
 	(await getChatSessionPage(accountId, undefined, options)).sessions;
 
+/** 在本机隐藏指定会话并物理清空其展示消息。 */
+export const deleteChatSession = async (accountId: string, chatId: string, options?: RequestControlOptions): Promise<OperationResponse> =>
+  runContractRequest(/* signal 是本次会话删除请求的超时与取消控制信号。 */ signal => contractClient.DELETE('/api/v1/chat/sessions', {
+    params: { query: { account_id: accountId, chat_id: chatId } },
+    signal,
+  }), options);
+
 /** 判断未知值是否满足聊天消息展示模型的全部必填字段。 */
 const isChatMessage = (value: unknown): value is ChatMessage => {
   if (!value || typeof value !== 'object') return false;
@@ -62,7 +71,7 @@ const isChatMessage = (value: unknown): value is ChatMessage => {
   return typeof candidate.id === 'number' && typeof candidate.account_id === 'string' && typeof candidate.chat_id === 'string'
     && typeof candidate.message_key === 'string' && (candidate.direction === 'incoming' || candidate.direction === 'outgoing')
     && typeof candidate.sender_id === 'string' && typeof candidate.sender_name === 'string'
-    && ['text', 'image', 'video', 'audio', 'system'].includes(String(candidate.message_type))
+    && ['text', 'image', 'video', 'audio', 'item', 'system'].includes(String(candidate.message_type))
     && typeof candidate.content === 'string' && ['received', 'sending', 'sent', 'failed'].includes(String(candidate.status))
     && typeof candidate.sent_at === 'number';
 };
@@ -184,6 +193,27 @@ export const sendChatImage = async (input: {
     signal,
   }), { timeoutMs: 120_000, ...options });
 };
+
+/** 查询当前个人会话中对方或当前账号的在售商品。 */
+export const getChatItems = async (accountId: string, chatId: string, role: 'peer' | 'self', query: string, page: number, options?: RequestControlOptions): Promise<ChatItemPage> => {
+	// response 是 OpenAPI 契约客户端返回的商品分页 DTO。
+	const response = await runContractRequest(/* signal 是本次商品查询的超时与取消信号。 */ signal => contractClient.GET('/api/v1/chat/items', {
+		params: { query: { account_id: accountId, chat_id: chatId, role, query: query || undefined, page } },
+		signal,
+	}), options);
+	return {
+		items: response.items.map(/* item 是当前待转换的商品 transport DTO。 */ item => ({ item_id: item.item_id, title: item.title, image_url: item.image_url, price: item.price, description: item.description })),
+		page: response.page,
+		has_more: response.has_more,
+	};
+};
+
+/** 将列表中选定的商品快照发送到当前个人会话。 */
+export const sendChatItemCard = async (accountId: string, chatId: string, item: ChatItem, options?: RequestControlOptions): Promise<{ /** message 是本地状态机返回的出站商品消息。 */ message: ChatMessage }> =>
+	runContractRequest(/* signal 是本次商品卡片发送的超时与取消信号。 */ signal => contractClient.POST('/api/v1/chat/item-cards', {
+		body: { account_id: accountId, chat_id: chatId, item: { item_id: item.item_id, title: item.title, image_url: item.image_url, price: item.price } },
+		signal,
+	}), options);
 
 /** 向平台确认指定会话中的入站消息已读。 */
 export const markChatRead = async (accountId: string, chatId: string, messageIDs: ChatReadReceipt[], options?: RequestControlOptions): Promise<OperationResponse> =>

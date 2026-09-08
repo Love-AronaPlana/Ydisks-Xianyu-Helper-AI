@@ -149,7 +149,9 @@ type ChatMessage struct {
 	Text         string
 	MessageID    string
 	ItemID       string
-	Raw          map[string]any // 解密后的完整消息
+	// ObservedAt 是 WebSocket 分发器首次接纳消息的 Unix 毫秒时间，防抖期间保持不变，用于和本地会话删除排序。
+	ObservedAt int64
+	Raw        map[string]any // 解密后的完整消息
 }
 
 // OutgoingChatMessage is emitted after the existing account WebSocket has
@@ -162,6 +164,12 @@ type OutgoingChatMessage struct {
 	BuyerID    string
 	Text       string
 	MessageKey string
+	// MessageType 是出站消息的展示类型；空值兼容历史文本观察。
+	MessageType string
+	// Content 是非文本消息的规范展示正文；文本观察可继续使用 Text。
+	Content string
+	// ObservedAt 是本进程确认平台消息或接纳跨端回显的 Unix 毫秒时间，用于和本地会话删除排序。
+	ObservedAt int64
 }
 
 // outgoingChatHandler 用于本次流程后续判断的outgoing聊天Handler

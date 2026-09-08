@@ -127,6 +127,30 @@ func (s *Server) listChatSessions(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// deleteChatSession 隐藏当前用户的本地聊天会话并物理清空展示消息，不调用闲鱼平台删除能力。
+func (s *Server) deleteChatSession(w http.ResponseWriter, r *http.Request) {
+	// session 保存认证中间件注入的当前管理用户身份。
+	session := auth.SessionFromContext(r.Context())
+	// accountID 和 chatID 是查询参数提供的账号及会话标识，应用层会再次规范化和校验。
+	accountID, chatID := r.URL.Query().Get("account_id"), r.URL.Query().Get("chat_id")
+	// deleteErr 保存应用层归属检查和原子清空操作的结果。
+	deleteErr := s.chatApplication().DeleteConversation(r.Context(), session.UserID, accountID, chatID)
+	switch {
+	case deleteErr == nil:
+		writeJSON(w, http.StatusOK, operationResponse{Success: true})
+	case errors.Is(deleteErr, chatapp.ErrInvalidInput):
+		writeErrCode(w, http.StatusBadRequest, "chat_session_invalid", "账号或会话标识无效", "")
+	case errors.Is(deleteErr, chatapp.ErrSessionForbidden):
+		writeErrCode(w, http.StatusForbidden, "chat_session_forbidden", "无权访问该账号", "")
+	case errors.Is(deleteErr, chatapp.ErrChatSessionNotFound):
+		writeErrCode(w, http.StatusNotFound, "chat_session_not_found", "聊天会话不存在", "")
+	case errors.Is(deleteErr, chatapp.ErrSessionUnavailable):
+		writeErrCode(w, http.StatusServiceUnavailable, "chat_session_service_unavailable", "聊天会话服务未启用", "")
+	default:
+		writeErrCode(w, http.StatusInternalServerError, "chat_session_delete_failed", "删除聊天会话失败", "")
+	}
+}
+
 // sendChatImage 封装send聊天图片业务协调。
 func (s *Server) sendChatImage(w http.ResponseWriter, r *http.Request) {
 	if !s.chatApplication().ImageUploadAvailable() {

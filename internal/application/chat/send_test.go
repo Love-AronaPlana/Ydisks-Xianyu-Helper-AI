@@ -29,11 +29,11 @@ func (r *sendRepository) CreateOutgoing(_ context.Context, session Session, _ st
 }
 
 // CreateOutgoingMedia 创建测试媒体消息。
-func (r *sendRepository) CreateOutgoingMedia(_ context.Context, session Session, _, content string) (Message, error) {
+func (r *sendRepository) CreateOutgoingMedia(_ context.Context, session Session, messageType, content string) (Message, error) {
 	if r.createErr != nil {
 		return Message{}, r.createErr
 	}
-	r.message = Message{ID: 2, AccountID: session.AccountID, ChatID: session.ChatID, MessageKey: "local-image", Content: content, Status: "sending"}
+	r.message = Message{ID: 2, AccountID: session.AccountID, ChatID: session.ChatID, MessageKey: "local-image", MessageType: messageType, Content: content, Status: "sending"}
 	return r.message, nil
 }
 
@@ -50,7 +50,7 @@ func (r *sendRepository) SetOutgoingStatus(_ context.Context, _, _ string, statu
 // sendProvider 是按账号返回固定发送器的测试替身。
 type sendProvider struct {
 	// sender 保存测试发送器；为 nil 时模拟离线账号。
-	sender *sendSender
+	sender Sender
 }
 
 // TestServiceAvailabilityReportsRequiredPorts 验证发送和图片上传能力只由应用端口装配状态决定。
@@ -89,6 +89,10 @@ type sendSender struct {
 	updatedCookie bool
 	// imageWidth、imageHeight 保存图片发送收到的像素尺寸。
 	imageWidth, imageHeight int
+	// itemChatID、itemBuyerID 和 itemKey 保存商品卡片发送使用的本地会话身份与幂等键。
+	itemChatID, itemBuyerID, itemKey string
+	// item 保存商品卡片发送器收到的规范商品快照。
+	item ChatItem
 }
 
 // SendText 记录文本发送并返回预设错误。
@@ -102,6 +106,12 @@ func (s *sendSender) SendImage(_ context.Context, _, _, _ string, _ int64, width
 	// imageWidth、imageHeight 记录应用层透传的平台图片尺寸。
 	s.imageWidth, s.imageHeight = width, height
 	s.sentKey = messageKey
+	return s.sendErr
+}
+
+// SendItemCard 记录商品卡片发送目标、快照和幂等键，并返回预设平台错误。
+func (s *sendSender) SendItemCard(_ context.Context, chatID, toUserID string, item ChatItem, messageKey string) error {
+	s.itemChatID, s.itemBuyerID, s.itemKey, s.item = chatID, toUserID, messageKey, item
 	return s.sendErr
 }
 

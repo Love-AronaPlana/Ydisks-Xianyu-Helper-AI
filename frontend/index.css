@@ -572,3 +572,15 @@ body {
     padding-right: 1.5rem;
   }
 }
+
+/* 无悬停能力的触屏设备始终显示会话删除入口，并给时间留出独立点击空间。 */
+@media (hover: none) {
+  .conversation-delete-action {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .conversation-delete-time {
+    transform: translateX(-1.5rem);
+  }
+}

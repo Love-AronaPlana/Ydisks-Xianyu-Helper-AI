@@ -337,9 +337,17 @@ func (e *automationActionExecutor) adjustOrderPriceAttempt(ctx context.Context, 
 		return fmt.Errorf("%w: 订单改价 Session 已失效且凭证恢复失败: %v", errActionNotPerformed, sessionErr)
 	}
 	if result.callErr != nil {
-		// errorKind、hasErrorKind 保存 MTOP 错误分类；普通业务拒绝已经由平台明确确认，不属于结果未知。
+		// errorKind、hasErrorKind 保存 MTOP 错误分类；明确业务拒绝终止重试，平台系统错误保留为可恢复失败。
 		errorKind, hasErrorKind := mtop.MTopErrorKindOf(result.callErr)
 		if hasErrorKind && errorKind == mtop.MTopErrorBusiness {
+			// failure 标记平台已经明确拒绝的改价，防止零成功动作被通用恢复队列再次提交。
+			failure := noRetryAction(result.callErr)
+			if len(persistenceErrs) > 0 {
+				return errors.Join(failure, errors.Join(persistenceErrs...))
+			}
+			return failure
+		}
+		if hasErrorKind && errorKind == mtop.MTopErrorSystem {
 			if len(persistenceErrs) > 0 {
 				return errors.Join(result.callErr, errors.Join(persistenceErrs...))
 			}
@@ -351,8 +359,8 @@ func (e *automationActionExecutor) adjustOrderPriceAttempt(ctx context.Context, 
 		return uncertainAction(result.callErr)
 	}
 	if !result.succeeded {
-		// failure 是远端拒绝改价的业务错误，例如订单已付款或已关闭。
-		failure := fmt.Errorf("订单改价失败: %s", strings.Join(result.returns, "; "))
+		// failure 是远端拒绝改价的业务错误，例如订单已付款或已关闭；平台已明确未执行时禁止运行级自动重放。
+		failure := noRetryAction(fmt.Errorf("订单改价失败: %s", strings.Join(result.returns, "; ")))
 		if len(persistenceErrs) > 0 {
 			return errors.Join(failure, errors.Join(persistenceErrs...))
 		}

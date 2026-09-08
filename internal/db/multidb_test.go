@@ -1470,6 +1470,8 @@ func TestMultiDB_LatestMigrationsDownUp(t *testing.T) {
 				{"chat_sessions", "unread_count"},
 				{"chat_sessions", "item_image_url"},
 				{"chat_sessions", "is_visible"},
+				{"chat_sessions", "user_hidden_at"},
+				{"chat_sessions", "messages_cleared_at"},
 				{"chat_messages", "message_key"},
 				{"chat_messages", "read_status"},
 				{"chat_messages", "read_at"},

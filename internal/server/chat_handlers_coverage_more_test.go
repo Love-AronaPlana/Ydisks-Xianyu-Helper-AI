@@ -29,6 +29,8 @@ type chatHandlerCoveragePort struct {
 	ownsAccountErr    error
 	// cleanupErr 保存清理空会话要返回的错误。
 	cleanupErr error
+	// deleteConversationErr 保存会话删除应用用例要返回的错误。
+	deleteConversationErr error
 	// refreshConversationsPage 与 refreshConversationsErr 保存联系人刷新结果。
 	refreshConversationsPage chatapp.ConversationPage
 	refreshConversationsErr  error
@@ -152,6 +154,11 @@ func (port *chatHandlerCoveragePort) ImageUploadAvailable() bool { return port.i
 // OwnsAccount 返回测试配置的账号归属结果。
 func (port *chatHandlerCoveragePort) OwnsAccount(context.Context, int64, string) (bool, error) {
 	return port.ownsAccountResult, port.ownsAccountErr
+}
+
+// DeleteConversation 返回测试配置的会话删除错误。
+func (port *chatHandlerCoveragePort) DeleteConversation(context.Context, int64, string, string) error {
+	return port.deleteConversationErr
 }
 
 // CleanupEmptySessions 返回测试配置的空会话清理错误。
@@ -584,6 +591,52 @@ func TestChatSessionAndMessageHandlersCoverRefreshFallbacks(t *testing.T) {
 	missingChatRecorder := serveChatCoverageRequest(handler, cookie, http.MethodGet, "/api/v1/chat/messages?account_id=acc1", "")
 	if missingChatRecorder.Code != http.StatusBadRequest {
 		t.Fatalf("missing chat status=%d", missingChatRecorder.Code)
+	}
+}
+
+// TestDeleteChatSessionHandlerMapsApplicationResults 覆盖本地会话删除的成功与统一错误契约。
+func TestDeleteChatSessionHandlerMapsApplicationResults(t *testing.T) {
+	// srv、cleanup 是启用聊天应用的测试服务及资源释放函数。
+	srv, _, cleanup := newTestServerWithChat(t)
+	defer cleanup()
+	// port 是当前测试注入的可控会话删除应用端口。
+	port := &chatHandlerCoveragePort{}
+	srv.applications.chat = port
+	// handler 是注入可控聊天端口后的真实路由。
+	handler := srv.Router()
+	// cookie 是通过真实登录流程取得的管理员会话。
+	cookie := loginHelper(t, handler)
+	// cases 保存应用错误与 HTTP 状态、稳定错误码之间的映射断言。
+	cases := []struct {
+		// name 是子场景名称。
+		name string
+		// appErr 是应用端口返回值。
+		appErr error
+		// wantStatus 是预期 HTTP 状态。
+		wantStatus int
+		// wantCode 是预期统一错误码，成功时为空。
+		wantCode string
+	}{
+		{name: "success", wantStatus: http.StatusOK},
+		{name: "invalid", appErr: chatapp.ErrInvalidInput, wantStatus: http.StatusBadRequest, wantCode: "chat_session_invalid"},
+		{name: "forbidden", appErr: chatapp.ErrSessionForbidden, wantStatus: http.StatusForbidden, wantCode: "chat_session_forbidden"},
+		{name: "not-found", appErr: chatapp.ErrChatSessionNotFound, wantStatus: http.StatusNotFound, wantCode: "chat_session_not_found"},
+		{name: "unavailable", appErr: chatapp.ErrSessionUnavailable, wantStatus: http.StatusServiceUnavailable, wantCode: "chat_session_service_unavailable"},
+		{name: "storage", appErr: errors.New("storage failed"), wantStatus: http.StatusInternalServerError, wantCode: "chat_session_delete_failed"},
+	}
+	// testCase 是当前待执行的错误映射场景。
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			port.deleteConversationErr = testCase.appErr
+			// recorder 保存本次真实 DELETE 路由响应。
+			recorder := serveChatCoverageRequest(handler, cookie, http.MethodDelete, "/api/v1/chat/sessions?account_id=acc1&chat_id=chat1", "")
+			if recorder.Code != testCase.wantStatus {
+				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+			if testCase.wantCode != "" && !strings.Contains(recorder.Body.String(), `"code":"`+testCase.wantCode+`"`) {
+				t.Fatalf("body=%s", recorder.Body.String())
+			}
+		})
 	}
 }
 

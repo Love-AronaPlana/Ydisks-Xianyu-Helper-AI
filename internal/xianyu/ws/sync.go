@@ -201,6 +201,26 @@ func (c *Conn) SendImage(ctx context.Context, myID, cid, toID, imageURL string, 
 	return c.sendChatContent(ctx, myID, cid, toID, content)
 }
 
+// SendItemCard 发送一条个人会话商品卡片，载荷与闲鱼 PC IM contentType=7 协议保持一致。
+func (c *Conn) SendItemCard(ctx context.Context, myID, cid, toID, itemID, title, imageURL, price string) error {
+	// normalizedItemID 和 normalizedTitle 是去除首尾空白的商品身份字段。
+	normalizedItemID, normalizedTitle := strings.TrimSpace(itemID), strings.TrimSpace(title)
+	// normalizedImageURL 和 normalizedPrice 是去除首尾空白及已有货币符号的展示字段。
+	normalizedImageURL, normalizedPrice := strings.TrimSpace(imageURL), strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(price), "¥"))
+	if normalizedItemID == "" || normalizedTitle == "" || normalizedImageURL == "" || normalizedPrice == "" {
+		return fmt.Errorf("发送商品卡片缺少必要字段")
+	}
+	// content 是官网个人会话商品卡片的内层消息正文。
+	content := map[string]any{
+		"contentType": 7,
+		"itemCard": map[string]any{
+			"itemTip": "我想要",
+			"item":    map[string]any{"itemId": normalizedItemID, "mainPic": normalizedImageURL, "price": "¥" + normalizedPrice, "title": normalizedTitle},
+		},
+	}
+	return c.sendChatContent(ctx, myID, cid, toID, content)
+}
+
 // sendChatContent 封装send聊天内容业务协调。
 func (c *Conn) sendChatContent(ctx context.Context, myID, cid, toID string, content any) error {
 	myID = stripGoofish(myID)

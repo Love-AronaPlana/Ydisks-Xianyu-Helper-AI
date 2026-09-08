@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -48,7 +49,7 @@ func (c *outgoingMessageCoordinator) sendText(ctx context.Context, chatID, toUse
 		key, _ := ctx.Value(outgoingMessageKeyContextKey{}).(string)
 		// err 是旁路持久化或广播失败原因，仅记录脱敏告警。
 		if err := observer.HandleOutgoingChatMessage(ctx, OutgoingChatMessage{
-			AccountID: a.CookieID, ChatID: chatID, BuyerID: toUserID, Text: text, MessageKey: key,
+			AccountID: a.CookieID, ChatID: chatID, BuyerID: toUserID, Text: text, MessageKey: key, ObservedAt: time.Now().UTC().UnixMilli(),
 		}); err != nil {
 			a.logger.Warn("保存出站聊天旁路失败", "account", a.CookieID, "chat_id", chatID, "err", err)
 		}
@@ -81,6 +82,55 @@ func (c *outgoingMessageCoordinator) sendImage(ctx context.Context, chatID, toUs
 	defer cancel()
 	_ = cardID // cardID 由上层动作检查点持久化，协议图片发送本身不携带该字段。
 	return conn.SendImage(sendCtx, myID, chatID, toUserID, imageURL, width, height)
+}
+
+// sendItemCard 使用当前已注册 WebSocket 发送商品卡片，并将本地幂等键交给出站观察。
+func (c *outgoingMessageCoordinator) sendItemCard(ctx context.Context, chatID, toUserID, itemID, title, imageURL, price string) error {
+	// account 是当前协调器绑定的账号 facade。
+	account := c.account
+	if account == nil {
+		return errors.New("账号出站消息协调器未初始化")
+	}
+	// conn、myID 和 stateErr 是锁外发送所需的连接、当前账号身份和状态错误。
+	conn, myID, stateErr := c.currentSenderState()
+	if stateErr != nil {
+		return stateErr
+	}
+	// itemSender 和 supported 表示当前连接是否支持商品卡片扩展协议。
+	itemSender, supported := conn.(interface {
+		SendItemCard(context.Context, string, string, string, string, string, string, string) error
+	})
+	if !supported {
+		return fmt.Errorf("%w: 当前 WebSocket 不支持商品卡片", automation.ErrMessageNotSent)
+	}
+	// sendCtx 和 cancel 将单次卡片发送最长等待限制为八秒。
+	sendCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	// sendErr 表示底层 WebSocket 商品卡片投递是否失败。
+	if sendErr := itemSender.SendItemCard(sendCtx, myID, chatID, toUserID, itemID, title, imageURL, price); sendErr != nil {
+		return sendErr
+	}
+	// contentBytes 是与本地 item 消息格式一致的规范出站正文。
+	contentBytes, marshalErr := json.Marshal(struct {
+		ItemID   string `json:"item_id"`
+		Title    string `json:"title"`
+		ImageURL string `json:"image_url"`
+		Price    string `json:"price"`
+	}{ItemID: strings.TrimSpace(itemID), Title: strings.TrimSpace(title), ImageURL: strings.TrimSpace(imageURL), Price: strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(price), "¥"))})
+	if marshalErr != nil {
+		account.logger.Warn("构建商品卡片出站观察失败", "account", account.CookieID, "chat_id", chatID, "err", marshalErr)
+		return nil
+	}
+	// observer 和 ok 表示账号事件处理器是否支持出站聊天旁路观察。
+	if observer, ok := account.handler.(outgoingChatHandler); ok {
+		// messageKey 是 UI 创建的待发送消息关联键。
+		messageKey, _ := ctx.Value(outgoingMessageKeyContextKey{}).(string)
+		// observeErr 表示商品卡片旁路消息是否完成本地观察。
+		if observeErr := observer.HandleOutgoingChatMessage(ctx, OutgoingChatMessage{AccountID: account.CookieID, ChatID: chatID, BuyerID: toUserID, MessageKey: messageKey, MessageType: "item", Content: string(contentBytes), ObservedAt: time.Now().UTC().UnixMilli()}); observeErr != nil {
+			account.logger.Warn("保存出站商品卡片旁路失败", "account", account.CookieID, "chat_id", chatID, "err", observeErr)
+		}
+	}
+	return nil
 }
 
 // currentSenderState 返回可用 WebSocket 与账号 unb 身份快照；持锁范围只覆盖快照读取。

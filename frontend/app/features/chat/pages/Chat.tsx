@@ -1,5 +1,5 @@
 import {
-AlertCircle,Check,CheckCheck,ImagePlus,Loader2,MessageCircleMore,PanelRightClose,PanelRightOpen,
+AlertCircle,Check,CheckCheck,ImagePlus,Loader2,MessageCircleMore,PackageSearch,PanelRightClose,PanelRightOpen,
 RefreshCw,Search,Send,Smile,UserRound,Wifi,WifiOff,X,
 } from 'lucide-react';
 import React from 'react';
@@ -7,8 +7,13 @@ import Lightbox from 'yet-another-react-lightbox';
 import 'yet-another-react-lightbox/styles.css';
 import { AudioMessage } from '../components/AudioMessage';
 import BrowserNotificationToggle from '../components/BrowserNotificationToggle';
+import { ChatItemPickerDialog } from '../components/ChatItemPickerDialog';
 import ChatMetadataFeature from '../components/ChatMetadataFeature';
+import { ConversationListItem } from '../components/ConversationListItem';
+import { DeleteConversationDialog } from '../components/DeleteConversationDialog';
+import { ItemMessageCard } from '../components/ItemMessageCard';
 import { useChat } from '../hooks';
+import type { ChatSession } from '../models';
 import { unreadBadgeClassName,unreadBadgeLabel } from '../state';
 
 // Chat 展示实时会话、消息分页和消息发送界面。
@@ -20,7 +25,7 @@ const Chat: React.FC = () => {
     hasMoreContacts, emojiOpen, sending, error, sendNotice, liveState, pendingImage, scrollRef, imageInputRef, setActiveAccountID,
     setActiveChatID, setSearch, setUnreadOnly, setDraft, setEmojiOpen, reloadSessions, loadMoreContacts,
     loadOlderMessages, handleMessageScroll, handleSend, handleQuickReply, handleImage, handlePastedImages, confirmSendImage, closeImagePreview, retrySend, retryAvailable,
-    unreadForAccount, emojiURL, xianyuEmojis, renderXianyuText, formatClock, messageTime,
+    deletingChatID, deleteError, deleteConversation, clearDeleteError, acceptOutgoingMessage, unreadForAccount, emojiURL, xianyuEmojis, renderXianyuText, formatClock, messageTime,
   } = useChat();
 
 
@@ -36,6 +41,32 @@ const Chat: React.FC = () => {
   }, [imageMessages]);
   // quickReplyPanelOpen 保存右侧快捷回复抽屉的展开状态；页面卸载后恢复默认收起。
   const [quickReplyPanelOpen, setQuickReplyPanelOpen] = React.useState(false);
+  // itemPickerOpen 控制当前会话的居中商品选择弹窗。
+  const [itemPickerOpen, setItemPickerOpen] = React.useState(false);
+	// deleteTarget 保存等待用户确认清空的会话，空值表示确认框关闭。
+	const [deleteTarget, setDeleteTarget] = React.useState<ChatSession | null>(null);
+
+  React.useEffect(/* 当前副作用在账号或会话变化时关闭旧上下文中的商品弹窗。 */ () => {
+    setItemPickerOpen(false);
+  }, [activeAccountID, activeChatID]);
+
+	React.useEffect(/* 当前副作用在账号切换时关闭旧账号的删除确认框。 */ () => {
+		setDeleteTarget(null);
+	}, [activeAccountID]);
+
+	/** 打开指定会话的删除确认框，不改变当前选中会话。 */
+	const openDeleteDialog = React.useCallback(/* 当前回调记录用户通过独立垃圾桶按钮选中的会话。 */ (session: ChatSession): void => {
+		clearDeleteError();
+		setDeleteTarget(session);
+	}, [clearDeleteError]);
+
+	/** 确认清空当前弹窗会话，失败时保留上下文供用户重试。 */
+	const confirmDeleteConversation = React.useCallback(/* 当前回调只在后端完成事务后关闭确认框。 */ async (): Promise<void> => {
+		if (!deleteTarget) return;
+		// deleted 表示后端已经完成会话隐藏和消息物理清空。
+		const deleted = await deleteConversation(deleteTarget.account_id, deleteTarget.chat_id);
+		if (deleted) setDeleteTarget(null);
+	}, [deleteConversation, deleteTarget]);
 
   if (loading) return <div className="flex h-[calc(100vh-4rem)] items-center justify-center"><Loader2 className="h-8 w-8 animate-spin text-sky-500" /></div>;
 
@@ -104,26 +135,7 @@ const Chat: React.FC = () => {
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto">
               {filteredSessions.map(/* 当前回调处理集合中的单个元素。 */ session => (
-                <button key={session.chat_id} type="button" onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => setActiveChatID(session.chat_id)}
-                  className={`flex w-full gap-3 border-b border-slate-100 p-3.5 text-left transition-colors ${session.chat_id === activeChatID ? 'bg-white shadow-chat-active' : 'hover:bg-white/80'}`}>
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-full bg-slate-200 text-slate-500">
-                    {session.buyer_avatar_url ? <img src={session.buyer_avatar_url} alt="" className="h-full w-full object-cover" /> : <UserRound className="h-5 w-5" />}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="truncate text-sm font-extrabold text-slate-900">{session.buyer_name || `用户 ${session.buyer_id}`}</span>
-                    </div>
-                    <div className="mt-1 flex items-center gap-2">
-                      <span className="truncate text-xs text-slate-500">{session.last_message || '暂无消息'}</span>
-                      {session.unread_count > 0 && <span aria-label={`未读消息 ${unreadBadgeLabel(session.unread_count)} 条`} className={`ml-auto ${unreadBadgeClassName(session.unread_count)}`}>{unreadBadgeLabel(session.unread_count)}</span>}
-                    </div>
-                    {session.item_title && <div className="mt-1.5 truncate text-[10px] font-medium text-sky-700">商品 · {session.item_title}</div>}
-                  </div>
-                  <div className="flex shrink-0 flex-col items-end gap-1.5">
-                    <span className="text-[10px] font-medium text-slate-400">{formatClock(session.last_message_at)}</span>
-                    {session.item_image_url && <img src={session.item_image_url} alt="" className="h-9 w-11 rounded-[4px] border border-slate-200 object-cover" />}
-                  </div>
-                </button>
+				<ConversationListItem key={session.chat_id} session={session} active={session.chat_id === activeChatID} formatClock={formatClock} onSelect={/* 当前回调切换当前聊天。 */ () => setActiveChatID(session.chat_id)} onDelete={/* 当前回调打开会话删除确认框且不触发选择按钮。 */ () => openDeleteDialog(session)} deleteDisabled={sending && session.chat_id === activeChatID} />
               ))}
               {filteredSessions.length === 0 && <div className="px-6 py-16 text-center text-sm text-slate-400">当前账号暂无匹配会话</div>}
               {hasMoreContacts && !search && !unreadOnly && <div className="flex justify-center p-4">
@@ -177,7 +189,9 @@ const Chat: React.FC = () => {
                         </div>}
                         <div className={`max-w-[72%] ${outgoing ? 'items-end' : 'items-start'} flex flex-col`}>
                           <div className="mb-1 px-1 text-[10px] font-semibold text-slate-400">{outgoing ? (activeAccount?.nickname || activeAccount?.remark || '我') : (selectedSession.buyer_name || message.sender_name || selectedSession.buyer_id)}</div>
-                          {message.message_type === 'image' ? (
+                          {message.message_type === 'item' ? (
+                            <ItemMessageCard content={message.content} outgoing={outgoing} />
+                          ) : message.message_type === 'image' ? (
                             <button type="button" title="点击预览大图" onClick={openLightbox.bind(null, message.message_key)} className={`block cursor-zoom-in overflow-hidden rounded-2xl border bg-white p-1 text-left shadow-sm ${outgoing ? 'rounded-br-md border-sky-200' : 'rounded-bl-md border-slate-200'}`}>
                               <img src={message.content} alt="聊天图片" className="max-h-80 max-w-full rounded-xl object-contain" />
                             </button>
@@ -216,6 +230,7 @@ const Chat: React.FC = () => {
                     </div>
                     <input ref={imageInputRef} type="file" accept="image/*" className="hidden" onChange={/* 当前回调处理用户交互或异步状态变化。 */ event => void handleImage(event.target.files?.[0])} />
                     <button type="button" onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => imageInputRef.current?.click()} disabled={sending || activeAccount?.runtime_state !== 'online'} className="rounded-lg p-2 text-slate-500 transition hover:bg-sky-50 hover:text-sky-600 disabled:opacity-40" title="发送图片（最大 10MB）"><ImagePlus className="h-5 w-5" /></button>
+                    <button type="button" onClick={/* 当前回调打开居中商品选择弹窗并收起表情面板。 */ () => { setEmojiOpen(false); setItemPickerOpen(true); }} disabled={sending || !selectedSession || activeAccount?.runtime_state !== 'online'} className="rounded-lg p-2 text-slate-500 transition hover:bg-sky-50 hover:text-sky-600 focus:bg-sky-50 focus:text-sky-600 focus:outline-none focus:ring-2 focus:ring-sky-100 active:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-40" title="发送宝贝" aria-label="发送宝贝"><PackageSearch className="h-5 w-5" /></button>
                     <button type="button" onClick={/* 当前回调依当前渲染状态切换右侧账号快捷回复抽屉，避免页面级外部点击监听与按钮切换相互抵消。 */ () => setQuickReplyPanelOpen(!quickReplyPanelOpen)} className="ml-auto rounded-lg p-2 text-slate-500 transition hover:bg-sky-50 hover:text-sky-600" title={quickReplyPanelOpen ? '收起快捷回复' : '展开快捷回复'} aria-label={quickReplyPanelOpen ? '收起快捷回复' : '展开快捷回复'}>
                       {quickReplyPanelOpen ? <PanelRightClose className="h-5 w-5" /> : <PanelRightOpen className="h-5 w-5" />}
                     </button>
@@ -269,6 +284,10 @@ const Chat: React.FC = () => {
           </div>
         </div>
       </div>}
+
+      {itemPickerOpen && <ChatItemPickerDialog open accountID={activeAccountID} chatID={activeChatID} onSent={acceptOutgoingMessage} onClose={/* 当前回调关闭当前会话的商品选择弹窗。 */ () => setItemPickerOpen(false)} />}
+
+		{deleteTarget && <DeleteConversationDialog buyerName={deleteTarget.buyer_name || `用户 ${deleteTarget.buyer_id}`} deleting={deletingChatID === deleteTarget.chat_id} error={deleteError} onCancel={/* 当前回调在未提交时关闭会话删除确认框。 */ () => setDeleteTarget(null)} onConfirm={/* 当前回调提交当前确认框中的会话删除。 */ () => void confirmDeleteConversation()} />}
 
       <Lightbox open={lightboxIndex >= 0} index={Math.max(lightboxIndex, 0)} close={/* 当前回调关闭图片灯箱。 */ () => setLightboxIndex(-1)} slides={imageSlides} />
     </section>

@@ -232,6 +232,7 @@ type ChatPort interface {
 	CleanupEmptySessions(context.Context, string) error
 	OwnsAccount(context.Context, int64, string) (bool, error)
 	MarkRead(context.Context, int64, string, string) error
+	DeleteConversation(context.Context, int64, string, string) error
 	ReportPlatformRead(context.Context, string, string, []map[string]any) error
 	ResolveSessionIdentity(context.Context, chatapp.Session) (chatapp.Session, error)
 	RefreshSessionIdentities(context.Context, string, []chatapp.Session) ([]chatapp.Session, error)

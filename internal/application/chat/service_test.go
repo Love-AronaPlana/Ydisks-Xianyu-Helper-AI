@@ -187,6 +187,14 @@ type fakeRepository struct {
 	markReadErr error
 	// markReadCalls 记录会话已读状态更新次数，避免测试误判未调用端口。
 	markReadCalls int
+	// hideFound 和 hideErr 保存原子隐藏清空端口的命中结果及预设错误。
+	hideFound bool
+	hideErr   error
+	// hiddenUserID、hiddenAccountID、hiddenChatID 和 hiddenAt 保存最近一次会话删除请求的完整非敏感参数。
+	hiddenUserID    int64
+	hiddenAccountID string
+	hiddenChatID    string
+	hiddenAt        int64
 }
 
 // fakePlatformReadReporter 记录平台已读上报调用并返回预设失败。
@@ -258,6 +266,51 @@ func (r *fakeRepository) ExistsOwned(_ context.Context, _ int64, _ string) (bool
 func (r *fakeRepository) MarkRead(_ context.Context, _ int64, _, _ string) error {
 	r.markReadCalls++
 	return r.markReadErr
+}
+
+// HideAndClearSession 记录用户会话删除参数，并返回测试预置的命中状态或错误。
+func (r *fakeRepository) HideAndClearSession(_ context.Context, userID int64, accountID, chatID string, clearedAt int64) (bool, error) {
+	r.hiddenUserID, r.hiddenAccountID, r.hiddenChatID, r.hiddenAt = userID, accountID, chatID, clearedAt
+	return r.hideFound, r.hideErr
+}
+
+// TestDeleteConversationValidatesOwnershipAndDelegatesAtomicClear 验证应用层会话删除的校验、归属、未命中和成功路径。
+func TestDeleteConversationValidatesOwnershipAndDelegatesAtomicClear(t *testing.T) {
+	// repository 保存可观察删除参数的会话仓储替身，默认账号归属且会话存在。
+	repository := &fakeRepository{owned: true, hideFound: true}
+	// service 是执行用户会话删除用例的应用服务。
+	service := New(repository)
+	// invalidErr 验证缺少会话标识时不会调用仓储。
+	invalidErr := service.DeleteConversation(context.Background(), 7, "account", " ")
+	if !errors.Is(invalidErr, ErrInvalidInput) || repository.hiddenAt != 0 {
+		t.Fatalf("invalid error=%v hidden_at=%d", invalidErr, repository.hiddenAt)
+	}
+	repository.owned = false
+	// forbiddenErr 验证账号不属于当前用户时返回稳定权限错误。
+	forbiddenErr := service.DeleteConversation(context.Background(), 7, "account", "chat")
+	if !errors.Is(forbiddenErr, ErrSessionForbidden) {
+		t.Fatalf("forbidden error=%v", forbiddenErr)
+	}
+	repository.owned, repository.hideFound = true, false
+	// missingErr 验证账号归属正确但会话不存在时返回稳定未找到错误。
+	missingErr := service.DeleteConversation(context.Background(), 7, "account", "chat")
+	if !errors.Is(missingErr, ErrChatSessionNotFound) {
+		t.Fatalf("missing error=%v", missingErr)
+	}
+	repository.hideFound = true
+	// successErr 保存带首尾空白参数的成功删除结果，仓储应只收到规范化标识。
+	successErr := service.DeleteConversation(context.Background(), 7, " account ", " chat ")
+	if successErr != nil || repository.hiddenUserID != 7 || repository.hiddenAccountID != "account" || repository.hiddenChatID != "chat" || repository.hiddenAt <= 0 {
+		t.Fatalf("success err=%v user=%d account=%q chat=%q at=%d", successErr, repository.hiddenUserID, repository.hiddenAccountID, repository.hiddenChatID, repository.hiddenAt)
+	}
+	// wantErr 是仓储模拟返回的数据库错误。
+	wantErr := errors.New("delete failed")
+	repository.hideErr = wantErr
+	// deleteErr 验证数据库错误原样离开应用层，供 HTTP 统一映射为内部错误。
+	deleteErr := service.DeleteConversation(context.Background(), 7, "account", "chat")
+	if !errors.Is(deleteErr, wantErr) {
+		t.Fatalf("delete error=%v", deleteErr)
+	}
 }
 
 // fakeIdentityResolver 返回预设平台展示身份，不接触真实凭证或网络。

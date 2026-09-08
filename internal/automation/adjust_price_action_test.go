@@ -205,6 +205,33 @@ func TestAdjustOrderPriceActionRetriesTypedBusinessFailure(t *testing.T) {
 	}
 }
 
+// TestAdjustOrderPriceSystemFailureRemainsRetryable 验证 HTTP 成功信封中的 FAIL_SYS 错误不会被标记为永久业务拒绝或结果未知。
+func TestAdjustOrderPriceSystemFailureRemainsRetryable(t *testing.T) {
+	// store 和 cleanup 保存系统错误分类测试数据库及关闭责任。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	// systemFailure 模拟平台明确未完成请求的临时内部错误。
+	systemFailure := &mtop.MTopResponseError{API: "订单改价接口", Kind: mtop.MTopErrorSystem, Ret: []string{"FAIL_SYS_INTERNAL_ERROR::内部错误"}}
+	// fake 让唯一一次改价调用返回可由运行恢复队列重试的系统错误。
+	fake := &fakeMTop{adjustErr: systemFailure}
+	// center 是注入系统错误替身的自动化中心。
+	center := NewWithDependencies(store, nil, nil, CenterDependencies{MTop: fake})
+	// sent 和 runErr 是本次动作执行结果。
+	sent, runErr := center.executeAction(context.Background(), Task{AccountID: "cid", OrderID: "system-retry"},
+		db.AutomationAction{ActionType: ActionAdjustPrice, ConfigJSON: `{"target_price":"9.9"}`})
+	if sent != 0 || !errors.Is(runErr, systemFailure) {
+		t.Fatalf("sent=%d err=%v", sent, runErr)
+	}
+	if strings.HasPrefix(runErr.Error(), db.NoRetryErrorPrefix) {
+		t.Fatalf("平台系统错误不应禁止运行级重试: %v", runErr)
+	}
+	// uncertain 验证平台明确返回系统失败时不进入“可能已执行”的人工核对分支。
+	var uncertain *uncertainActionError
+	if errors.As(runErr, &uncertain) {
+		t.Fatalf("平台系统错误不应标记为结果未知: %v", runErr)
+	}
+}
+
 // TestAdjustOrderPriceActionMissingOrderID 验证缺少订单号时动作标记为明确未执行。
 func TestAdjustOrderPriceActionMissingOrderID(t *testing.T) {
 	// store、cleanup 保存测试数据库及其清理函数。
@@ -265,10 +292,63 @@ func TestAdjustOrderPriceActionBizFailure(t *testing.T) {
 	if sent != 0 || err == nil || !strings.Contains(err.Error(), "FAIL_BIZ_ORDER_NOT_ALLOW_MODIFY") {
 		t.Fatalf("sent=%d err=%v", sent, err)
 	}
+	if !strings.HasPrefix(err.Error(), db.NoRetryErrorPrefix) {
+		t.Fatalf("终态业务拒绝必须禁止运行级自动重试: %v", err)
+	}
 	// uncertain 用于确认业务拒绝不会被误判为结果未知。
 	var uncertain *uncertainActionError
 	if errors.As(err, &uncertain) {
 		t.Fatalf("业务拒绝不应标记为结果未知: %v", err)
+	}
+}
+
+// TestAdjustOrderPriceTerminalFailureDoesNotCreateRecoveryRetry 验证终态平台拒绝会收口为失败且不进入运行级恢复队列。
+func TestAdjustOrderPriceTerminalFailureDoesNotCreateRecoveryRetry(t *testing.T) {
+	// store、cleanup 保存自动化运行状态测试数据库及其清理函数。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	// ctx 是本测试共用的数据库和自动化执行上下文。
+	ctx := context.Background()
+	// admin 是创建测试规则所需的管理员用户。
+	admin, adminErr := store.Users.GetByUsername(ctx, "admin")
+	if adminErr != nil {
+		t.Fatal(adminErr)
+	}
+	// ruleID、createErr 保存终态改价规则的标识和创建错误。
+	ruleID, createErr := store.Automation.Create(ctx, db.AutomationRuleInput{
+		UserID: admin.ID, CookieID: "cid", ItemID: "item-terminal", Name: "terminal-adjust", TriggerType: TriggerOrderCreated, Enabled: true,
+		Actions: []db.AutomationActionInput{{ActionType: ActionAdjustPrice, ConfigJSON: `{"target_price":"9.90"}`, Enabled: true}},
+	})
+	if createErr != nil {
+		t.Fatal(createErr)
+	}
+	// rule、getErr 保存刚创建的完整规则及其读取错误，供运行协调器复用真实动作计划。
+	rule, getErr := store.Automation.Get(ctx, ruleID)
+	if getErr != nil {
+		t.Fatal(getErr)
+	}
+	// fake 模拟平台明确拒绝当前订单状态，不应触发恢复队列的重复调用。
+	fake := &fakeMTop{adjustRet: []string{"FAIL_BIZ_BAD_REQUEST::当前订单状态不支持改价"}}
+	// center 保存注入终态业务拒绝客户端的自动化中心。
+	center := NewWithDependencies(store, nil, nil, CenterDependencies{MTop: fake})
+	// runErr 保存首次运行返回的平台终态拒绝。
+	runErr := center.executeRule(ctx, Task{AccountID: "cid", TriggerType: TriggerOrderCreated, OrderID: "terminal-order", ItemID: "item-terminal", ChatID: "chat-terminal", BuyerID: "buyer-terminal"}, *rule)
+	if runErr == nil || !strings.HasPrefix(runErr.Error(), db.NoRetryErrorPrefix) {
+		t.Fatalf("终态业务拒绝错误分类错误: %v", runErr)
+	}
+	if fake.adjustCalls != 1 {
+		t.Fatalf("终态业务拒绝不应在本次运行内重复改价: calls=%d", fake.adjustCalls)
+	}
+	// status、errorMessage、nextRetryAt 保存运行终态、错误分类标记和下次恢复时间。
+	var status, errorMessage string
+	// nextRetryAt 保存运行记录的下次自动恢复时间；终态拒绝应保持为零。
+	var nextRetryAt int64
+	// queryErr 保存读取运行终态字段时的数据库错误。
+	if queryErr := store.DB.QueryRowContext(ctx, `SELECT status,error_message,next_retry_at FROM automation_runs WHERE order_id=?`, "terminal-order").Scan(&status, &errorMessage, &nextRetryAt); queryErr != nil {
+		t.Fatal(queryErr)
+	}
+	if status != "failed" || !strings.HasPrefix(errorMessage, db.NoRetryErrorPrefix) || nextRetryAt != 0 {
+		t.Fatalf("终态业务拒绝不应进入恢复队列: status=%q error=%q next_retry_at=%d", status, errorMessage, nextRetryAt)
 	}
 }
 

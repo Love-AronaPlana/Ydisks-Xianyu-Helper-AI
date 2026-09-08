@@ -170,9 +170,9 @@ func TestMigrate_ExistingAutomationRunsReceiveEmptyDeliveryProof(t *testing.T) {
 	if varProof != "" {
 		t.Fatalf("历史运行凭证应为空: %q", varProof)
 	}
-	// finalVersion、versionErr 验证升级到清理已删除规则的 00043，不能仅证明旧 delivery_proof 列存在。
+	// finalVersion、versionErr 验证升级到会话用户删除语义的 00044，不能仅证明旧 delivery_proof 列存在。
 	finalVersion, versionErr := goose.GetDBVersion(rawDB)
-	if versionErr != nil || finalVersion != 43 {
+	if versionErr != nil || finalVersion != 44 {
 		t.Fatalf("final migration version=%d err=%v", finalVersion, versionErr)
 	}
 	if !tableExists(t, rawDB, "order_ownership_repairs") {
@@ -185,7 +185,7 @@ func TestMigrate_ExistingAutomationRunsReceiveEmptyDeliveryProof(t *testing.T) {
 }
 
 // TestMigrate_UpgradesDatabaseWithMainChatVersions 验证已发布 main 的 00029/00030
-// 聊天迁移可以原样升级到同时包含归属修正审计和历史规则清理的 00043 最终版本。
+// 聊天迁移可以原样升级到同时包含归属修正审计、历史规则清理和会话删除语义的 00044 最终版本。
 func TestMigrate_UpgradesDatabaseWithMainChatVersions(t *testing.T) {
 	// tmpDir 保存隔离的已发布 main 数据库目录，测试结束后由 testing 清理。
 	tmpDir := t.TempDir()
@@ -211,15 +211,15 @@ func TestMigrate_UpgradesDatabaseWithMainChatVersions(t *testing.T) {
 
 	// ctx 提供迁移 API 所需的调用上下文；升级本身不依赖请求生命周期。
 	ctx := context.Background()
-	// migrateErr 保存从 main 00030 接续至清理历史已删除规则的 00043 时的迁移失败。
+	// migrateErr 保存从 main 00030 接续至会话用户删除语义的 00044 时的迁移失败。
 	if migrateErr := Migrate(ctx, rawDB, DialectSQLite); migrateErr != nil {
 		t.Fatalf("upgrade from main 00030: %v", migrateErr)
 	}
 	if !tableExists(t, rawDB, "order_reconciliations") {
 		t.Fatal("order_reconciliations should be created by the dev schema baseline migration")
 	}
-	if !columnExists(t, rawDB, "chat_messages", "read_status") || !columnExists(t, rawDB, "chat_messages", "read_at") || !columnExists(t, rawDB, "chat_messages", "media_duration") || !columnExists(t, rawDB, "chat_sessions", "item_image_url") || !columnExists(t, rawDB, "chat_sessions", "is_visible") {
-		t.Fatal("chat read tracking, media presentation, and session visibility columns should remain after dev schema baseline upgrade")
+	if !columnExists(t, rawDB, "chat_messages", "read_status") || !columnExists(t, rawDB, "chat_messages", "read_at") || !columnExists(t, rawDB, "chat_messages", "media_duration") || !columnExists(t, rawDB, "chat_sessions", "item_image_url") || !columnExists(t, rawDB, "chat_sessions", "is_visible") || !columnExists(t, rawDB, "chat_sessions", "user_hidden_at") || !columnExists(t, rawDB, "chat_sessions", "messages_cleared_at") {
+		t.Fatal("chat read tracking, media presentation, and user deletion columns should remain after dev schema baseline upgrade")
 	}
 	if !tableExists(t, rawDB, "chat_quick_replies") || !tableExists(t, rawDB, "chat_buyer_notes") {
 		t.Fatal("chat quick reply and buyer note tables should be created by the latest migration")
@@ -230,13 +230,13 @@ func TestMigrate_UpgradesDatabaseWithMainChatVersions(t *testing.T) {
 	if !columnExists(t, rawDB, "automation_rule_actions", "delivery_template_id") {
 		t.Fatal("automation_rule_actions should reference delivery templates")
 	}
-	// finalVersion、versionErr 验证迁移账本已推进到清理历史已删除规则的 00043，或记录读取失败。
+	// finalVersion、versionErr 验证迁移账本已推进到会话用户删除语义的 00044，或记录读取失败。
 	finalVersion, versionErr := goose.GetDBVersion(rawDB)
 	if versionErr != nil {
 		t.Fatalf("read final migration version: %v", versionErr)
 	}
-	if finalVersion != 43 {
-		t.Fatalf("final migration version=%d, want 43", finalVersion)
+	if finalVersion != 44 {
+		t.Fatalf("final migration version=%d, want 44", finalVersion)
 	}
 	if !tableExists(t, rawDB, "order_ownership_repairs") {
 		t.Fatal("已发布 main 数据库升级后必须创建订单归属修正审计表")
@@ -365,6 +365,8 @@ func TestLatestMigrationsDownUpSQLite(t *testing.T) {
 		{"account_task_runs", "run_key"},
 		{"chat_sessions", "unread_count"},
 		{"chat_sessions", "item_image_url"},
+		{"chat_sessions", "user_hidden_at"},
+		{"chat_sessions", "messages_cleared_at"},
 		{"chat_messages", "message_key"},
 		{"chat_messages", "read_status"},
 		{"chat_messages", "read_at"},

@@ -33,6 +33,7 @@ func TestMTopResponseFailureClassifiesAndRedacts(t *testing.T) {
 		{name: "risk", kind: MTopErrorRiskVerification, code: "FAIL_SYS_USER_VALIDATE::安全校验", status: http.StatusOK},
 		{name: "session", kind: MTopErrorSessionExpired, code: "FAIL_SYS_SESSION_EXPIRED::会话过期", status: http.StatusOK},
 		{name: "token", kind: MTopErrorTokenExpired, code: "FAIL_SYS_TOKEN_EXPIRED::令牌过期", status: http.StatusOK},
+		{name: "system", kind: MTopErrorSystem, code: "FAIL_SYS_INTERNAL_ERROR::内部错误", status: http.StatusOK},
 		{name: "http", kind: MTopErrorHTTP, code: "FAIL_SYS_GATEWAY::网关错误", status: http.StatusBadGateway},
 		{name: "decode", kind: MTopErrorDecode, status: http.StatusOK, detail: "JSON 解析失败"},
 		{name: "business", kind: MTopErrorBusiness, code: "FAIL_BIZ_ORDER::订单错误", status: http.StatusOK},

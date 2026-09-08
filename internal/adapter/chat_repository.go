@@ -65,6 +65,21 @@ func (r chatRepository) ListSessions(ctx context.Context, userID int64, accountI
 	return sessions, nil
 }
 
+// FindSession 按用户归属精确读取一条可见会话并转换为应用模型。
+func (r chatRepository) FindSession(ctx context.Context, userID int64, accountID, chatID string) (chatapp.Session, error) {
+	// row 和 err 是底层按归属精确查询的会话记录及错误。
+	row, err := r.store.Chats.FindSession(ctx, userID, accountID, chatID)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return chatapp.Session{}, chatapp.ErrChatSessionNotFound
+		}
+		return chatapp.Session{}, err
+	}
+	return chatapp.Session{AccountID: row.CookieID, ChatID: row.ChatID, BuyerID: row.BuyerID, BuyerName: row.BuyerName,
+		BuyerAvatar: row.BuyerAvatar, ItemID: row.ItemID, ItemTitle: row.ItemTitle, ItemImageURL: row.ItemImageURL,
+		LastMessage: row.LastMessage, LastMessageAt: row.LastMessageAt, UnreadCount: row.UnreadCount}, nil
+}
+
 // ListSessionPage 查询带用户归属条件的本地会话键集分页，并转换为应用层模型。
 func (r chatRepository) ListSessionPage(ctx context.Context, userID int64, accountID string, cursor *chatapp.SessionCursor, limit int) (chatapp.SessionPage, error) {
 	// databaseCursor 保存转换为数据库排序键后的分页位置；空指针表示读取首页。
@@ -114,6 +129,11 @@ func (r chatRepository) ExistsOwned(ctx context.Context, userID int64, accountID
 // MarkRead 将用户拥有的聊天会话未读数归零，不读取或解密账号凭证。
 func (r chatRepository) MarkRead(ctx context.Context, userID int64, accountID, chatID string) error {
 	return r.store.Chats.MarkRead(ctx, userID, accountID, chatID)
+}
+
+// HideAndClearSession 原子隐藏当前用户的会话并清空聊天页消息，保留自动化仍需使用的会话实体。
+func (r chatRepository) HideAndClearSession(ctx context.Context, userID int64, accountID, chatID string, clearedAt int64) (bool, error) {
+	return r.store.Chats.HideAndClearSession(ctx, userID, accountID, chatID, clearedAt)
 }
 
 // FindInboundParsedJSONContaining 提供旧版聊天消息标识迁移所需的受限诊断帧查询。
@@ -223,6 +243,9 @@ func (r chatIdentityResolver) Resolve(ctx context.Context, accountID, chatID str
 
 // 确保数据库聊天适配器覆盖应用层会话端口的全部能力。
 var _ chatapp.SessionRepository = chatRepository{}
+
+// 确保数据库聊天适配器覆盖用户会话删除所需的归属与原子清空端口。
+var _ chatapp.SessionDeletionRepository = chatRepository{}
 
 // 确保数据库聊天适配器覆盖快捷回复和买家备注的应用层端口。
 var _ chatapp.MetadataRepository = chatRepository{}

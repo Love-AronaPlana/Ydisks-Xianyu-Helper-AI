@@ -2499,6 +2499,60 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  "/api/v1/chat/items":
+    get:
+      operationId: getApiV1ChatItems
+      summary: 查询个人会话中对方或当前账号的在售商品
+      security: [{cookieAuth: []}]
+      parameters:
+        - name: account_id
+          in: query
+          required: true
+          schema: {type: string}
+        - name: chat_id
+          in: query
+          required: true
+          schema: {type: string}
+        - name: role
+          in: query
+          required: true
+          schema: {type: string, enum: [peer, self]}
+        - name: query
+          in: query
+          required: false
+          schema: {type: string, maxLength: 100}
+        - name: page
+          in: query
+          required: false
+          schema: {type: integer, minimum: 1, default: 1}
+      responses:
+        '200': {description: 成功, content: {application/json: {schema: {$ref: '#/components/schemas/ChatItemPage'}}}}
+        '400': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '401': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '403': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '404': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '502': {description: 闲鱼商品查询失败, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '503': {description: 商品查询能力未装配, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+  "/api/v1/chat/item-cards":
+    post:
+      operationId: postApiV1ChatItemCards
+      summary: 向个人会话发送商品卡片
+      security: [{cookieAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ChatItemCardRequest'}
+      responses:
+        '201': {description: 成功, content: {application/json: {schema: {$ref: '#/components/schemas/ChatMessageEnvelope'}}}}
+        '400': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '401': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '403': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '404': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '409': {description: 账号离线, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '500': {description: 平台已发送但本地状态收口失败, content: {application/json: {schema: {$ref: '#/components/schemas/ChatSendErrorResponse'}}}}
+        '502': {description: 平台发送失败, content: {application/json: {schema: {$ref: '#/components/schemas/ChatSendErrorResponse'}}}}
+        '503': {description: 商品发送能力未装配, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
   "/api/v1/chat/images":
     post:
       operationId: postApiV1ChatImages
@@ -2848,6 +2902,62 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
   "/api/v1/chat/sessions":
+    delete:
+      operationId: deleteApiV1ChatSessions
+      summary: deleteApiV1ChatSessions
+      security: [{cookieAuth: []}]
+      parameters:
+        - name: account_id
+          in: query
+          required: true
+          schema: {type: string}
+        - name: chat_id
+          in: query
+          required: true
+          schema: {type: string}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationResponse'
+        '400':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     get:
       operationId: getApiV1ChatSessions
       summary: getApiV1ChatSessions
@@ -8242,7 +8352,7 @@ components:
         direction: {type: string, enum: [incoming, outgoing]}
         sender_id: {type: string}
         sender_name: {type: string}
-        message_type: {type: string, enum: [text, image, video, audio, system]}
+        message_type: {type: string, enum: [text, image, video, audio, item, system]}
         content: {type: string}
         media_duration: {type: integer}
         status: {type: string, enum: [received, sending, sent, failed]}
@@ -8312,6 +8422,37 @@ components:
         item_id: {type: string}
         item_title: {type: string}
         text: {type: string, maxLength: 2000}
+    ChatItem:
+      type: object
+      required: [item_id, title, image_url, price]
+      properties:
+        item_id: {type: string, minLength: 1, maxLength: 128}
+        title: {type: string, minLength: 1, maxLength: 200}
+        image_url: {type: string, format: uri, maxLength: 2048}
+        price: {type: string, minLength: 1, maxLength: 64}
+        description: {type: string}
+    ChatItemPage:
+      type: object
+      required: [items, page, has_more]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/ChatItem'}}
+        page: {type: integer, minimum: 1}
+        has_more: {type: boolean}
+    ChatItemCardRequest:
+      type: object
+      required: [account_id, chat_id, item]
+      properties:
+        account_id: {type: string}
+        chat_id: {type: string}
+        item: {$ref: '#/components/schemas/ChatItemCardSnapshot'}
+    ChatItemCardSnapshot:
+      type: object
+      required: [item_id, title, image_url, price]
+      properties:
+        item_id: {type: string, minLength: 1, maxLength: 128}
+        title: {type: string, minLength: 1, maxLength: 200}
+        image_url: {type: string, maxLength: 2048}
+        price: {type: string, minLength: 1, maxLength: 64}
     ChatReadRequest:
       type: object
       required: [account_id, chat_id]

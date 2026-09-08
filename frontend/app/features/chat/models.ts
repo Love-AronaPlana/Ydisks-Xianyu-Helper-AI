@@ -109,8 +109,8 @@ export interface ChatMessage {
 	sender_id: string;
 	/** 发送者名称。 */
 	sender_name: string;
-  /** 消息类型；audio 表示需在浏览器解码的语音，system 表示平台通知或交易卡片。 */
-	message_type: 'text' | 'image' | 'video' | 'audio' | 'system';
+	/** 消息类型；item 表示规范 JSON 商品卡片，system 表示平台通知或交易卡片。 */
+	message_type: 'text' | 'image' | 'video' | 'audio' | 'item' | 'system';
 	/** 消息正文或媒体地址。 */
 	content: string;
 	/** 语音消息的秒级时长；非语音或平台未提供时省略。 */
@@ -123,6 +123,30 @@ export interface ChatMessage {
 	read_at?: number;
 	/** 消息发送时间的 Unix 秒。 */
 	sent_at: number;
+}
+
+/** 由 chat feature adapter 归一化的个人会话商品快照。 */
+export interface ChatItem {
+	/** 闲鱼商品稳定标识。 */
+	item_id: string;
+	/** 商品标题。 */
+	title: string;
+	/** 商品主图的 HTTP(S) 地址。 */
+	image_url: string;
+	/** 不含货币符号的平台价格文本。 */
+	price: string;
+	/** 只用于选择列表的可选商品摘要。 */
+	description?: string;
+}
+
+/** 聊天商品分页的 feature UI 模型。 */
+export interface ChatItemPage {
+	/** 当前页商品。 */
+	items: ChatItem[];
+	/** 从 1 开始的当前页码。 */
+	page: number;
+	/** 是否还有下一页。 */
+	has_more: boolean;
 }
 
 /** 由当前 feature adapter 归一后的账号级快捷回复 UI 模型；不直接暴露 HTTP DTO。 */

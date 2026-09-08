@@ -91,10 +91,11 @@ type ImageUploader interface {
 func NewWithSending(repository Repository, outgoing OutgoingRepository, senders SenderProvider, uploader ImageUploader, identity ...IdentityResolver) *Service {
 	// service 保存聊天历史、发送和平台身份能力的统一应用服务。
 	service := &Service{
-		repository: repository,
-		outgoing:   outgoing,
-		senders:    senders,
-		uploader:   uploader,
+		repository:        repository,
+		outgoing:          outgoing,
+		senders:           senders,
+		uploader:          uploader,
+		sessionOperations: newSessionOperationGate(),
 	}
 	if len(identity) > 0 {
 		service.identityResolver = identity[0]
@@ -173,6 +174,9 @@ func (s *Service) SendText(ctx context.Context, input OutgoingInput) (*Message, 
 	if s == nil || s.outgoing == nil || s.senders == nil {
 		return nil, ErrUnavailable
 	}
+	// unlockOperation 阻止同一会话的本地删除在平台发送和状态收口之间穿插执行。
+	unlockOperation := s.sessionOperations.lock(session.AccountID, session.ChatID)
+	defer unlockOperation()
 	// sender 和 ok 保存目标账号的在线发送句柄及存在性。
 	sender, ok := s.senders.Sender(session.AccountID)
 	if !ok || sender == nil {
@@ -216,6 +220,9 @@ func (s *Service) SendImage(ctx context.Context, input ImageInput) (*Message, er
 	if len(input.Data) == 0 {
 		return nil, ErrSendInvalidInput
 	}
+	// unlockOperation 覆盖上传、平台发送和状态收口，使随后到达的删除能够清空本次完整操作。
+	unlockOperation := s.sessionOperations.lock(session.AccountID, session.ChatID)
+	defer unlockOperation()
 	// sender 和 ok 保存目标账号的在线发送句柄及存在性。
 	sender, ok := s.senders.Sender(session.AccountID)
 	if !ok || sender == nil {

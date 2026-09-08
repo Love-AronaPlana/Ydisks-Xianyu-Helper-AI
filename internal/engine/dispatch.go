@@ -339,13 +339,81 @@ func extractOwnWebSocketEcho(decrypted map[string]any, accountID, cookieStr stri
 	reminderURL, _ := m10["reminderUrl"].(string)
 	// buyerID 保存深链中的对端用户标识；它不能等于当前账号，缺失时由既有会话保留原身份。
 	buyerID := extractChatPeerUserID(reminderURL, selfUserID)
-	return &OutgoingChatMessage{
-		AccountID:  accountID,
-		ChatID:     chatID,
-		BuyerID:    buyerID,
-		Text:       text,
-		MessageKey: extractMessageID(decrypted),
+	// messageType 和 content 默认保留文本摘要；contentType=7 时改为规范商品卡片。
+	messageType, content := "text", text
+	if messageContentType(m1, m10) == "7" {
+		// itemContent 是自身跨端回显中归一化后的商品快照 JSON。
+		if itemContent := extractItemCardObservationContent(decrypted); itemContent != "" {
+			messageType, content = "item", itemContent
+		}
 	}
+	return &OutgoingChatMessage{
+		AccountID:   accountID,
+		ChatID:      chatID,
+		BuyerID:     buyerID,
+		Text:        text,
+		MessageKey:  extractMessageID(decrypted),
+		MessageType: messageType,
+		Content:     content,
+	}
+}
+
+// extractItemCardObservationContent 从已解密帧中查找 contentType=7 的 itemCard.item 并输出规范 JSON。
+func extractItemCardObservationContent(value any) string {
+	// content 保存首个字段完整的商品卡片正文。
+	var content string
+	// walk 递归穿透平台的 JSON 字符串、对象和数组封装。
+	var walk func(any)
+	walk = func(current any) {
+		if content != "" {
+			return
+		}
+		// typed 是当前递归节点按实际 JSON 类型展开后的值。
+		switch typed := current.(type) {
+		case string:
+			// nested 是可能二次 JSON 编码的内层值。
+			var nested any
+			if json.Unmarshal([]byte(typed), &nested) == nil {
+				walk(nested)
+			}
+		case map[string]any:
+			// itemCard 是官网 contentType=7 的卡片外层对象。
+			itemCard, _ := typed["itemCard"].(map[string]any)
+			// item 是保存商品身份及展示字段的卡片内层对象。
+			item, _ := itemCard["item"].(map[string]any)
+			if item != nil {
+				// itemID 和 title 是渲染商品卡片的必需身份字段。
+				itemID, title := strings.TrimSpace(toString(item["itemId"])), strings.TrimSpace(toString(item["title"]))
+				// imageURL 和 price 是渲染商品卡片的必需展示字段。
+				imageURL, price := strings.TrimSpace(toString(item["mainPic"])), strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(toString(item["price"])), "¥"))
+				if strings.HasPrefix(imageURL, "//") {
+					imageURL = "https:" + imageURL
+				}
+				if itemID != "" && title != "" && imageURL != "" && price != "" {
+					// encoded 是固定字段顺序的非敏感商品 JSON。
+					encoded, marshalErr := json.Marshal(struct {
+						ItemID   string `json:"item_id"`
+						Title    string `json:"title"`
+						ImageURL string `json:"image_url"`
+						Price    string `json:"price"`
+					}{ItemID: itemID, Title: title, ImageURL: imageURL, Price: price})
+					if marshalErr == nil {
+						content = string(encoded)
+						return
+					}
+				}
+			}
+			for _ /* child 是当前对象中继续递归检查的字段值。 */, child := range typed {
+				walk(child)
+			}
+		case []any:
+			for _ /* child 是当前数组中继续递归检查的元素。 */, child := range typed {
+				walk(child)
+			}
+		}
+	}
+	walk(value)
+	return content
 }
 
 // extractChatPeerUserID 从闲鱼聊天深链读取对端用户标识，并拒绝误填为当前账号的值。

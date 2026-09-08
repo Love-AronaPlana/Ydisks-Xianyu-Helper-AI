@@ -158,6 +158,8 @@ func (d *messageDispatcher) handleMessage(decrypted map[string]any) {
 
 // handleMessageContext 将系统事件和聊天消息分别交给对应业务链。
 func (d *messageDispatcher) handleMessageContext(ctx context.Context, decrypted map[string]any) {
+	// observedAt 在分类和防抖之前固定消息的本地接纳顺序，后续数据库写入延迟不会改变它与删除动作的先后关系。
+	observedAt := time.Now().UTC().UnixMilli()
 	// receipt、ok 保存解析出的平台已读回执及是否命中已读事件格式。
 	if receipt, ok := extractMessageReadEvent(decrypted); ok {
 		receipt.AccountID = d.cookieID
@@ -186,6 +188,7 @@ func (d *messageDispatcher) handleMessageContext(ctx context.Context, decrypted 
 	}
 	// ownEcho 保存当前账号从官方客户端发出后回显的消息；它必须实时落库，但绝不能进入自动回复防抖链。
 	if ownEcho := extractOwnWebSocketEcho(decrypted, d.cookieID, d.currentCookie()); ownEcho != nil {
+		ownEcho.ObservedAt = observedAt
 		// handler 保存当前可选业务处理器；旧集成未实现出站观察能力时保持原有仅过滤语义。
 		if handler := d.currentHandler(); handler != nil {
 			// observer、supported 保存出站观察接口及其实现判断，避免扩大基础 Handler 的必选职责。
@@ -202,6 +205,7 @@ func (d *messageDispatcher) handleMessageContext(ctx context.Context, decrypted 
 	// chat 用于本次流程后续判断的聊天
 	chat := extractChatMessage(decrypted, d.cookieID, d.currentCookie())
 	if chat != nil && chat.Text != "" {
+		chat.ObservedAt = observedAt
 		if !d.markAndCheckDedup(decrypted, chat) {
 			return
 		}

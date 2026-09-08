@@ -21,6 +21,16 @@ func TestChatSessionAndMessageLifecycle(t *testing.T) {
 	if err := store.Chats.UpsertSession(ctx, session); err != nil {
 		t.Fatal(err)
 	}
+	// exactSession 和 exactSessionErr 验证用户、账号和会话三重条件可以精确定位可见会话。
+	exactSession, exactSessionErr := store.Chats.FindSession(ctx, userID, cookieID, "chat")
+	if exactSessionErr != nil || exactSession == nil || exactSession.BuyerID != "buyer" {
+		t.Fatalf("exact session=%+v err=%v", exactSession, exactSessionErr)
+	}
+	// crossUserErr 验证错误用户不能通过已知账号与会话标识读取会话。
+	_, crossUserErr := store.Chats.FindSession(ctx, userID+1, cookieID, "chat")
+	if !errors.Is(crossUserErr, ErrNotFound) {
+		t.Fatalf("cross-user find err=%v", crossUserErr)
+	}
 	// err 表示会话身份增量更新的数据库错误。
 	if err := store.Chats.UpdateSessionIdentity(ctx, cookieID, "chat", "buyer-2", "买家2", "avatar"); err != nil {
 		t.Fatal(err)
@@ -68,6 +78,11 @@ func TestChatSessionAndMessageLifecycle(t *testing.T) {
 	hiddenSessions, hiddenSessionsErr := store.Chats.ListSessions(ctx, userID, cookieID, 0)
 	if hiddenSessionsErr != nil || len(hiddenSessions) != 0 {
 		t.Fatalf("hidden sessions=%+v err=%v", hiddenSessions, hiddenSessionsErr)
+	}
+	// hiddenFindErr 验证软隐藏会话不能继续作为人工发送目标。
+	_, hiddenFindErr := store.Chats.FindSession(ctx, userID, cookieID, "chat")
+	if !errors.Is(hiddenFindErr, ErrNotFound) {
+		t.Fatalf("hidden find err=%v", hiddenFindErr)
 	}
 	// retainedMessage、retainedMessageErr 验证软隐藏后历史消息仍可读取。
 	retainedMessage, retainedMessageErr := store.Chats.GetMessageByKey(ctx, cookieID, "in-1")

@@ -62,6 +62,21 @@ export default defineConfig({
           if (modulePath.includes('/app/features/chat/components/ChatMetadataFeature.') || modulePath.includes('/app/features/chat/metadata.')) {
             return 'chat-metadata';
           }
+          // 商品选择、查询状态和商品消息卡片组成独立静态分片，避免新增低频能力挤占聊天主页面预算。
+          if (
+            modulePath.includes('/app/features/chat/components/ChatItemPickerDialog.') ||
+            modulePath.includes('/app/features/chat/components/ItemMessageCard.') ||
+            modulePath.includes('/app/features/chat/useChatItemPicker.')
+          ) {
+            return 'chat-items';
+          }
+          // 会话行选择/删除交互与确认框独立分片，避免列表操作细节挤占聊天消息主页面预算。
+          if (
+            modulePath.includes('/app/features/chat/components/ConversationListItem.') ||
+            modulePath.includes('/app/features/chat/components/DeleteConversationDialog.')
+          ) {
+            return 'chat-session-actions';
+          }
           // 模板请求 Hook 只服务模板管理页，独立分片可保持编辑器页面在既有下载预算内。
           if (modulePath.includes('/app/features/delivery-templates/hooks.')) {
             return 'delivery-template-runtime';

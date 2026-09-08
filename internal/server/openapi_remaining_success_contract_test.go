@@ -190,6 +190,7 @@ func testOpenAPIChatHistoryAndReadSuccess(t *testing.T) {
 	requests := []*http.Request{
 		httptest.NewRequest(http.MethodGet, "/api/v1/chat/messages?account_id=acc1&chat_id=chat-contract", nil),
 		httptest.NewRequest(http.MethodPost, "/api/v1/chat/read", strings.NewReader(`{"account_id":"acc1","chat_id":"chat-contract"}`)),
+		httptest.NewRequest(http.MethodDelete, "/api/v1/chat/sessions?account_id=acc1&chat_id=chat-contract", nil),
 	}
 	// request 是当前待验证的聊天 HTTP 请求。
 	for _, request := range requests {
@@ -199,6 +200,26 @@ func testOpenAPIChatHistoryAndReadSuccess(t *testing.T) {
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, request)
 		assertOpenAPIRecordedSuccessResponse(t, request, recorder)
+	}
+	// sessionCount 和 hiddenAt 验证删除端点保留自动化定位会话并写入用户隐藏时间。
+	var sessionCount int
+	// hiddenAt 保存删除端点写入的用户隐藏毫秒时间。
+	var hiddenAt int64
+	// queryErr 保存删除后会话状态查询失败原因。
+	if queryErr := store.DB.QueryRowContext(context.Background(), `SELECT COUNT(*),COALESCE(MAX(user_hidden_at),0) FROM chat_sessions WHERE cookie_id=? AND chat_id=?`, "acc1", "chat-contract").Scan(&sessionCount, &hiddenAt); queryErr != nil {
+		t.Fatalf("读取删除后会话状态失败: %v", queryErr)
+	}
+	if sessionCount != 1 || hiddenAt <= 0 {
+		t.Fatalf("删除后会话状态异常: count=%d hidden_at=%d", sessionCount, hiddenAt)
+	}
+	// messageCount 验证聊天页展示消息已在同一事务中物理清空。
+	var messageCount int
+	// queryErr 保存删除后消息数量查询失败原因。
+	if queryErr := store.DB.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM chat_messages WHERE cookie_id=? AND chat_id=?`, "acc1", "chat-contract").Scan(&messageCount); queryErr != nil {
+		t.Fatalf("读取删除后消息数量失败: %v", queryErr)
+	}
+	if messageCount != 0 {
+		t.Fatalf("删除后仍有聊天消息: %d", messageCount)
 	}
 	// channelResult、channelErr 保存删除场景所需通知渠道的插入结果。
 	channelResult, channelErr := store.DB.ExecContext(context.Background(), `INSERT INTO notification_channels (name,type,config,enabled,user_id) VALUES ('contract-delete','webhook','{}',1,1)`)
@@ -429,7 +450,7 @@ func testOpenAPIUncertainNotificationSuccess(t *testing.T) {
 // _ 使用 encoding/json 保持本文件与未来需解码的覆盖场景共用稳定依赖。
 var _ = json.Valid
 
-// testOpenAPIChatSendSuccess 使用最小聊天端口验证文字和图片成功响应的 HTTP 形状。
+// testOpenAPIChatSendSuccess 使用最小聊天端口验证文字、图片和商品能力的成功响应形状。
 func testOpenAPIChatSendSuccess(t *testing.T) {
 	// srv、_、cleanup 分别是服务、无需直接读取的存储和资源释放函数。
 	srv, _, cleanup := newTestServer(t)
@@ -470,6 +491,21 @@ func testOpenAPIChatSendSuccess(t *testing.T) {
 	imageRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(imageRecorder, imageRequest)
 	assertOpenAPIRecordedSuccessResponse(t, imageRequest, imageRecorder)
+	// itemListRequest 是当前个人会话中对方商品的查询请求。
+	itemListRequest := httptest.NewRequest(http.MethodGet, "/api/v1/chat/items?account_id=acc1&chat_id=chat&role=peer&page=1", nil)
+	itemListRequest.AddCookie(sessionCookie)
+	// itemListRecorder 保存商品分页成功响应。
+	itemListRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(itemListRecorder, itemListRequest)
+	assertOpenAPIRecordedSuccessResponse(t, itemListRequest, itemListRecorder)
+	// itemSendRequest 是发送商品列表快照的版本化请求，不允许提交 buyer_id。
+	itemSendRequest := httptest.NewRequest(http.MethodPost, "/api/v1/chat/item-cards", strings.NewReader(`{"account_id":"acc1","chat_id":"chat","item":{"item_id":"item-contract","title":"契约商品","image_url":"https://img.example/item.png","price":"10.00"}}`))
+	itemSendRequest.Header.Set("Content-Type", "application/json")
+	itemSendRequest.AddCookie(sessionCookie)
+	// itemSendRecorder 保存商品卡片创建响应。
+	itemSendRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(itemSendRecorder, itemSendRequest)
+	assertOpenAPIRecordedSuccessResponse(t, itemSendRequest, itemSendRecorder)
 }
 
 // testOpenAPIItemSyncSuccess 使用本地 MTOP 返回商品列表，验证全量和分页同步响应。
@@ -722,6 +758,22 @@ func (contractChatPort) SendingAvailable() bool { return true }
 // ImageUploadAvailable 报告测试端口支持图片上传。
 func (contractChatPort) ImageUploadAvailable() bool { return true }
 
+// ItemCatalogAvailable 报告测试端口支持个人会话商品查询。
+func (contractChatPort) ItemCatalogAvailable() bool { return true }
+
+// ItemSendingAvailable 报告测试端口支持商品卡片发送。
+func (contractChatPort) ItemSendingAvailable() bool { return true }
+
+// ListChatItems 返回确定性商品页，供 OpenAPI 成功响应验证使用。
+func (contractChatPort) ListChatItems(context.Context, chatapp.ChatItemQuery) (chatapp.ChatItemPage, error) {
+	return chatapp.ChatItemPage{Items: []chatapp.ChatItem{{ItemID: "item-contract", Title: "契约商品", ImageURL: "https://img.example/item.png", Price: "10.00"}}, Page: 1}, nil
+}
+
+// SendItemCard 返回确定性已发送商品消息，正文使用规范商品 JSON。
+func (contractChatPort) SendItemCard(context.Context, chatapp.ItemCardInput) (*chatapp.Message, error) {
+	return &chatapp.Message{AccountID: "acc1", ChatID: "chat", MessageKey: "contract-item", Direction: "outgoing", MessageType: "item", Content: `{"item_id":"item-contract","title":"契约商品","image_url":"https://img.example/item.png","price":"10.00"}`, Status: "sent"}, nil
+}
+
 // Subscribe 返回空事件流，当前场景不验证 WebSocket。
 func (contractChatPort) Subscribe(context.Context, int64) (<-chan chatapp.Event, func(), error) {
 	return nil, func() {}, nil
@@ -780,6 +832,9 @@ func (contractChatPort) OwnsAccount(context.Context, int64, string) (bool, error
 
 // MarkRead 确认本地已读更新成功。
 func (contractChatPort) MarkRead(context.Context, int64, string, string) error { return nil }
+
+// DeleteConversation 确认测试会话删除成功，用于满足聊天 HTTP 应用端口。
+func (contractChatPort) DeleteConversation(context.Context, int64, string, string) error { return nil }
 
 // ReportPlatformRead 确认平台已读上报成功。
 func (contractChatPort) ReportPlatformRead(context.Context, string, string, []map[string]any) error {

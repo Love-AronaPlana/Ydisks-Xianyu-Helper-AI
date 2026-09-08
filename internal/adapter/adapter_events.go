@@ -37,25 +37,12 @@ func (a *Adapter) HandleChatMessage(ctx context.Context, message engine.ChatMess
 	// stored、inserted、err 保存落库消息、是否首次插入及持久化错误。
 	stored, inserted, err := a.chat.RecordIncoming(ctx, chat.Incoming{
 		AccountID: message.AccountID, ChatID: message.ChatID, BuyerID: message.SenderUserID,
-		BuyerName: message.SenderName, Text: message.Text, MessageID: message.MessageID, ItemID: message.ItemID, Raw: message.Raw,
+		BuyerName: message.SenderName, Text: message.Text, MessageID: message.MessageID, ItemID: message.ItemID, ObservedAt: message.ObservedAt, Raw: message.Raw,
 	})
 	if stored != nil {
 		a.logger.Debug("实时聊天消息已入库", "account", message.AccountID, "chat_id", message.ChatID,
 			"message_key", stored.MessageKey, "message_type", stored.MessageType, "inserted", inserted)
 	}
-	return err
-}
-
-// HandleOutgoingChatMessage records successful manual/automatic text sends as
-// a side channel; it never participates in platform delivery.
-// HandleOutgoingChatMessage 处理Outgoing聊天消息。
-func (a *Adapter) HandleOutgoingChatMessage(ctx context.Context, message engine.OutgoingChatMessage) error {
-	if a.chat == nil {
-		return nil
-	}
-	// err 用于本次流程后续判断的err
-	_, err := a.chat.RecordOutgoingSent(ctx, db.ChatSession{CookieID: message.AccountID, ChatID: message.ChatID,
-		BuyerID: message.BuyerID}, message.MessageKey, message.Text)
 	return err
 }
 

@@ -419,13 +419,20 @@ func (c *ClientImpl) recommendPublishCategory(ctx context.Context, cookiesStr, t
 		return nil, updated, err
 	}
 	if !hasMTopSuccess(retFromDecoded(decoded)) {
+		// classifiedPublishErr 保存发布域能够从无错误码文本中识别出的既有专用错误，例如库存权限不足。
+		classifiedPublishErr := classifyPublishError(retFromDecoded(decoded), decoded)
+		// publishErr 是发布域专用错误视图；已知专用码优先于通用未知系统分类。
+		var publishErr *PublishError
+		if errors.As(classifiedPublishErr, &publishErr) && publishErr.Code != PublishErrorUnknown {
+			return nil, updated, classifiedPublishErr
+		}
 		// failure 保存推荐接口的统一平台失败分类；普通库存/权限错误继续由旧发布错误码兼容处理。
 		failure := c.mtopResponseFailure("mtop.taobao.idle.kgraph.property.recommend", http.StatusOK, retFromDecoded(decoded), "平台 ret 未包含 SUCCESS")
 		// kind、ok 保存推荐接口失败分类及其是否存在。
 		if kind, ok := MTopErrorKindOf(failure); ok && kind != MTopErrorBusiness {
 			return nil, updated, failure
 		}
-		return nil, updated, classifyPublishError(retFromDecoded(decoded), decoded)
+		return nil, updated, classifiedPublishErr
 	}
 	// dataMap 用于本次流程后续判断的数据Map
 	dataMap := mapFromAny(decoded["data"])
@@ -601,13 +608,20 @@ func (c *ClientImpl) publishItemOnce(ctx context.Context, cookiesStr string, req
 	// ret 用于本次流程后续判断的ret
 	ret := retFromDecoded(decoded)
 	if !hasMTopSuccess(ret) {
+		// classifiedPublishErr 保存发布域能够从无错误码文本中识别出的既有专用错误，例如库存权限不足。
+		classifiedPublishErr := classifyPublishError(ret, decoded)
+		// publishErr 是发布域专用错误视图；已知专用码优先于通用未知系统分类。
+		var publishErr *PublishError
+		if errors.As(classifiedPublishErr, &publishErr) && publishErr.Code != PublishErrorUnknown {
+			return nil, classifiedPublishErr
+		}
 		// failure 保存最终发布接口的统一平台失败分类；库存/权限错误仍保留既有专用码。
 		failure := c.mtopResponseFailure("mtop.idle.pc.idleitem.publish", http.StatusOK, ret, "平台 ret 未包含 SUCCESS")
 		// kind、ok 保存最终发布接口失败分类及其是否存在。
 		if kind, ok := MTopErrorKindOf(failure); ok && kind != MTopErrorBusiness {
 			return nil, failure
 		}
-		return nil, classifyPublishError(ret, decoded)
+		return nil, classifiedPublishErr
 	}
 	// dataMap 用于本次流程后续判断的数据Map
 	dataMap := mapFromAny(decoded["data"])

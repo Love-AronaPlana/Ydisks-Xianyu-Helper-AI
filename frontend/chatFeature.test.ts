@@ -33,6 +33,7 @@ describe('online chat UI contract', () => {
 
 	test('renders peer/self identity and verified media capabilities', () => {
 		const chat = source('app/features/chat/pages/Chat.tsx'); /* chat 表示chat。 */
+		const conversation = source('app/features/chat/components/ConversationListItem.tsx'); /* conversation 保存从聊天页拆出的会话行展示源码。 */
 		const chatHook = source('app/features/chat/hooks.ts'); /* chatHook 表示chatHook。 */
 		expect(chat).toContain('selectedSession.buyer_avatar_url');
 		expect(chat).toContain('activeAccount?.avatar_url');
@@ -40,8 +41,8 @@ describe('online chat UI contract', () => {
 		expect(chat).toContain("message.message_type === 'video'");
 		expect(chat).toContain("message.message_type === 'audio'");
 		expect(chat).toContain('initialDuration={message.media_duration}');
-		expect(chat).toContain('session.item_image_url');
-		expect(chat).toContain('rounded-[4px]');
+		expect(conversation).toContain('session.item_image_url');
+		expect(conversation).toContain('rounded-[4px]');
 		expect(chat).toContain('<AudioMessage');
 		expect(chatHook).toContain('sendChatImage');
 	} /* 测试回调断言头像、图片、视频、语音及发送 API 的渲染能力。 */);

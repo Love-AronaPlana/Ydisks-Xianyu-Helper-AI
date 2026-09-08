@@ -207,6 +207,11 @@ func (a *Account) SendImage(ctx context.Context, chatID, toUserID, imageURL stri
 	return a.outgoing.sendImage(ctx, chatID, toUserID, imageURL, cardID, width, height)
 }
 
+// SendItemCard 通过当前 WebSocket 给指定个人会话发送商品卡片。
+func (a *Account) SendItemCard(ctx context.Context, chatID, toUserID, itemID, title, imageURL, price string) error {
+	return a.outgoing.sendItemCard(ctx, chatID, toUserID, itemID, title, imageURL, price)
+}
+
 // FetchChatHistory reuses the account's registered IM connection. Keeping this
 // optional capability outside WSConn avoids forcing non-chat test transports to
 // implement history retrieval.

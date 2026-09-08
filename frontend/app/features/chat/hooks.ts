@@ -2,7 +2,7 @@ import type React from 'react';
 import { useCallback,useEffect,useLayoutEffect,useMemo,useRef,useState } from 'react';
 import { emojiURL,renderXianyuText,xianyuEmojis } from '../../../chatEmojis';
 import type { AccountDetail,ChatMessage,ChatSession } from './api';
-import { confirmedOutgoingMessageFromError,getAccountDetails,getAccountRuntimeStatuses,getChatMessagePage,getChatSessionPage,markChatRead,sendChatImage,sendChatMessage } from './api';
+import { confirmedOutgoingMessageFromError,deleteChatSession,getAccountDetails,getAccountRuntimeStatuses,getChatMessagePage,getChatSessionPage,markChatRead,sendChatImage,sendChatMessage } from './api';
 import { publishChatUnreadStatus,subscribeToChatLiveEvents } from './liveEvents';
 import { collectChatReadReceipts,filterChatSessions,formatClock,isChatAbortError,isCurrentChatRequest,markOutgoingMessagesReadByIncoming,mergeChatSessions,mergeLiveMessage,mergeOlderMessages,messageTime } from './state';
 import type { ChatFeatureState,ChatLiveState,SessionsByAccount } from './types';
@@ -63,6 +63,16 @@ export type UseChatResult = ChatFeatureState & {
   retrySend: () => Promise<void>;
   /** 是否存在可重试的发送动作。 */
   retryAvailable: boolean;
+	/** 当前正在删除的会话 ID；空字符串表示没有删除请求。 */
+	deletingChatID: string;
+	/** 最近一次会话删除失败的可重试错误。 */
+	deleteError: string;
+	/** 在本机隐藏并清空指定会话，成功时返回 true。 */
+	deleteConversation: (accountID: string, chatID: string) => Promise<boolean>;
+	/** 清除会话删除弹窗内的旧错误。 */
+	clearDeleteError: () => void;
+	/** 将独立发送流程返回的出站消息幂等合并到当前聊天。 */
+	acceptOutgoingMessage: (message: ChatMessage, notice?: string) => void;
   /** 列出指定账号的未读总数。 */
   unreadForAccount: (accountID: string) => number;
   /** 表情资源导出，保持页面兼容入口。 */
@@ -127,6 +137,10 @@ export const useChat = (): UseChatResult => {
   const [error, setError] = useState('');
   // sendNotice 保存远端已发送但本地状态收口失败时不可重试的黄色提示。
   const [sendNotice, setSendNotice] = useState('');
+	// deletingChatID 保存当前删除请求对应的会话 ID，供确认框锁定重复提交。
+	const [deletingChatID, setDeletingChatID] = useState('');
+	// deleteError 保存会话删除失败原因，与聊天加载和发送错误分开展示。
+	const [deleteError, setDeleteError] = useState('');
   // liveState 保存 WebSocket 连接状态。
   const [liveState, setLiveState] = useState<ChatLiveState>('connecting');
   // retryText 保存最近失败的文本消息。
@@ -169,6 +183,10 @@ export const useChat = (): UseChatResult => {
   const sendSequence = useRef(0);
   // sendController 保存当前消息发送控制器。
   const sendController = useRef<AbortController | null>(null);
+	// deleteSequence 隔离账号切换、重复提交和卸载后的过期删除响应。
+	const deleteSequence = useRef(0);
+	// deleteController 保存当前会话删除请求控制器，生命周期由本 Hook 独占。
+	const deleteController = useRef<AbortController | null>(null);
 
   useEffect(/* 当前回调同步 React 副作用和资源生命周期。 */ () => { activeAccountRef.current = activeAccountID; }, [activeAccountID]);
   useEffect(/* 当前回调同步 React 副作用和资源生命周期。 */ () => { activeChatRef.current = activeChatID; }, [activeChatID]);
@@ -346,6 +364,13 @@ export const useChat = (): UseChatResult => {
     contactSequence.current += 1;
   }, [activeAccountID]);
 
+	useEffect(/* 当前回调在账号切换时取消旧账号的删除请求，防止迟到响应改写新账号列表。 */ () => {
+		deleteSequence.current += 1;
+		deleteController.current?.abort();
+		setDeletingChatID('');
+		setDeleteError('');
+	}, [activeAccountID]);
+
   useEffect(/* 当前回调同步 React 副作用和资源生命周期。 */ () => {
     sendController.current?.abort();
     sendSequence.current += 1;
@@ -370,6 +395,8 @@ export const useChat = (): UseChatResult => {
     olderController.current?.abort();
     contactController.current?.abort();
     sendController.current?.abort();
+		deleteSequence.current += 1;
+		deleteController.current?.abort();
   }, []);
 
   useEffect(/* 当前回调负责图片预览临时地址的生命周期清理。 */ () => {
@@ -664,10 +691,72 @@ export const useChat = (): UseChatResult => {
     else if (retryImage) await sendImage(retryImage, false);
   }, [retryImage, retryText, sendImage, sendText]);
 
+	/** 在本机隐藏会话并清空消息；只有当前代次的成功响应能够改写聊天状态。 */
+	const deleteConversation = useCallback(/* 当前回调提交确认框选中的账号与会话。 */ async (accountID: string, chatID: string): Promise<boolean> => {
+		if (!accountID || !chatID || (deleteController.current && !deleteController.current.signal.aborted)) return false;
+		// sequence 标识本次删除请求，账号切换或卸载会推进代次使其失效。
+		const sequence = ++deleteSequence.current;
+		deleteController.current?.abort();
+		// controller 负责取消本次本地删除请求，避免过期响应覆盖新状态。
+		const controller = new AbortController();
+		deleteController.current = controller;
+		setDeletingChatID(chatID);
+		setDeleteError('');
+		try {
+			await deleteChatSession(accountID, chatID, { signal: controller.signal });
+			if (!isCurrentChatRequest(deleteSequence.current, sequence, controller.signal)) return false;
+			setSessionsByAccount(/* current 保存全部账号已加载会话，只从目标账号移除已删除行。 */ current => ({
+				...current,
+				[accountID]: (current[accountID] || []).filter(/* session 是目标账号当前参与删除筛选的会话。 */ session => session.chat_id !== chatID),
+			}));
+			if (activeAccountRef.current === accountID && activeChatRef.current === chatID) {
+				messageSequence.current += 1;
+				messageController.current?.abort();
+				olderSequence.current += 1;
+				olderController.current?.abort();
+				sendSequence.current += 1;
+				sendController.current?.abort();
+				setActiveChatID('');
+				setMessages([]);
+				setMessagesLoading(false);
+				setOlderLoading(false);
+				setHasOlder(false);
+				setHistoryCursor(undefined);
+				setPendingImage(null);
+				setRetryText(null);
+				setRetryImage(null);
+				setSending(false);
+				setError('');
+				setSendNotice('');
+			}
+			return true;
+		} catch (/* deleteRequestError 保存本次删除请求失败原因；取消和过期响应保持静默。 */ deleteRequestError) {
+			if (isCurrentChatRequest(deleteSequence.current, sequence, controller.signal) && !isChatAbortError(deleteRequestError)) {
+				setDeleteError(deleteRequestError instanceof Error ? deleteRequestError.message : '删除会话失败，请重试');
+			}
+			return false;
+		} finally {
+			if (isCurrentChatRequest(deleteSequence.current, sequence, controller.signal)) {
+				setDeletingChatID('');
+				deleteController.current = null;
+			}
+		}
+	}, []);
+
+	/** 清除确认框打开前遗留的删除错误。 */
+	const clearDeleteError = useCallback(/* 当前回调只重置删除流程错误，不影响聊天页其他提示。 */ (): void => setDeleteError(''), []);
+
+	/** 将商品卡片等独立发送器的结果合并到当前会话，不改动文本和图片重试状态。 */
+	const acceptOutgoingMessage = useCallback(/* 当前回调接收已经过后端状态机确认的出站消息。 */ (message: ChatMessage, notice = ''): void => {
+		if (message.account_id !== activeAccountRef.current || message.chat_id !== activeChatRef.current) return;
+		setMessages(/* current 是当前会话消息集合，新结果按 message_key 幂等合并。 */ current => mergeLiveMessage(current, message));
+		setSendNotice(notice);
+	}, []);
+
   return {
     accounts, activeAccountID, activeSessions, selectedSession, activeAccount, messages, search, unreadOnly, draft, loading, messagesLoading, olderLoading, hasOlder, contactsLoading, hasMoreContacts: platformHasMoreContacts[activeAccountID] === true || storedHasMoreContacts[activeAccountID] === true || hasMoreContacts[activeAccountID] === true, emojiOpen, sending, error, sendNotice, liveState, pendingImage,
     activeChatID, filteredSessions, scrollRef, imageInputRef, setActiveAccountID, setActiveChatID, setSearch, setUnreadOnly, setDraft, setEmojiOpen,
-    reloadSessions, loadMoreContacts, loadOlderMessages, handleMessageScroll, handleSend, handleQuickReply, handleImage, handlePastedImages, confirmSendImage, closeImagePreview, retrySend, retryAvailable: Boolean(retryText || retryImage), unreadForAccount,
+    reloadSessions, loadMoreContacts, loadOlderMessages, handleMessageScroll, handleSend, handleQuickReply, handleImage, handlePastedImages, confirmSendImage, closeImagePreview, retrySend, retryAvailable: Boolean(retryText || retryImage), deletingChatID, deleteError, deleteConversation, clearDeleteError, acceptOutgoingMessage, unreadForAccount,
     emojiURL, xianyuEmojis, renderXianyuText, formatClock, messageTime,
   };
 };

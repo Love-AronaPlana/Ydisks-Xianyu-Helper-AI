@@ -290,7 +290,9 @@ type Incoming struct {
 	Text      string
 	MessageID string
 	ItemID    string
-	Raw       map[string]any
+	// ObservedAt 是引擎首次接纳实时消息的 Unix 毫秒时间；零值时由聊天服务在入口处补齐。
+	ObservedAt int64
+	Raw        map[string]any
 }
 
 // Event 用于本次流程后续判断的Event
@@ -385,6 +387,11 @@ func (s *Service) RecordIncoming(ctx context.Context, in Incoming) (*db.ChatMess
 	if s == nil || s.repository == nil {
 		return nil, false, fmt.Errorf("聊天服务未初始化")
 	}
+	// observedAt 固定实时消息进入业务层的本地顺序；引擎提供的防抖前时间优先。
+	observedAt := in.ObservedAt
+	if observedAt <= 0 {
+		observedAt = time.Now().UTC().UnixMilli()
+	}
 	// sentAt 用于本次流程后续判断的sentAt
 	sentAt := extractUnixMilli(in.Raw)
 	if sentAt == 0 {
@@ -420,7 +427,7 @@ func (s *Service) RecordIncoming(ctx context.Context, in Incoming) (*db.ChatMess
 	}
 	// message 用于本次流程后续判断的消息
 	message := db.ChatMessage{MessageKey: key, Direction: "incoming", SenderID: in.BuyerID,
-		SenderName: in.BuyerName, MessageType: messageType, Content: content, MediaDuration: mediaDuration, Status: "received", SentAt: sentAt}
+		SenderName: in.BuyerName, MessageType: messageType, Content: content, MediaDuration: mediaDuration, Status: "received", SentAt: sentAt, ObservedAt: observedAt}
 	// stored、inserted、err 保存落库消息、首次插入标识及错误；系统消息永不增加用户红点。
 	stored, inserted, err := s.repository.SaveMessage(ctx, session, message, messageType != "system")
 	if err == nil && inserted {
@@ -455,6 +462,12 @@ func (s *Service) RecordHistoryPage(ctx context.Context, accountID, chatID, myID
 		stored, _, err := s.repository.SaveMessage(ctx, session, message, false)
 		if err != nil {
 			return page, err
+		}
+		if stored == nil {
+			// 命中用户消息清空截止线后，当前项及后续平台分页都只会更旧，停止继续回灌历史。
+			page.HasMore = false
+			page.NextCursor = 0
+			continue
 		}
 		if message.MessageType != "text" && (stored.MessageType != message.MessageType || stored.Content != message.Content) {
 			// updateErr 保存历史接口用真实媒体地址纠正已有占位消息时的持久化错误。
@@ -617,6 +630,12 @@ func extractMessageContent(raw map[string]any, fallback string) (string, string)
 		case map[string]any:
 			// contentType 用于本次流程后续判断的内容类型
 			contentType := strings.TrimSpace(fmt.Sprint(typed["contentType"]))
+			if contentType == "7" {
+				// itemContent 是完整商品卡片归一化后的规范 JSON。
+				if itemContent := normalizedItemCardContent(typed); itemContent != "" {
+					return "item", itemContent
+				}
+			}
 			if contentType == "2" {
 				if // mediaURL 用于本次流程后续判断的mediaURL
 				mediaURL := extractString(typed["image"], "url"); mediaURL != "" {
@@ -730,10 +749,12 @@ func (s *Service) CreateOutgoing(ctx context.Context, session db.ChatSession, te
 func (s *Service) CreateOutgoingMedia(ctx context.Context, session db.ChatSession, messageType, content string) (*db.ChatMessage, error) {
 	// key 用于本次流程后续判断的key
 	key := "local-" + randomID()
-	// message 用于本次流程后续判断的消息
+	// observedAt 同时作为人工消息的本地接纳时间和默认发送时间，避免秒级平台时间影响删除排序。
+	observedAt := time.Now().UTC().UnixMilli()
+	// message 是发送前持久化的本地出站消息。
 	message := db.ChatMessage{MessageKey: key, Direction: "outgoing", SenderID: session.CookieID,
 		SenderName: "我", MessageType: messageType, Content: strings.TrimSpace(content), Status: "sending",
-		SentAt: time.Now().UTC().UnixMilli()}
+		SentAt: observedAt, ObservedAt: observedAt}
 	// stored、err 用于本次流程后续判断的stored、err
 	stored, _, err := s.repository.SaveMessage(ctx, session, message, false)
 	if err == nil {
