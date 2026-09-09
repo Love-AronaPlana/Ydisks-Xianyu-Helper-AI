@@ -2564,13 +2564,13 @@ paths:
           multipart/form-data:
             schema:
               type: object
-              required: [account_id, chat_id, buyer_id, image]
+              required: [account_id, chat_id, peer_user_id, image]
               properties:
                 account_id: {type: string}
                 chat_id: {type: string}
-                buyer_id: {type: string}
-                buyer_name: {type: string}
-                buyer_avatar_url: {type: string}
+                peer_user_id: {type: string}
+                peer_name: {type: string}
+                peer_avatar_url: {type: string}
                 item_id: {type: string}
                 item_title: {type: string}
                 image: {type: string, format: binary}
@@ -5144,54 +5144,26 @@ paths:
   "/api/v1/orders/import":
     post:
       operationId: postApiV1OrdersImport
-      summary: postApiV1OrdersImport
+      summary: 人工插入订单已永久移除
+      deprecated: true
+      x-contract-success-exception:
+        kind: permanently_disabled
       security: [{cookieAuth: []}]
-      requestBody:
-        required: true
-        content:
-          multipart/form-data:
-            schema:
-              type: object
-              properties:
-                file: {type: string, format: binary}
-          application/json:
-            schema:
-              type: array
-              items:
-                $ref: '#/components/schemas/OrderUpdateRequest'
       responses:
-        '200':
-          description: 成功
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/OrderBatchResponse'
         '400':
           description: 统一错误响应
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '501':
+          description: 人工插入订单已移除，请使用订单同步
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: 统一错误响应
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '403':
-          description: 统一错误响应
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '404':
-          description: 统一错误响应
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '500':
-          description: 统一错误响应
+          description: 未登录
           content:
             application/json:
               schema:
@@ -7324,7 +7296,7 @@ components:
         trigger_type: {type: string}
         enabled: {type: boolean}
         priority: {type: integer}
-        config_json: {type: string}
+        config_json: {type: string, description: '规则 JSON 配置；账号级 order_paid 仅在 allow_all_items 为布尔 true 时允许全商品兜底，省略或 false 均不授权。'}
         actions: {type: array, items: {$ref: '#/components/schemas/AutomationActionRequest'}}
     AutomationActionResponse:
       type: object
@@ -7357,7 +7329,7 @@ components:
         trigger_type: {type: string}
         enabled: {type: boolean}
         priority: {type: integer}
-        config_json: {type: string}
+        config_json: {type: string, description: '规则 JSON 配置；账号级 order_paid 仅在 allow_all_items 为布尔 true 时允许全商品兜底，省略或 false 均不授权。'}
         sku_migration_status: {type: string, enum: [pending, ready, needs_reconfiguration]}
         actions: {type: array, items: {$ref: '#/components/schemas/AutomationActionResponse'}}
         created_at: {type: string}
@@ -8328,13 +8300,18 @@ components:
           - type: boolean
     ChatSession:
       type: object
-      required: [account_id, chat_id, buyer_id, buyer_name, last_message, last_message_at, unread_count]
+      required: [account_id, chat_id, peer_user_id, peer_name, account_role, buyer_user_id, seller_user_id, role_item_id, role_source, last_message, last_message_at, unread_count]
       properties:
         account_id: {type: string}
         chat_id: {type: string}
-        buyer_id: {type: string}
-        buyer_name: {type: string}
-        buyer_avatar_url: {type: string}
+        peer_user_id: {type: string}
+        peer_name: {type: string}
+        peer_avatar_url: {type: string}
+        account_role: {type: string, enum: [seller, buyer, unknown]}
+        buyer_user_id: {type: string}
+        seller_user_id: {type: string}
+        role_item_id: {type: string}
+        role_source: {type: string}
         item_id: {type: string}
         item_title: {type: string}
         item_image_url: {type: string}
@@ -8413,12 +8390,12 @@ components:
         - $ref: '#/components/schemas/ChatEvent'
     ChatMessageRequest:
       type: object
-      required: [account_id, chat_id, buyer_id, text]
+      required: [account_id, chat_id, peer_user_id, text]
       properties:
         account_id: {type: string}
         chat_id: {type: string}
-        buyer_id: {type: string}
-        buyer_name: {type: string}
+        peer_user_id: {type: string}
+        peer_name: {type: string}
         item_id: {type: string}
         item_title: {type: string}
         text: {type: string, maxLength: 2000}

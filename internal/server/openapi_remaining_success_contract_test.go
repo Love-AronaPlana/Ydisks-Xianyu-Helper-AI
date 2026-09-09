@@ -462,7 +462,7 @@ func testOpenAPIChatSendSuccess(t *testing.T) {
 	// sessionCookie 是管理员认证会话。
 	sessionCookie := loginHelper(t, handler)
 	// textRequest 是文字消息发送请求。
-	textRequest := httptest.NewRequest(http.MethodPost, "/api/v1/chat/messages", strings.NewReader(`{"account_id":"acc1","chat_id":"chat","buyer_id":"buyer","text":"hello"}`))
+	textRequest := httptest.NewRequest(http.MethodPost, "/api/v1/chat/messages", strings.NewReader(`{"account_id":"acc1","chat_id":"chat","peer_user_id":"buyer","text":"hello"}`))
 	textRequest.Header.Set("Content-Type", "application/json")
 	textRequest.AddCookie(sessionCookie)
 	// textRecorder 保存文字发送响应。
@@ -475,7 +475,7 @@ func testOpenAPIChatSendSuccess(t *testing.T) {
 	imageWriter := multipart.NewWriter(&imageBody)
 	_ = imageWriter.WriteField("account_id", "acc1")
 	_ = imageWriter.WriteField("chat_id", "chat")
-	_ = imageWriter.WriteField("buyer_id", "buyer")
+	_ = imageWriter.WriteField("peer_user_id", "buyer")
 	// imageFile 是聊天图片表单文件。
 	imageFile, imageErr := imageWriter.CreatePart(textproto.MIMEHeader{"Content-Disposition": []string{`form-data; name="image"; filename="chat.png"`}, "Content-Type": []string{"image/png"}})
 	if imageErr != nil {

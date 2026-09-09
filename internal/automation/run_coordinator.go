@@ -218,10 +218,14 @@ func (r automationRunCoordinator) prepareRuleRun(ctx context.Context, task Task,
 func (r automationRunCoordinator) executeRunActions(ctx context.Context, task Task, ruleID int64, run *db.AutomationRun, actions []db.AutomationAction, skipDelays bool) (int, bool, error) {
 	// sent 保存本次运行已经确认完成的动作数量。
 	sent := run.SentCount
+	// persistDeliveryProof 在订单付款发货和评价赠品链路保存可重放内容；两者都可能消费库存或调用卡密接口，
+	// 结果不确定时必须保留原文，避免恢复时再次扣减库存或再次请求外部卡密接口。
+	persistDeliveryProof := task.TriggerType == TriggerOrderPaid || task.TriggerType == TriggerBuyerReviewed
 	// deliveryProof 保存本次运行已经成功投递的卡密文本和图片，并从数据库检查点恢复。
 	deliveryProof := shipmentDeliveryProof{
 		tradeText: run.DeliveryProof.TradeText,
 		picList:   append([]string(nil), run.DeliveryProof.PicList...),
+		messages:  append([]db.AutomationDeliveryMessage(nil), run.DeliveryProof.Messages...),
 	}
 	// cursor 表示当前动作在计划中的位置。
 	for cursor := run.ActionCursor; cursor < len(actions); cursor++ {
@@ -277,8 +281,12 @@ func (r automationRunCoordinator) executeRunActions(ctx context.Context, task Ta
 				quarantineProof = mergeShipmentDeliveryProof(quarantineProof, actionResult.reviewProof)
 				// proofInput 保存需要加密写入人工核对记录的凭证。
 				var proofInput *db.AutomationDeliveryProof
-				if quarantineProof.tradeText != "" || len(quarantineProof.picList) > 0 {
-					proofInput = &db.AutomationDeliveryProof{TradeText: quarantineProof.tradeText, PicList: append([]string(nil), quarantineProof.picList...)}
+				if persistDeliveryProof && (quarantineProof.tradeText != "" || len(quarantineProof.picList) > 0 || len(quarantineProof.messages) > 0) {
+					proofInput = &db.AutomationDeliveryProof{
+						TradeText: quarantineProof.tradeText,
+						PicList:   append([]string(nil), quarantineProof.picList...),
+						Messages:  append([]db.AutomationDeliveryMessage(nil), quarantineProof.messages...),
+					}
 				}
 				// quarantineErr 保存人工核对状态写入错误。
 				if quarantineErr := r.store.Automation.QuarantineRunResultWithProof(ctx, run.ID, run.AttemptCount, sent+n, reason, proofInput); quarantineErr != nil {
@@ -302,7 +310,7 @@ func (r automationRunCoordinator) executeRunActions(ctx context.Context, task Ta
 		// nextProof 是本动作成功后应持久化的完整凭证，避免延迟或重启后丢失已发送内容。
 		nextProof := deliveryProof
 		// proofChanged 表示本动作产生了需要持久化的新凭证。
-		proofChanged := actionResult.proof.tradeText != "" || len(actionResult.proof.picList) > 0
+		proofChanged := persistDeliveryProof && (actionResult.proof.tradeText != "" || len(actionResult.proof.picList) > 0 || len(actionResult.proof.messages) > 0)
 		if proofChanged {
 			nextProof = mergeShipmentDeliveryProof(deliveryProof, actionResult.proof)
 		}
@@ -310,11 +318,12 @@ func (r automationRunCoordinator) executeRunActions(ctx context.Context, task Ta
 		advance := db.AutomationRunActionAdvance{RunID: run.ID, Attempt: run.AttemptCount, Cursor: cursor, SentDelta: n}
 		if proofChanged {
 			// persistedProof 是数据库仓储使用的导出凭证模型。
-			persistedProof := db.AutomationDeliveryProof{TradeText: nextProof.tradeText, PicList: append([]string(nil), nextProof.picList...)}
+			persistedProof := db.AutomationDeliveryProof{
+				TradeText: nextProof.tradeText,
+				PicList:   append([]string(nil), nextProof.picList...),
+				Messages:  append([]db.AutomationDeliveryMessage(nil), nextProof.messages...),
+			}
 			advance.DeliveryProof = &persistedProof
-		}
-		if action.ActionType == ActionConfirmShipment {
-			advance.ClearDeliveryProof = true
 		}
 		// err 表示外部动作完成后推进检查点的数据库错误；失败时必须隔离运行避免重复执行。
 		if err := r.store.Automation.AdvanceRunAction(ctx, advance); err != nil {
@@ -328,9 +337,6 @@ func (r automationRunCoordinator) executeRunActions(ctx context.Context, task Ta
 		sent += n
 		if proofChanged {
 			deliveryProof = nextProof
-		}
-		if action.ActionType == ActionConfirmShipment {
-			deliveryProof = shipmentDeliveryProof{}
 		}
 		if task.Raw != nil {
 			delete(task.Raw, "automation_delay_cursor")
@@ -359,6 +365,7 @@ func (r automationRunCoordinator) executeActionNow(ctx context.Context, task Tas
 func mergeShipmentDeliveryProof(current, next shipmentDeliveryProof) shipmentDeliveryProof {
 	current.tradeText = appendTradeText(current.tradeText, next.tradeText)
 	current.picList = append(current.picList, next.picList...)
+	current.messages = append(current.messages, next.messages...)
 	return current
 }
 

@@ -1,11 +1,10 @@
-import { ChevronLeft,ChevronRight,Edit,ExternalLink,Eye,PackageCheck,Plus,RefreshCw,Save,Trash2,Truck,User as UserIcon,X } from 'lucide-react';
+import { ChevronLeft,ChevronRight,Edit,ExternalLink,Eye,PackageCheck,RefreshCw,Save,Trash2,Truck,User as UserIcon,X } from 'lucide-react';
 import React from 'react';
 import { createPortal } from 'react-dom';
 import { formatLocalDateTime } from '../../../../dateTime';
 import type { OrderStatus } from '../api';
 import { OrderFilterBar } from '../components/OrderFilterBar';
-import { OrderImportModal } from '../components/OrderImportModal';
-import { useOrderImport,useOrderQuery } from '../hooks';
+import { useOrderQuery } from '../hooks';
 import { useOrderActions } from '../orderActions';
 
 // StatusBadge 渲染订单状态徽标。
@@ -43,8 +42,6 @@ const StatusBadge: React.FC<{ /** status 表示状态。 */ status: OrderStatus 
 const OrderList: React.FC = () => {
   // orderQuery 负责订单查询、筛选、分页和展示辅助数据。
   const orderQuery = useOrderQuery();
-  // importState 负责订单导入弹窗、上传取消和失败重试。
-  const importState = useOrderImport(orderQuery.loadOrders);
   // { 解构得到当前 Hook 返回的状态和操作函数。
   const { orders, accounts, filter, setFilter, accountFilter, setAccountFilter, searchText, setSearchText, page, setPage, totalPages, loading, loadOrders, accountName, accountNickname, getItemNameById } = orderQuery;
   // orderActions 集中管理订单动作、弹窗状态和异步结果。
@@ -101,13 +98,6 @@ const OrderList: React.FC = () => {
         <div className="flex items-center gap-3">
             <button onClick={loadOrders} className="p-3 rounded-2xl bg-white border border-gray-100 text-gray-600 hover:bg-gray-50 hover:text-black transition-colors shadow-sm">
                 <RefreshCw className={`w-5 h-5 ${loading ? 'animate-spin' : ''}`} />
-            </button>
-            <button
-			  onClick={importState.openImportModal}
-              className="px-5 py-3 rounded-2xl font-bold bg-gray-900 text-white hover:bg-gray-800 transition-colors text-sm flex items-center gap-2 shadow-lg"
-            >
-              <Plus className="w-4 h-4" />
-              插入订单
             </button>
             <button onClick={handleSync} className="ios-btn-primary px-6 py-3 rounded-2xl font-bold shadow-lg shadow-blue-200 text-sm flex items-center gap-2">
                 <Truck className="w-5 h-5" />
@@ -399,7 +389,6 @@ const OrderList: React.FC = () => {
         document.body
       )}
 
-      <OrderImportModal {...importState} />
 
       {/* Ship Modal - 发货方式选择 */}
       {showShipModal && createPortal(

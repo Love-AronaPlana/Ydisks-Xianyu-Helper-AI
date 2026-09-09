@@ -1,8 +1,8 @@
 import { useCallback,useEffect,useMemo,useRef,useState } from 'react';
 import type { AccountDetail,Item,Order } from './api';
-import { getAccountDetails,getItems,getOrders,importOrders } from './api';
-import { canSubmitOrderImport,isCurrentOrderRequest,normalizeOrderImportResult,orderErrorMessage,validateOrderImportFile } from './state';
-import type { OrderImportState,OrderQueryState } from './types';
+import { getAccountDetails,getItems,getOrders } from './api';
+import { isCurrentOrderRequest } from './state';
+import type { OrderQueryState } from './types';
 
 // OrderQueryOptions 描述订单查询 Hook 的固定分页参数。
 interface OrderQueryOptions {
@@ -229,133 +229,5 @@ export const useOrderQuery = (options: OrderQueryOptions = { pageSize: 20 }): Or
     accountName,
     accountNickname,
     getItemNameById,
-  };
-};
-
-// useOrderImport 统一管理订单导入文件、取消、重试和导入后刷新。
-export const useOrderImport = (loadOrders: () => Promise<void>): OrderImportState => {
-  // showImportModal 表示订单导入弹窗是否打开。
-  const [showImportModal, setShowImportModal] = useState(false);
-  // importFile 保存当前选择的导入文件。
-  const [importFile, setImportFile] = useState<File | null>(null);
-  // importResult 保存最近一次导入的逐行结果。
-  const [importResult, setImportResult] = useState<ReturnType<typeof normalizeOrderImportResult> | null>(null);
-  // importing 表示导入请求是否正在执行。
-  const [importing, setImporting] = useState(false);
-  // importError 保存导入失败后的可重试错误。
-  const [importError, setImportError] = useState('');
-  // importGeneration 隔离关闭弹窗后的旧导入响应。
-  const importGeneration = useRef(0);
-  // importAbort 保存当前导入请求的取消控制器。
-  const importAbort = useRef<AbortController | null>(null);
-
-  useEffect(
-    // 导入生命周期副作用负责在弹窗组件卸载时取消上传并禁止旧结果继续更新 React 状态。
-    () => (
-      // importRequestCleanup 推进导入代次并中止尚未结束的 multipart 请求。
-      () => {
-        importGeneration.current += 1;
-        importAbort.current?.abort();
-      }
-    ),
-    [],
-  );
-
-  // openImportModal 打开订单导入弹窗并重置上一次结果。
-  const openImportModal = useCallback(
-    // 打开弹窗回调清理上一次导入状态。
-    () => {
-    setImportFile(null);
-    setImportResult(null);
-    setImportError('');
-    setShowImportModal(true);
-    },
-    [],
-  );
-
-  // closeImportModal 关闭弹窗并取消未完成的导入请求。
-  const closeImportModal = useCallback(
-    // 关闭弹窗回调取消上传并使旧响应失效。
-    () => {
-    importGeneration.current += 1;
-    importAbort.current?.abort();
-    setImporting(false);
-    setShowImportModal(false);
-    setImportFile(null);
-    setImportResult(null);
-    setImportError('');
-    },
-    [],
-  );
-
-  // handleImportOrders 提交文件，刷新列表并保留失败文件供重试。
-  const handleImportOrders = useCallback(
-    // 订单导入回调执行预检、上传和列表刷新。
-    async () => {
-    if (!canSubmitOrderImport(importFile, importing)) return;
-    // file 是经过提交门禁确认存在的本次上传文件。
-    const file = importFile;
-    if (!file) return;
-    // validationError 是文件预检失败时展示给用户的说明。
-    const validationError = validateOrderImportFile(file);
-    if (validationError) {
-      setImportError(validationError);
-      return;
-    }
-    // generation 标记当前订单导入请求的代次。
-    const generation = ++importGeneration.current;
-    importAbort.current?.abort();
-    // controller 允许关闭弹窗时取消文件上传。
-    const controller = new AbortController();
-    importAbort.current = controller;
-    setImporting(true);
-    setImportResult(null);
-    setImportError('');
-    try {
-      // formData 是上传订单文件的 multipart 请求体。
-      const formData = new FormData();
-      formData.append('file', file);
-      // result 是后端返回的订单导入统计。
-      const result = normalizeOrderImportResult(await importOrders(formData, { signal: controller.signal }));
-      if (!isCurrentOrderRequest(generation, importGeneration.current)) return;
-      setImportResult(result);
-      setImportFile(null);
-      await loadOrders();
-      if (result.failed_count === 0 && isCurrentOrderRequest(generation, importGeneration.current)) {
-        alert(`订单导入成功，共 ${result.success_count} 条`);
-        setShowImportModal(false);
-        setImportResult(null);
-      }
-    } catch (error: unknown /* 订单导入异常 */) {
-      if (isCurrentOrderRequest(generation, importGeneration.current) && !controller.signal.aborted) {
-        setImportError(orderErrorMessage(error, '导入失败，请检查文件格式'));
-      }
-    } finally {
-      if (isCurrentOrderRequest(generation, importGeneration.current)) setImporting(false);
-    }
-    },
-    [importFile, importing, loadOrders],
-  );
-
-  // handleRetryImport 复用当前文件重试最近一次失败的导入。
-  const handleRetryImport = useCallback(
-    // 导入重试回调复用当前文件和请求边界。
-    async () => {
-      await handleImportOrders();
-    },
-    [handleImportOrders],
-  );
-
-  return {
-    showImportModal,
-    importFile,
-    setImportFile,
-    importResult,
-    importing,
-    importError,
-    openImportModal,
-    closeImportModal,
-    handleImportOrders,
-    handleRetryImport,
   };
 };

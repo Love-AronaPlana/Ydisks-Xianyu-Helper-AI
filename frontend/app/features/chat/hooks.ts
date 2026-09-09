@@ -622,7 +622,7 @@ export const useChat = (): UseChatResult => {
     setSendNotice('');
     try {
       // result 处理结果。
-      const result = await sendChatMessage({ account_id: activeAccountID, chat_id: selectedSession.chat_id, buyer_id: selectedSession.buyer_id, buyer_name: selectedSession.buyer_name, item_id: selectedSession.item_id, item_title: selectedSession.item_title, text }, { signal: controller.signal });
+      const result = await sendChatMessage({ account_id: activeAccountID, chat_id: selectedSession.chat_id, peer_user_id: selectedSession.peer_user_id, peer_name: selectedSession.peer_name, item_id: selectedSession.item_id, item_title: selectedSession.item_title, text }, { signal: controller.signal });
       if (!isCurrentChatRequest(sendSequence.current, sequence, controller.signal)) return;
       if (clearDraft) setDraft('');
       setRetryText(null);
@@ -664,7 +664,7 @@ export const useChat = (): UseChatResult => {
     setSendNotice('');
     try {
       // result 处理结果。
-      const result = await sendChatImage({ account_id: activeAccountID, chat_id: selectedSession.chat_id, buyer_id: selectedSession.buyer_id, buyer_name: selectedSession.buyer_name, buyer_avatar_url: selectedSession.buyer_avatar_url, item_id: selectedSession.item_id, item_title: selectedSession.item_title, image: file }, { signal: controller.signal });
+      const result = await sendChatImage({ account_id: activeAccountID, chat_id: selectedSession.chat_id, peer_user_id: selectedSession.peer_user_id, peer_name: selectedSession.peer_name, peer_avatar_url: selectedSession.peer_avatar_url, item_id: selectedSession.item_id, item_title: selectedSession.item_title, image: file }, { signal: controller.signal });
       if (!isCurrentChatRequest(sendSequence.current, sequence, controller.signal)) return;
       setRetryImage(null);
       setMessages(/* 当前回调处理用户交互或异步状态变化。 */ current => mergeLiveMessage(current, result.message));

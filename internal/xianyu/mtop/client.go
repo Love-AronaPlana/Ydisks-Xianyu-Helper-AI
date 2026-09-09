@@ -194,13 +194,23 @@ type UserProfileResult struct {
 
 // ItemListResult 是卖家商品列表结果。
 type ItemListResult struct {
-	Items          []ItemListItem
-	PageNumber     int
-	PageSize       int
-	CurrentCount   int
-	TotalCount     int
-	TotalPages     int
+	// ReportedTotalCount 是平台明确提供的全集条数，零表示未提供非零总量，不能用按页推算值替代。
+	ReportedTotalCount int
+	// Items 仅包含有效商品，不含 auto_ 平台占位卡。
+	Items []ItemListItem
+	// PageNumber 是从一开始的页号；全集结果固定为一。
+	PageNumber int
+	// PageSize 是传给平台的单页条数预算。
+	PageSize int
+	// CurrentCount 是原始页面卡片数，含占位卡，分页结束判断不得用过滤后的商品数替代；全集结果为有效商品数。
+	CurrentCount int
+	// TotalCount 是供展示的总量，平台未提供时可以按页数估算；全集结果为实际有效商品数。
+	TotalCount int
+	// TotalPages 是平台总页数；全集结果为实际读取页数。
+	TotalPages int
+	// SavedCountHint 是可持久化商品数提示，不代表数据库已提交。
 	SavedCountHint int
+	// UpdatedCookies 是请求作用域内的明文凭证更新，不得日志输出或作为 HTTP 响应序列化。
 	UpdatedCookies string
 }
 

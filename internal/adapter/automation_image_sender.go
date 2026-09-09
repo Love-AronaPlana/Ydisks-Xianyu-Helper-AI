@@ -14,6 +14,7 @@ import (
 	chatapp "xianyu-go/internal/application/chat"
 	"xianyu-go/internal/automation"
 	"xianyu-go/internal/db"
+	"xianyu-go/internal/engine"
 	"xianyu-go/internal/netguard"
 	"xianyu-go/internal/xianyu/mtop"
 )
@@ -77,12 +78,12 @@ func (p automationImageSenderProvider) Sender(accountID string) (automation.Mess
 	}, true
 }
 
-// SendText 保持文本自动发货原有的直接 WebSocket 发送行为。
+// SendText 发送自动化文本，并要求账号运行时等待自身 WebSocket 回显后再报告成功。
 func (s automationImageSender) SendText(ctx context.Context, chatID, toUserID, text string) error {
 	if s.sender == nil {
 		return fmt.Errorf("%w: 账号发送器未初始化", automation.ErrMessageNotSent)
 	}
-	return s.sender.SendText(ctx, chatID, toUserID, text)
+	return s.sender.SendText(engine.WithOutgoingEchoConfirmation(ctx), chatID, toUserID, text)
 }
 
 // AutomationReady 透传账号运行时的 WebSocket 就绪状态，使自动化能在请求 API 卡密前阻止尚未完成注册的账号。
@@ -117,7 +118,7 @@ func (s automationImageSender) SendImage(ctx context.Context, chatID, toUserID, 
 	if strings.TrimSpace(uploaded.URL) == "" {
 		return fmt.Errorf("%w: 上传图片卡密未返回地址", automation.ErrMessageNotSent)
 	}
-	return s.sender.SendImage(ctx, chatID, toUserID, uploaded.URL, cardID, uploaded.Width, uploaded.Height)
+	return s.sender.SendImage(engine.WithOutgoingEchoConfirmation(ctx), chatID, toUserID, uploaded.URL, cardID, uploaded.Width, uploaded.Height)
 }
 
 // UpdateCookie 将账号运行时主动更新的 Cookie 透传给原始发送器，不改变既有凭证协调责任。

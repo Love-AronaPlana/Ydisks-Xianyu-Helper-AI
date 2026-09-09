@@ -32,7 +32,7 @@ func TestChatEventDTOUsesFrontendContract(t *testing.T) {
 	event := chatapp.Event{
 		Type:    "message.created",
 		Message: &chatapp.Message{AccountID: "account-1", ChatID: "chat-1", MessageKey: "message-1", Direction: "incoming", SenderID: "buyer-1", SenderName: "买家", MessageType: "text", Status: "received", SentAt: 9},
-		Session: &chatapp.Session{AccountID: "account-1", ChatID: "chat-1", BuyerID: "buyer-1", BuyerName: "买家", ItemImageURL: "https://img.example/item.jpg"},
+		Session: &chatapp.Session{AccountID: "account-1", ChatID: "chat-1", PeerUserID: "buyer-1", PeerName: "买家", ItemImageURL: "https://img.example/item.jpg"},
 	}
 	// encoded、marshalErr 分别保存 DTO 编码结果和编码错误。
 	encoded, marshalErr := json.Marshal(newChatEventDTOFromApplication(event))

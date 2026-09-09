@@ -16,7 +16,7 @@ updateShippingRule,
 } from './api';
 import { finishRuleSubmission,idleRuleSubmitState,startRuleSubmission,type RuleSubmitState } from './interactionState';
 import type { AutomationTriggerType,Card,DefaultReplyForm,DeliveryTemplate,Item,ReplyRule,RulesProps,RulesTab,ShippingRule,ShippingVariant } from './types';
-import { adjustPriceTarget,boolFlag,buildAdjustPriceConfig,buildReviewConfig,cardActionsForTrigger,defaultRuleName,emptyVariant,hasCompleteTemplateBindings,isValidAdjustPrice,parseJSONObject,shouldReplaceGeneratedName,triggerMeta } from './utils';
+import { adjustPriceTarget,boolFlag,buildAdjustPriceConfig,buildReviewConfig,cardActionsForTrigger,defaultRuleName,emptyVariant,hasCompleteTemplateBindings,isValidAdjustPrice,parseJSONObject,shouldReplaceGeneratedName,triggerMeta,withAllItemsConfirmation } from './utils';
 
 // RuleActionsOptions 描述规则动作协调器依赖的页面数据、刷新函数和外部联动目标。
 export interface RuleActionsOptions {
@@ -308,6 +308,7 @@ export const useRuleActions = ({
     const itemLabel = item?.item_title || itemID;
     setEditingAutomationRule({
       ...editingAutomationRule, item_id: itemID, item_title: item?.item_title || '', item_keyword: itemLabel,
+      config_json: withAllItemsConfirmation(editingAutomationRule.config_json, false),
       name: shouldReplaceGeneratedName(editingAutomationRule.name) ? defaultRuleName(currentTrigger, itemLabel) : editingAutomationRule.name,
     });
   }, [currentTrigger, editingAutomationRule, items, selectedAccountId]);

@@ -43,7 +43,7 @@ const uncertainOutgoingMock = vi.mocked(uncertainOutgoingMessageFromError);
 // accountFixture 是聊天 Hook 使用的启用账号对象。
 const accountFixture: AccountDetail = { id: 'account-1', enabled: true, auto_confirm: false, nickname: '测试账号' };
 // sessionFixture 是聊天会话列表中的当前会话。
-const sessionFixture: ChatSession = { account_id: 'account-1', chat_id: 'chat-1', buyer_id: 'buyer-1', buyer_name: '买家', item_title: '商品', last_message: '你好', last_message_at: 1, unread_count: 1 };
+const sessionFixture: ChatSession = { account_id: 'account-1', chat_id: 'chat-1', peer_user_id: 'buyer-1', peer_name: '买家', item_title: '商品', last_message: '你好', last_message_at: 1, unread_count: 1 };
 // messageFixture 是当前会话中的历史消息。
 const messageFixture = { id: 1, account_id: 'account-1', chat_id: 'chat-1', message_key: 'message-1', direction: 'incoming', sender_id: 'buyer-1', sender_name: '买家', message_type: 'text', content: '你好', status: 'received', sent_at: 1 } as never as ChatMessage;
 // sentMessageFixture 是文字发送成功后返回的消息。
@@ -159,7 +159,7 @@ describe('useChat', /* 当前回调处理聊天加载、分页、发送和实时
 
 	test('独立发送器只允许把结果合入当前账号和会话', /* 当前回调验证旧商品请求不能污染切换后的消息列表。 */ async () => {
 		// secondSession 是切换后成为当前上下文的另一条会话。
-		const secondSession: ChatSession = { ...sessionFixture, chat_id: 'chat-2', buyer_id: 'buyer-2', buyer_name: '买家二', last_message: '第二会话' };
+		const secondSession: ChatSession = { ...sessionFixture, chat_id: 'chat-2', peer_user_id: 'buyer-2', peer_name: '买家二', last_message: '第二会话' };
 		getSessionPageMock.mockResolvedValue({ sessions: [sessionFixture, secondSession], has_more: false });
 		// hook 是验证独立发送结果归属门禁的聊天状态。
 		const hook = renderHook(/* chatHookFactory 创建包含两个会话的聊天 Hook。 */ () => useChat());
@@ -534,7 +534,7 @@ describe('useChat', /* 当前回调处理聊天加载、分页、发送和实时
     // unknownMessage 是不在当前联系人列表中的实时消息。
     const unknownMessage = { ...messageFixture, chat_id: 'chat-unknown', message_key: 'message-unknown', content: '未知会话消息' };
     // unknownSession 是刷新接口返回的新会话，必须自动出现在联系人列表中。
-    const unknownSession = { ...sessionFixture, chat_id: 'chat-unknown', buyer_id: 'buyer-unknown', last_message: '未知会话消息', last_message_at: 9 };
+    const unknownSession = { ...sessionFixture, chat_id: 'chat-unknown', peer_user_id: 'buyer-unknown', last_message: '未知会话消息', last_message_at: 9 };
     getSessionPageMock.mockResolvedValueOnce({ sessions: [unknownSession, sessionFixture], has_more: false, next_cursor: undefined });
     await act(
       // unknownMessageAction 触发未知会话的联系人刷新。
@@ -596,7 +596,7 @@ describe('useChat', /* 当前回调处理聊天加载、分页、发送和实时
 
 	test('删除非当前会话保持聊天上下文，删除当前会话清空消息并选择剩余会话', /* 当前回调验证会话删除成功后的局部状态收口。 */ async () => {
 		// secondSession 是用于先验证非当前会话删除的联系人。
-		const secondSession = { ...sessionFixture, chat_id: 'chat-2', buyer_id: 'buyer-2', buyer_name: '第二位买家', unread_count: 3 };
+		const secondSession = { ...sessionFixture, chat_id: 'chat-2', peer_user_id: 'buyer-2', peer_name: '第二位买家', unread_count: 3 };
 		getSessionPageMock.mockResolvedValue({ sessions: [sessionFixture, secondSession], has_more: false });
 		// hook 是会话删除成功场景的聊天 Hook。
 		const hook = renderHook(
@@ -633,7 +633,7 @@ describe('useChat', /* 当前回调处理聊天加载、分页、发送和实时
 
 		test('删除期间目标实时消息只触发本地恢复且不会自动选择其他会话', /* 当前回调验证删除交错不会进入平台联系人或历史读取链路。 */ async () => {
 			// secondSession 是删除当前会话后仍保留但不能自动选中的联系人。
-			const secondSession = { ...sessionFixture, chat_id: 'chat-2', buyer_id: 'buyer-2', buyer_name: '第二位买家', unread_count: 0 };
+			const secondSession = { ...sessionFixture, chat_id: 'chat-2', peer_user_id: 'buyer-2', peer_name: '第二位买家', unread_count: 0 };
 			// deletionCommitted 表示服务端删除替身是否已经完成，用于控制本地读取返回值。
 			let deletionCommitted = false;
 			getSessionPageMock.mockImplementation(/* _accountID、_cursor、_options、refresh 分别是会话请求定位、取消和读取目的。 */ async (_accountID, _cursor, _options, refresh) => ({
@@ -717,7 +717,7 @@ describe('useChat', /* 当前回调处理聊天加载、分页、发送和实时
 		// secondAccount 是切换后的目标账号，保持在线以完整加载其会话状态。
 		const secondAccount: AccountDetail = { ...accountFixture, id: 'account-2', nickname: '第二账号' };
 		// secondSession 是目标账号必须在过期删除响应后继续保留的会话。
-		const secondSession: ChatSession = { ...sessionFixture, account_id: 'account-2', chat_id: 'chat-2', buyer_id: 'buyer-2', buyer_name: '第二位买家' };
+		const secondSession: ChatSession = { ...sessionFixture, account_id: 'account-2', chat_id: 'chat-2', peer_user_id: 'buyer-2', peer_name: '第二位买家' };
 		getDetailsMock.mockResolvedValue([accountFixture, secondAccount]);
 		getRuntimeMock.mockResolvedValue({
 			'account-1': { state: 'online', connected: true, failures: 0, updated_at: '2026-08-15T00:00:00Z' },

@@ -33,6 +33,16 @@ type Repository interface {
 	MarkLatestOutgoingRead(ctx context.Context, cookieID, chatID string, readAt int64) (*db.ChatMessage, error)
 }
 
+// sessionRoleRepository 是生产聊天仓储提供的本地商品归属与会话角色能力，旧测试替身可以不实现。
+type sessionRoleRepository interface {
+	// ItemExists 判断指定商品是否属于当前本地账号且仍处于可用商品集合。
+	ItemExists(ctx context.Context, accountID, itemID string) (bool, error)
+	// SessionRole 读取会话与商品绑定的角色结论。
+	SessionRole(ctx context.Context, accountID, chatID, itemID string) (db.ChatSession, error)
+	// UpdateSessionRole 保存会话与商品绑定的角色结论。
+	UpdateSessionRole(ctx context.Context, accountID, chatID, itemID, accountRole, buyerUserID, sellerUserID, roleSource string) error
+}
+
 // storeRepository 将聚合 Store 的聊天相关 repository 适配为窄接口。
 type storeRepository struct {
 	// store 保存数据库聚合入口，仅用于构造适配器，不进入聊天服务状态。
@@ -62,6 +72,26 @@ func (r storeRepository) SetSessionVisible(ctx context.Context, cookieID, chatID
 // UpsertSession 委托聊天会话写入。
 func (r storeRepository) UpsertSession(ctx context.Context, session db.ChatSession) error {
 	return r.store.Chats.UpsertSession(ctx, session)
+}
+
+// ItemExists 使用本地商品表判断账号是否拥有指定商品，不读取或解密账号凭证。
+func (r storeRepository) ItemExists(ctx context.Context, accountID, itemID string) (bool, error) {
+	// row、err 是本地有效商品记录及查询结果。
+	_, err := r.store.Items.GetByCookieItem(ctx, accountID, itemID)
+	if errors.Is(err, db.ErrNotFound) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// SessionRole 委托聊天会话角色查询。
+func (r storeRepository) SessionRole(ctx context.Context, accountID, chatID, itemID string) (db.ChatSession, error) {
+	return r.store.Chats.SessionRole(ctx, accountID, chatID, itemID)
+}
+
+// UpdateSessionRole 委托聊天会话角色持久化。
+func (r storeRepository) UpdateSessionRole(ctx context.Context, accountID, chatID, itemID, accountRole, buyerUserID, sellerUserID, roleSource string) error {
+	return r.store.Chats.UpdateSessionRole(ctx, accountID, chatID, itemID, accountRole, buyerUserID, sellerUserID, roleSource)
 }
 
 // SyncSessionSummary 委托聊天会话摘要同步。

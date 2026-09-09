@@ -10,7 +10,7 @@ import (
 	"xianyu-go/internal/automation"
 )
 
-// messageDispatcher 负责 WebSocket 消息的事实解析、去重、防抖和并发投递。
+// messageDispatcher 负责 WebSocket 消息的事实解析、去重、防抖、出站回显观察和并发投递。
 // 各锁只保护本组件字段；持锁时不执行 handler、回复服务或数据库 I/O。
 // messageDispatcher 用于本次流程后续判断的消息Dispatcher
 type messageDispatcher struct {
@@ -30,8 +30,12 @@ type messageDispatcher struct {
 	currentCookie func() string
 	// currentHandler 返回最新的系统事件和聊天旁路处理器。
 	currentHandler func() Handler
+	// observeOutgoing 将账号自身回显交给账号级发送确认器；回调不得执行不可控外部 I/O。
+	observeOutgoing func(OutgoingChatMessage)
 	// reply 负责自动回复链，可能为空。
 	reply *ReplyService
+	// itemPublisher 查询会话商品的发布人；缺少能力时禁止自动回复。
+	itemPublisher replyItemPublisher
 	// logger 记录消息分发和防抖错误。
 	logger *slog.Logger
 	// beginTask 登记账号生命周期任务，并返回该任务唯一的释放函数。
@@ -48,8 +52,12 @@ type messageDispatcherConfig struct {
 	CurrentCookie func() string
 	// CurrentHandler 返回最新的系统事件和聊天旁路处理器。
 	CurrentHandler func() Handler
+	// ObserveOutgoing 接收账号自身 WebSocket 回显，供自动化发送确认使用。
+	ObserveOutgoing func(OutgoingChatMessage)
 	// Reply 是自动回复服务。
 	Reply *ReplyService
+	// ItemPublisher 只返回商品发布人身份，不依赖商品是否已同步到本地。
+	ItemPublisher replyItemPublisher
 	// Logger 记录分发过程中的错误和诊断信息。
 	Logger *slog.Logger
 	// BeginTask 登记账号生命周期任务，并返回该任务唯一的释放函数。
@@ -90,17 +98,24 @@ func newMessageDispatcher(config messageDispatcherConfig) messageDispatcher {
 	if currentHandler == nil {
 		currentHandler = func() Handler { return nil }
 	}
+	// observeOutgoing 保存账号级自身回显观察回调；未注入时保持旧版仅过滤回显语义。
+	observeOutgoing := config.ObserveOutgoing
+	if observeOutgoing == nil {
+		observeOutgoing = func(OutgoingChatMessage) {}
+	}
 	return messageDispatcher{
-		processed:      make(map[string]time.Time),
-		debounceTimers: make(map[string]*debounceEntry),
-		sem:            make(chan struct{}, MessageSemaphoreSize),
-		cookieID:       config.CookieID,
-		currentCookie:  currentCookie,
-		currentHandler: currentHandler,
-		reply:          config.Reply,
-		logger:         logger,
-		beginTask:      beginTask,
-		recordMessage:  recordMessage,
+		processed:       make(map[string]time.Time),
+		debounceTimers:  make(map[string]*debounceEntry),
+		sem:             make(chan struct{}, MessageSemaphoreSize),
+		cookieID:        config.CookieID,
+		currentCookie:   currentCookie,
+		currentHandler:  currentHandler,
+		observeOutgoing: observeOutgoing,
+		reply:           config.Reply,
+		itemPublisher:   config.ItemPublisher,
+		logger:          logger,
+		beginTask:       beginTask,
+		recordMessage:   recordMessage,
 	}
 }
 
@@ -189,6 +204,8 @@ func (d *messageDispatcher) handleMessageContext(ctx context.Context, decrypted 
 	// ownEcho 保存当前账号从官方客户端发出后回显的消息；它必须实时落库，但绝不能进入自动回复防抖链。
 	if ownEcho := extractOwnWebSocketEcho(decrypted, d.cookieID, d.currentCookie()); ownEcho != nil {
 		ownEcho.ObservedAt = observedAt
+		// observeOutgoing 先于业务旁路执行，确保等待中的自动化发送不受数据库写入延迟影响。
+		d.observeOutgoing(*ownEcho)
 		// handler 保存当前可选业务处理器；旧集成未实现出站观察能力时保持原有仅过滤语义。
 		if handler := d.currentHandler(); handler != nil {
 			// observer、supported 保存出站观察接口及其实现判断，避免扩大基础 Handler 的必选职责。
@@ -310,17 +327,18 @@ func (d *messageDispatcher) scheduleDebouncedReply(chat ChatMessage) {
 			return
 		}
 		defer finish()
-		if d.reply != nil {
-			if // err 用于本次流程后续判断的err
-			err := d.reply.Handle(ctx, lastMessage); err != nil {
-				d.logger.Error("处理自动回复失败", "err", err, "chat_id", chat.ChatID)
-			}
-		}
 		if // handler 用于本次流程后续判断的handler
 		handler := d.currentHandler(); handler != nil {
 			if // err 用于本次流程后续判断的err
 			err := handler.HandleChatMessage(ctx, lastMessage); err != nil {
 				d.logger.Error("处理聊天消息失败", "err", err, "chat_id", chat.ChatID)
+				return
+			}
+		}
+		if d.reply != nil && d.canAutoReply(ctx, lastMessage) {
+			if // err 用于本次流程后续判断的err
+			err := d.reply.Handle(ctx, lastMessage); err != nil {
+				d.logger.Error("处理自动回复失败", "err", err, "chat_id", chat.ChatID)
 			}
 		}
 	})

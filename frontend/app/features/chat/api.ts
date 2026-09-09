@@ -170,26 +170,26 @@ export const saveChatBuyerNote = async (accountId: string, buyerId: string, cont
 
 // sendChatMessage 发送聊天文本消息。
 export const sendChatMessage = async (input: {
-  /** account_id 表示账号标识。 */ account_id: string; /** chat_id 表示聊天标识。 */ chat_id: string; /** buyer_id 表示买家标识。 */ buyer_id: string; /** buyer_name 表示买家名称。 */ buyer_name?: string;
+  /** account_id 表示账号标识。 */ account_id: string; /** chat_id 表示聊天标识。 */ chat_id: string; /** peer_user_id 表示会话对端标识。 */ peer_user_id: string; /** peer_name 表示会话对端名称。 */ peer_name?: string;
   /** item_id 表示商品标识。 */ item_id?: string; /** item_title 表示商品标题。 */ item_title?: string; /** text 表示文本。 */ text: string;
 }, options?: RequestControlOptions): Promise<{/** message 表示消息数据。 */ message: ChatMessage}> =>
   runContractRequest(/* signal 是本次聊天文本发送请求的超时与取消控制信号。 */ signal => contractClient.POST('/api/v1/chat/messages', { body: input, signal }), options);
 
 // sendChatImage 发送聊天图片消息。
 export const sendChatImage = async (input: {
-  /** account_id 表示账号标识。 */ account_id: string; /** chat_id 表示聊天标识。 */ chat_id: string; /** buyer_id 表示买家标识。 */ buyer_id: string; /** buyer_name 表示买家名称。 */ buyer_name?: string;
-  /** buyer_avatar_url 表示买家头像地址。 */ buyer_avatar_url?: string; /** item_id 表示商品标识。 */ item_id?: string; /** item_title 表示商品标题。 */ item_title?: string; /** image 表示图片数据。 */ image: File;
+  /** account_id 表示账号标识。 */ account_id: string; /** chat_id 表示聊天标识。 */ chat_id: string; /** peer_user_id 表示会话对端标识。 */ peer_user_id: string; /** peer_name 表示会话对端名称。 */ peer_name?: string;
+  /** peer_avatar_url 表示会话对端头像地址。 */ peer_avatar_url?: string; /** item_id 表示商品标识。 */ item_id?: string; /** item_title 表示商品标题。 */ item_title?: string; /** image 表示图片数据。 */ image: File;
 }, options?: RequestControlOptions): Promise<{/** message 表示消息数据。 */ message: ChatMessage}> => {
 	// form 保存聊天图片的原生 multipart 请求体，浏览器负责生成正确的 boundary。
 	const form = new FormData();
 	form.set('account_id', input.account_id);
 	form.set('chat_id', input.chat_id);
-	form.set('buyer_id', input.buyer_id);
+	form.set('peer_user_id', input.peer_user_id);
 	form.set('image', input.image);
 	// optionalFields 保存可空展示字段；仅提交非空值，防止 FormData 将 undefined 字符串化后污染聊天元数据。
 	const optionalFields = [
-		['buyer_name', input.buyer_name],
-		['buyer_avatar_url', input.buyer_avatar_url],
+		['peer_name', input.peer_name],
+		['peer_avatar_url', input.peer_avatar_url],
 		['item_id', input.item_id],
 		['item_title', input.item_title],
 	] as const;

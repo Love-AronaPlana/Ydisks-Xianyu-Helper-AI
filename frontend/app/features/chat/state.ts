@@ -38,7 +38,7 @@ export const filterChatSessions = (sessions: ChatSession[], search: string, unre
   return sessions.filter(/* 当前回调处理集合中的单个元素。 */ session => {
     if (unreadOnly && session.unread_count <= 0) return false;
     if (!keyword) return true;
-    return [session.buyer_name, session.buyer_id, session.item_title, session.last_message]
+    return [session.peer_name, session.peer_user_id, session.item_title, session.last_message]
       .some(/* 当前回调处理集合中的单个元素。 */ value => (value || '').toLowerCase().includes(keyword));
   });
 };
@@ -72,12 +72,12 @@ export const mergeChatSessions = (current: ChatSession[], incoming: ChatSession[
   ));
 };
 
-/** 买家普通入站消息到达时，把此前同会话的已发送出站消息同步为已读。 */
+/** 对端普通入站消息到达时，把此前同会话的已发送出站消息同步为已读。 */
 export const markOutgoingMessagesReadByIncoming = (current: ChatMessage[], incoming: ChatMessage): ChatMessage[] => {
   if (incoming.direction !== 'incoming' || incoming.message_type === 'system' || incoming.sent_at <= 0) return current;
   // readAt 保存平台提供的有效入站消息时间，避免用本机时钟对乱序消息做错误已读推断。
   const readAt = incoming.sent_at;
-  return current.map(/* 当前回调把已被买家后续消息确认的出站消息更新为已读。 */ message => (
+  return current.map(/* 当前回调把已被对端后续消息确认的出站消息更新为已读。 */ message => (
     message.chat_id === incoming.chat_id
     && message.direction === 'outgoing'
     && message.status === 'sent'

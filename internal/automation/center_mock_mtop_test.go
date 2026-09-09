@@ -352,7 +352,7 @@ func TestConfirmShipmentRetriesFromCheckpointWithoutResendingCard(t *testing.T) 
 	if mtopMock.consignTradeTextIn != "ONLY-ONCE" {
 		t.Fatalf("恢复确认发货未携带已发送卡密凭证: %q", mtopMock.consignTradeTextIn)
 	}
-	// runAfterRecovery 保存恢复任务完成后的运行状态，用于确认敏感凭证已清除。
+	// runAfterRecovery 保存恢复任务完成后的运行状态，用于确认加密发货快照仍可用于订单级原样补发。
 	var runAfterRecovery db.AutomationRun
 	// err 保存恢复运行状态读取错误。
 	if err := store.DB.QueryRowContext(ctx, `SELECT status,sent_count FROM automation_runs WHERE order_id=?`, task.OrderID).Scan(&runAfterRecovery.Status, &runAfterRecovery.SentCount); err != nil {
@@ -361,14 +361,14 @@ func TestConfirmShipmentRetriesFromCheckpointWithoutResendingCard(t *testing.T) 
 	if runAfterRecovery.Status != "success" || runAfterRecovery.SentCount != 1 {
 		t.Fatalf("恢复运行状态异常: status=%q sent=%d", runAfterRecovery.Status, runAfterRecovery.SentCount)
 	}
-	// rawProof 保存恢复成功后的数据库凭证，确认终态不会继续保留敏感内容。
+	// rawProof 保存恢复成功后的数据库快照密文，确认终态仍保留原样补发所需内容。
 	var rawProof string
 	// err 保存恢复成功后凭证读取错误。
 	if err := store.DB.QueryRowContext(ctx, `SELECT delivery_proof FROM automation_runs WHERE order_id=?`, task.OrderID).Scan(&rawProof); err != nil {
 		t.Fatal(err)
 	}
-	if rawProof != "" {
-		t.Fatalf("恢复成功后应清除发货凭证: %q", rawProof)
+	if rawProof == "" {
+		t.Fatal("恢复成功后必须保留加密发货快照")
 	}
 }
 
@@ -457,14 +457,14 @@ func TestConfirmShipmentRetriesFromCheckpointWithoutResendingTemplate(t *testing
 	if mtopMock.consignCalls != 2 || mtopMock.consignTradeTextIn != "订单 template-recovery-order 卡密 TEMPLATE-ONCE" {
 		t.Fatalf("恢复确认发货凭证错误: calls=%d trade_text=%q", mtopMock.consignCalls, mtopMock.consignTradeTextIn)
 	}
-	// clearedProof 保存恢复成功后的凭证值，确认终态必须清除敏感内容。
-	var clearedProof string
+	// retainedProof 保存恢复成功后的凭证值，确认终态必须保留加密内容快照。
+	var retainedProof string
 	// scanErr 保存恢复成功后凭证读取错误。
-	if scanErr := store.DB.QueryRowContext(ctx, `SELECT delivery_proof FROM automation_runs WHERE order_id=?`, task.OrderID).Scan(&clearedProof); scanErr != nil {
+	if scanErr := store.DB.QueryRowContext(ctx, `SELECT delivery_proof FROM automation_runs WHERE order_id=?`, task.OrderID).Scan(&retainedProof); scanErr != nil {
 		t.Fatal(scanErr)
 	}
-	if clearedProof != "" {
-		t.Fatalf("模板确认成功后凭证未清除: %q", clearedProof)
+	if retainedProof == "" {
+		t.Fatal("模板确认成功后必须保留加密发货快照")
 	}
 }
 

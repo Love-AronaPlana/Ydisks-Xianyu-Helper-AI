@@ -267,29 +267,9 @@ func (s *Server) manualShipOrders(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// importOrders 封装import订单列表业务协调。
+// importOrders 为旧客户端保留明确的退役响应；w 输出统一错误，r 不解析请求正文，也不执行订单写入。
 func (s *Server) importOrders(w http.ResponseWriter, r *http.Request) {
-	// orders、err 用于本次流程后续判断的orders、err
-	orders, err := parseImportedOrders(w, r)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	// sess 用于本次流程后续判断的sess
-	sess := auth.SessionFromContext(r.Context())
-	// result、err 用于本次流程后续判断的result、err
-	result, err := s.orders().Import(r.Context(), sess.UserID, orders)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "查询账号失败")
-		return
-	}
-	writeJSON(w, http.StatusOK, importOrdersResponse{
-		PartialFailure: result.FailedCount > 0,
-		Message:        fmt.Sprintf("导入完成: 成功%d个, 失败%d个", result.SuccessCount, result.FailedCount),
-		// Total 和 Results 共同保留导入批次的统计及逐单结果。
-		// 兼容客户端继续使用 partial_failure 判断批次是否需要复核。
-		Total: result.Total, SuccessCount: result.SuccessCount, FailedCount: result.FailedCount, Results: result.Results,
-	})
+	writeErr(w, http.StatusNotImplemented, "人工插入订单功能已移除，请使用一键同步订单")
 }
 
 // atoiDefault 封装atoiDefault业务协调。

@@ -12,10 +12,10 @@ cardActionsForTrigger,
 defaultRuleName,
 emptyVariant,
 hasCompleteTemplateBindings,
-isValidAdjustPrice,
+isValidAdjustPrice,needsAllItemsConfirmation,
 parseJSONObject,
 shouldReplaceGeneratedName,
-statusPill,
+statusPill,withAllItemsConfirmation,
 } from './utils';
 
 // rule 是规则工具测试使用的最小规则对象。
@@ -128,4 +128,21 @@ describe('规则工具函数', /* 当前回调处理规则配置和展示状态�
       { variable_key: 'main', card_id: 2, delivery_count: 1 },
     ])).toBe(false);
   });
+});
+
+// 通用发货授权必须由布尔勾选产生，旧配置默认不授权且其他配置字段保持不变。
+test('全商品发货确认保留其他配置且可撤销', /* 当前回调验证授权配置的创建、保留和撤销。 */ () => {
+  expect(JSON.parse(withAllItemsConfirmation(undefined, false))).toEqual({ allow_all_items: false });
+  expect(JSON.parse(withAllItemsConfirmation('{bad', true))).toEqual({ allow_all_items: true });
+  expect(JSON.parse(withAllItemsConfirmation('{"after_shipped_hours":24}', true))).toEqual({ after_shipped_hours: 24, allow_all_items: true });
+  expect(JSON.parse(withAllItemsConfirmation('{"allow_all_items":true}', false))).toEqual({ allow_all_items: false });
+});
+
+// 列表应清楚区分待确认账号通用规则与可以执行的商品规则。
+test('旧账号级规则显示待确认提示', /* 当前回调验证规则列表的范围提示。 */ () => {
+  expect(needsAllItemsConfirmation(rule())).toBe(true);
+  expect(needsAllItemsConfirmation(rule({ config_json: '{"allow_all_items":"true"}' }))).toBe(true);
+  expect(needsAllItemsConfirmation(rule({ config_json: '{"allow_all_items":true}' }))).toBe(false);
+  expect(needsAllItemsConfirmation(rule({ item_id: 'item-a' }))).toBe(false);
+  expect(needsAllItemsConfirmation(rule({ trigger_type: 'buyer_reviewed' }))).toBe(false);
 });

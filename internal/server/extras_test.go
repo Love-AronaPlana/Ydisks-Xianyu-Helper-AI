@@ -409,30 +409,17 @@ func TestOrderImportCompat(t *testing.T) {
 	// rec 用于本次流程后续判断的rec
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	if rec.Code != 200 {
-		t.Fatalf("import status=%d body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusNotImplemented || !strings.Contains(rec.Body.String(), "人工插入订单功能已移除") {
+		t.Fatalf("retired import status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	// res 用于本次流程后续判断的响应
-	var res map[string]any
-	json.Unmarshal(rec.Body.Bytes(), &res)
-	if res["success_count"] != float64(1) {
-		t.Fatalf("导入结果异常: %+v", res)
-	}
-
-	// req2 用于本次流程后续判断的req2
+	// req2 验证旧客户端提交的有效订单也没有产生写入。
 	req2 := httptest.NewRequest(http.MethodGet, "/api/orders/order-import-1", nil)
 	req2.AddCookie(cookie)
-	// rec2 用于本次流程后续判断的rec2
+	// rec2 捕获不存在订单的查询响应。
 	rec2 := httptest.NewRecorder()
 	h.ServeHTTP(rec2, req2)
-	if rec2.Code != 200 {
-		t.Fatalf("get imported order status=%d body=%s", rec2.Code, rec2.Body.String())
-	}
-	// order 用于本次流程后续判断的订单
-	var order map[string]any
-	json.Unmarshal(rec2.Body.Bytes(), &order)
-	if order["cookie_id"] != "acc1" || order["status"] != "pending_ship" {
-		t.Fatalf("导入订单异常: %+v", order)
+	if rec2.Code != http.StatusNotFound {
+		t.Fatalf("retired import created an order: status=%d", rec2.Code)
 	}
 }
 
@@ -454,21 +441,8 @@ func TestOrderImportReportsPartialFailure(t *testing.T) {
 	// rec 用于本次流程后续判断的rec
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
-	}
-	// result 用于本次流程后续判断的结果
-	var result struct {
-		PartialFailure bool `json:"partial_failure"`
-		SuccessCount   int  `json:"success_count"`
-		FailedCount    int  `json:"failed_count"`
-	}
-	if // err 用于本次流程后续判断的err
-	err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
-		t.Fatal(err)
-	}
-	if !result.PartialFailure || result.SuccessCount != 1 || result.FailedCount != 1 {
-		t.Fatalf("result=%+v", result)
+	if rec.Code != http.StatusNotImplemented || !strings.Contains(rec.Body.String(), "人工插入订单功能已移除") {
+		t.Fatalf("retired batch status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

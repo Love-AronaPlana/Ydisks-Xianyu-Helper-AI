@@ -147,9 +147,9 @@ type rawFields struct {
 	reminderURL string
 }
 
-// fieldsFromRaw 封装字段列表From原始业务协调。
+// fieldsFromRaw 按 raw 的协议结构提取系统交易事实，兼容完整信封、新版卡片与旧简化提醒；无持久化副作用。
 func fieldsFromRaw(raw map[string]any) rawFields {
-	// f 用于本次流程后续判断的f
+	// f 保存经固定路径优先及兼容回填取得的会话、订单、状态与角色事实。
 	var f rawFields
 	if // m1 用于本次流程后续判断的m1
 	m1 := mapAt(raw, "1"); m1 != nil {
@@ -191,6 +191,10 @@ func fieldsFromRaw(raw map[string]any) rawFields {
 				f.orderID = id
 			}
 		}
+	} else if mapAt(raw, "4") != nil && mapAt(raw, "3") == nil {
+		// 新版卡片的字段 1 是消息 ID；会话和方向分别来自字段 2、3，不能进入简化提醒分支。
+		f.chatID = trimGoofishSID(strAny(raw["2"]))
+		f.messageDirection = strAny(raw["3"])
 	} else if // compactSession 保存简化消息中的会话标识
 	compactSession, ok := raw["1"].(string); ok && strings.TrimSpace(compactSession) != "" {
 		f.simplified = true

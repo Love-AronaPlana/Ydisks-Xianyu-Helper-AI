@@ -11,7 +11,7 @@ import (
 // TestChatSessionFromApplicationKeepsNonSensitiveFields 验证会话转换只复制非敏感展示字段。
 func TestChatSessionFromApplicationKeepsNonSensitiveFields(t *testing.T) {
 	// session 保存应用层聊天会话摘要。
-	session := chatapp.Session{AccountID: "account-1", ChatID: "chat-1", BuyerID: "buyer-1", BuyerName: "买家", BuyerAvatar: "avatar", ItemID: "item-1", ItemTitle: "商品", ItemImageURL: "https://img.example/item.jpg", LastMessage: "你好", LastMessageAt: 42, UnreadCount: 3}
+	session := chatapp.Session{AccountID: "account-1", ChatID: "chat-1", PeerUserID: "buyer-1", PeerName: "买家", PeerAvatar: "avatar", ItemID: "item-1", ItemTitle: "商品", ItemImageURL: "https://img.example/item.jpg", LastMessage: "你好", LastMessageAt: 42, UnreadCount: 3}
 	// converted 保存转换后的 legacy 聊天会话模型。
 	converted := ChatSessionFromApplication(session)
 	// expected 保存应由领域仓储接收的非敏感会话字段。

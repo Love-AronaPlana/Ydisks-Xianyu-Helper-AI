@@ -110,6 +110,21 @@ describe('useRuleActions', /* 当前回调验证规则页面动作协调器的�
     hook.unmount();
   });
 
+  test('账号通用授权随保存保留，切换商品后要求重新确认', /* 当前回调验证旧规则默认未授权、显式授权保存和范围切换撤销。 */ async () => {
+    // hook 是带真实表单状态的规则动作协调器。
+    const hook = renderHook(/* 当前回调构建隔离的规则编辑状态。 */ () => useRuleActionsHarness());
+    act(/* 当前回调打开尚未授权的新规则。 */ () => hook.result.current.openNewAutomationRule());
+    expect(hook.result.current.reviewConfig.allow_all_items).not.toBe(true);
+    act(/* 当前回调模拟用户明确确认内容适用于当前账号的全部商品。 */ () => hook.result.current.setEditingAutomationRule(/* draft 是编辑器当前表单。 */ draft => ({ ...draft, config_json: '{"allow_all_items":true}', variants: [{ id: 'variant', spec_name: '', spec_value: '', card_id: 7, delivery_count: 1, enabled: true }] })));
+    await act(/* 当前回调保存用户明确授权的通用规则。 */ async () => hook.result.current.handleSaveAutomationRule());
+    expect(updateShippingMock).toHaveBeenCalledWith(expect.objectContaining({ config_json: '{"allow_all_items":true}' }));
+    act(/* 当前回调切换为商品专属范围，撤销旧通用授权。 */ () => hook.result.current.handleAutomationItemChange('item-1'));
+    expect(hook.result.current.reviewConfig.allow_all_items).toBe(false);
+    act(/* 当前回调再改回账号范围，仍必须重新勾选。 */ () => hook.result.current.handleAutomationItemChange(''));
+    expect(hook.result.current.reviewConfig.allow_all_items).toBe(false);
+    hook.unmount();
+  });
+
   test('拍下改价规则校验目标价格并剔除空提醒动作', /* 当前回调验证拍下改价草稿与保存边界。 */ async () => {
     // hook 是规则动作 Hook 的真实 React 状态实例。
     const hook = renderHook(() => useRuleActionsHarness());

@@ -143,12 +143,12 @@ func (s *Service) SendItemCard(ctx context.Context, input ItemCardInput) (*Messa
 	// unlockOperation 阻止删除事务在商品卡片的平台投递和本地状态收口之间执行。
 	unlockOperation := s.sessionOperations.lock(accountID, chatID)
 	defer unlockOperation()
-	// session 是按归属精确解析的会话，其 BuyerID 不从 HTTP 请求接收。
+	// session 是按归属精确解析的会话，其 PeerUserID 不从 HTTP 请求接收。
 	session, lookupErr := s.lookupOwnedSession(ctx, input.UserID, accountID, chatID)
 	if lookupErr != nil {
 		return nil, lookupErr
 	}
-	if strings.TrimSpace(session.BuyerID) == "" {
+	if strings.TrimSpace(session.PeerUserID) == "" {
 		return nil, ErrChatSessionNotFound
 	}
 	// sender 和 ok 是当前账号的在线发送能力及存在性。
@@ -181,7 +181,7 @@ func (s *Service) SendItemCard(ctx context.Context, input ItemCardInput) (*Messa
 		return nil, fmt.Errorf("%w: %v", ErrChatItemCreate, createErr)
 	}
 	// sendErr 表示平台商品卡片发送是否失败。
-	if sendErr := itemSender.SendItemCard(ctx, session.ChatID, session.BuyerID, item, message.MessageKey); sendErr != nil {
+	if sendErr := itemSender.SendItemCard(ctx, session.ChatID, session.PeerUserID, item, message.MessageKey); sendErr != nil {
 		if errors.Is(sendErr, ErrSendUncertain) {
 			// statusCtx 和 statusCancel 为商品卡片未知结果状态收口提供独立窗口。
 			statusCtx, statusCancel := outgoingStatusContext(ctx)

@@ -160,27 +160,12 @@ func TestRemainingSuccessResponseContracts(t *testing.T) {
 		t.Fatalf("rule response=%+v", ruleResponse)
 	}
 
-	// importReq 是创建一条测试订单的请求。
-	importReq := httptest.NewRequest(http.MethodPost, "/api/orders/import", strings.NewReader(`[{"order_id":"contract-order","item_id":"contract-item","status":"pending_ship","quantity":1,"amount":"1.00"}]`))
-	importReq.Header.Set("Content-Type", "application/json")
-	importReq.AddCookie(sessionCookie)
-	// importRecorder 是捕获订单导入响应的记录器。
-	importRecorder := httptest.NewRecorder()
-	handler.ServeHTTP(importRecorder, importReq)
-	if importRecorder.Code != http.StatusOK {
-		t.Fatalf("import status=%d body=%s", importRecorder.Code, importRecorder.Body.String())
-	}
-	// importResponse 是订单导入具名响应 DTO。
-	var importResponse importOrdersResponse
-	// importDecodeErr 是订单导入响应 JSON 反序列化失败的原因。
-	if importDecodeErr := json.Unmarshal(importRecorder.Body.Bytes(), &importResponse); importDecodeErr != nil {
-		t.Fatalf("decode import response: %v", importDecodeErr)
-	}
-	if importResponse.SuccessCount != 1 || importResponse.Total != 1 {
-		t.Fatalf("import response=%+v", importResponse)
+	// fixtureErr 通过测试仓储建立平台同步订单夹具，人工导入接口不再用于准备成功场景。
+	if fixtureErr := store.Orders.Upsert(context.Background(), "contract-order", db.OrderUpsertOpts{CookieID: "acc1", ItemID: "contract-item", OrderStatus: "pending_ship", Quantity: "1", Amount: "1.00"}); fixtureErr != nil {
+		t.Fatal(fixtureErr)
 	}
 
-	// orderReq 是读取刚导入订单详情的请求。
+	// orderReq 是读取平台同步订单夹具详情的请求。
 	orderReq := httptest.NewRequest(http.MethodGet, "/api/orders/contract-order", nil)
 	orderReq.AddCookie(sessionCookie)
 	// orderRecorder 是捕获订单详情响应的记录器。

@@ -40,6 +40,54 @@ func (a *AutomationRules) GetRun(ctx context.Context, id int64) (*AutomationRun,
 	return &run, nil
 }
 
+// GetRunByRuleAndTrigger 读取同一规则和幂等键的运行快照；ctx 控制查询取消，未找到返回 ErrNotFound。
+// 该方法只供自动化编排判断能否原样补发，返回的发货内容始终保持在加密仓储边界内。
+func (a *AutomationRules) GetRunByRuleAndTrigger(ctx context.Context, ruleID int64, triggerKey string) (*AutomationRun, error) {
+	// runID 保存唯一运行记录标识；readErr 表示按规则和幂等键查询失败。
+	var runID int64
+	// readErr 保存按规则和幂等键读取自动化运行失败的数据库错误。
+	readErr := a.DB.QueryRowContext(ctx, `SELECT id FROM automation_runs WHERE rule_id=? AND trigger_key=?`, ruleID, triggerKey).Scan(&runID)
+	if readErr != nil {
+		if errors.Is(readErr, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, readErr
+	}
+	return a.GetRun(ctx, runID)
+}
+
+// GetLatestOrderDeliveryRun 读取订单最近一次付款发货运行；ctx 控制查询取消，cookieID 防止跨账号复用快照。
+// 返回的快照可能来自自动或人工流程，调用方必须先根据运行终态决定补发、仅补记状态或人工核对。
+func (a *AutomationRules) GetLatestOrderDeliveryRun(ctx context.Context, cookieID, orderID string) (*AutomationRun, error) {
+	// runID 保存同一账号订单最近更新的付款发货运行标识；readErr 表示读取失败。
+	var runID int64
+	// readErr 保存读取同一订单最近付款发货运行失败的数据库错误。
+	readErr := a.DB.QueryRowContext(ctx, `SELECT id FROM automation_runs
+		WHERE cookie_id=? AND order_id=? AND trigger_type='order_paid'
+		ORDER BY updated_at DESC,id DESC LIMIT 1`, cookieID, orderID).Scan(&runID)
+	if readErr != nil {
+		if errors.Is(readErr, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, readErr
+	}
+	return a.GetRun(ctx, runID)
+}
+
+// CompleteDeliveryReplay 将已经原样补发并完成确认发货的失败或人工核对运行收口为成功。
+// ctx 控制数据库更新；runID 和 attempt 防止旧 worker 覆盖新代次，快照必须继续保留给后续审计。
+func (a *AutomationRules) CompleteDeliveryReplay(ctx context.Context, runID int64, attempt int) error {
+	// result、updateErr 保存终态收口更新及其数据库错误；attempt 和人工核对终态负责隔离旧 worker，
+	// 同时兼容修复前遗留的 action_started=1 记录，使已经原样补发的快照可以正常收口。
+	result, updateErr := a.DB.ExecContext(ctx, `UPDATE automation_runs
+		SET status='success',error_message='',lease_expires_at=0,next_retry_at=0,action_started=0,updated_at=CURRENT_TIMESTAMP
+		WHERE id=? AND attempt_count=? AND status IN ('failed','needs_review')`, runID, attempt)
+	if updateErr != nil {
+		return updateErr
+	}
+	return requireAutomationRunOwner(result)
+}
+
 // AdvanceRunAction 在动作明确成功后原子推进游标、累计数量并保存或清除发货凭证。
 func (a *AutomationRules) AdvanceRunAction(ctx context.Context, advance AutomationRunActionAdvance) error {
 	return a.advanceRunAction(ctx, advance)

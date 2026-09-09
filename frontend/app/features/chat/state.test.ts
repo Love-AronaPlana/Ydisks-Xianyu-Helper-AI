@@ -4,8 +4,8 @@ import { collectChatReadReceipts,filterChatSessions,formatClock,isChatAbortError
 
 // sessionFixture 是覆盖搜索、未读筛选和联系人隔离的最小会话数据。
 const sessionFixture: ChatSession[] = [
-  { account_id: 'a1', chat_id: 'c1', buyer_id: 'b1', buyer_name: '张三', item_title: '测试商品', last_message: '你好', last_message_at: 1, unread_count: 2 },
-  { account_id: 'a1', chat_id: 'c2', buyer_id: 'b2', buyer_name: '李四', item_title: '另一个商品', last_message: '已发货', last_message_at: 2, unread_count: 0 },
+  { account_id: 'a1', chat_id: 'c1', peer_user_id: 'b1', peer_name: '张三', item_title: '测试商品', last_message: '你好', last_message_at: 1, unread_count: 2 },
+  { account_id: 'a1', chat_id: 'c2', peer_user_id: 'b2', peer_name: '李四', item_title: '另一个商品', last_message: '已发货', last_message_at: 2, unread_count: 0 },
 ];
 
 // messageFixture 是覆盖消息去重和实时替换的最小消息数据。

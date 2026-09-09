@@ -27,11 +27,11 @@ func TestSessionQueryAndIdentityRejectInvalidBoundaries(t *testing.T) {
 		t.Fatalf("零用户归属查询错误=%v", invalidOwnsErr)
 	}
 	// invalidResolveAccountErr 保存身份补全缺少账号标识的输入错误。
-	if _, invalidResolveAccountErr := service.ResolveSessionIdentity(context.Background(), Session{ChatID: "chat", BuyerID: "buyer"}); !errors.Is(invalidResolveAccountErr, ErrInvalidInput) {
+	if _, invalidResolveAccountErr := service.ResolveSessionIdentity(context.Background(), Session{ChatID: "chat", PeerUserID: "buyer"}); !errors.Is(invalidResolveAccountErr, ErrInvalidInput) {
 		t.Fatalf("缺少账号身份补全错误=%v", invalidResolveAccountErr)
 	}
 	// invalidResolveChatErr 保存身份补全缺少会话标识的输入错误。
-	if _, invalidResolveChatErr := service.ResolveSessionIdentity(context.Background(), Session{AccountID: "account", BuyerID: "buyer"}); !errors.Is(invalidResolveChatErr, ErrInvalidInput) {
+	if _, invalidResolveChatErr := service.ResolveSessionIdentity(context.Background(), Session{AccountID: "account", PeerUserID: "buyer"}); !errors.Is(invalidResolveChatErr, ErrInvalidInput) {
 		t.Fatalf("缺少会话身份补全错误=%v", invalidResolveChatErr)
 	}
 	// invalidRefreshErr 保存空账号批量身份补全的输入错误。
@@ -88,7 +88,7 @@ func TestSessionQueryAndIdentityRejectInvalidBoundaries(t *testing.T) {
 	// identityFailureService 是绑定身份查询失败替身的聊天服务。
 	identityFailureService := NewWithIdentity(&fakeRepository{}, fakeIdentityResolver{err: identityErr})
 	// refreshedSessions、refreshFailureErr 保存批量身份补全失败结果。
-	refreshedSessions, refreshFailureErr := identityFailureService.RefreshSessionIdentities(context.Background(), "account", []Session{{AccountID: "account", ChatID: "chat", BuyerID: "buyer"}})
+	refreshedSessions, refreshFailureErr := identityFailureService.RefreshSessionIdentities(context.Background(), "account", []Session{{AccountID: "account", ChatID: "chat", PeerUserID: "buyer"}})
 	if len(refreshedSessions) != 1 || !errors.Is(refreshFailureErr, identityErr) {
 		t.Fatalf("批量身份错误 sessions=%+v err=%v", refreshedSessions, refreshFailureErr)
 	}

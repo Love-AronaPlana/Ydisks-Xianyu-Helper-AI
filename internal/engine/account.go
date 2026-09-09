@@ -154,10 +154,8 @@ type ChatMessage struct {
 	Raw        map[string]any // 解密后的完整消息
 }
 
-// OutgoingChatMessage is emitted after the existing account WebSocket has
-// accepted a text message. It is an observation hook only; persistence errors
-// never change the delivery result.
-// OutgoingChatMessage 用于本次流程后续判断的Outgoing聊天消息
+// OutgoingChatMessage 是账号 WebSocket 接受或回显的一条非敏感出站消息摘要。
+// 它同时供自动化回显确认和聊天历史旁路落库使用；持久化错误不能改写已经由发送层判定的外部结果。
 type OutgoingChatMessage struct {
 	AccountID  string
 	ChatID     string
@@ -180,11 +178,28 @@ type outgoingChatHandler interface {
 // outgoingMessageKeyContextKey 用于本次流程后续判断的outgoing消息Key上下文Key
 type outgoingMessageKeyContextKey struct{}
 
+// outgoingEchoConfirmationContextKey 标记本次外发调用必须等待账号自身 WebSocket 回显。
+type outgoingEchoConfirmationContextKey struct{}
+
 // WithOutgoingMessageKey correlates a UI-created pending message with the
 // post-send observer so the same text is not inserted twice.
 // WithOutgoingMessageKey 封装WithOutgoing消息Key业务协调。
 func WithOutgoingMessageKey(ctx context.Context, key string) context.Context {
 	return context.WithValue(ctx, outgoingMessageKeyContextKey{}, strings.TrimSpace(key))
+}
+
+// WithOutgoingEchoConfirmation 标记自动化出站消息需要等待自身 WebSocket 回显。
+// ctx 是本次发送的取消边界；返回值只增加内部确认标记，不携带消息正文或凭证。
+func WithOutgoingEchoConfirmation(ctx context.Context) context.Context {
+	return context.WithValue(ctx, outgoingEchoConfirmationContextKey{}, true)
+}
+
+// wantsOutgoingEchoConfirmation 判断调用方是否要求把自身 WebSocket 回显作为发送确认条件。
+// ctx 是发送上下文；缺少标记时保持人工聊天的原有发送语义。
+func wantsOutgoingEchoConfirmation(ctx context.Context) bool {
+	// confirmed 表示调用方是否显式要求等待账号自身回显；缺省值保持人工发送兼容行为。
+	confirmed, _ := ctx.Value(outgoingEchoConfirmationContextKey{}).(bool)
+	return confirmed
 }
 
 // RuntimeStatus 是账号引擎的实时连接状态，不写入数据库。
@@ -342,22 +357,28 @@ func New(cfg Config) *Account {
 		},
 		accountDependencies: newAccountDependencies(cfg.Store, mtopClient, renewer, wsDialer, cfg.Handler, logger.With("account", cfg.CookieID), nil, newWSRecorder(cfg.Store, cfg.CookieID, logger)),
 	}
+	// echoTracker 保存当前账号自动化出站消息的回显等待项；其生命周期与账号 facade 一致。
+	echoTracker := newOutgoingEchoTracker()
 	if cfg.Store != nil {
 		a.reply = NewReplyService(cfg.CookieID, cfg.Store, a, nil, NewAIReplier(cfg.CookieID, cfg.Store, logger), logger)
 	}
+	// publisher 是平台客户端提供的商品发布人查询能力；缺失时回复门禁保持关闭。
+	publisher, _ := mtopClient.(replyItemPublisher)
 	a.messageDispatcher = newMessageDispatcher(messageDispatcherConfig{
-		CookieID:       cfg.CookieID,
-		CurrentCookie:  a.currentCookieStr,
-		CurrentHandler: func() Handler { return a.handler },
-		Reply:          a.reply,
-		Logger:         logger,
-		BeginTask:      a.lifecycle.beginTask,
-		RecordMessage:  a.recordMessageReceived,
+		CookieID:        cfg.CookieID,
+		CurrentCookie:   a.currentCookieStr,
+		CurrentHandler:  func() Handler { return a.handler },
+		ObserveOutgoing: echoTracker.observe,
+		Reply:           a.reply,
+		ItemPublisher:   publisher,
+		Logger:          logger,
+		BeginTask:       a.lifecycle.beginTask,
+		RecordMessage:   a.recordMessageReceived,
 	})
 	// connection 保存绑定当前账号 facade 的连接编排组件；它只在构造完成后才可被 Run 调用。
 	a.connection = connectionCoordinator{account: a}
 	// outgoing 保存绑定当前账号 facade 的出站消息协调器；它只读取连接快照后执行外部 I/O。
-	a.outgoing = outgoingMessageCoordinator{account: a}
+	a.outgoing = outgoingMessageCoordinator{account: a, echoTracker: echoTracker}
 	// credentials 保存绑定当前账号 facade 的凭证协调器；外部凭证 I/O 均由它控制锁边界。
 	a.credentials = credentialCoordinator{account: a}
 	return a

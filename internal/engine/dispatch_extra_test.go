@@ -586,10 +586,13 @@ func TestScheduleDebouncedReply_HandlerErrorLogged(t *testing.T) {
 
 	// 让 reply.Handle 走默认回复路径并成功发送（sender 是 acc 自身，无 conn 会失败但仅记录日志）。
 	// 这里主要验证防抖回调路径在 reply 报错时仍会调用 handler.HandleChatMessage。
-	_ = store
+	// fixtureErr 写入默认回复，确保此场景确实覆盖发送器无连接的失败路径。
+	if _, fixtureErr := store.DB.ExecContext(context.Background(), `INSERT INTO default_replies (cookie_id,enabled,reply_content) VALUES ('cid',1,'测试回复')`); fixtureErr != nil {
+		t.Fatal(fixtureErr)
+	}
 	// chat 用于本次流程后续判断的聊天
 	chat := ChatMessage{
-		AccountID: "cid", ChatID: "chat-err", Text: "hi",
+		AccountID: "cid", ChatID: "chat-err", Text: "hi", ItemID: "seller-item",
 		SenderUserID: "b1", CookieStr: "unb=123;",
 	}
 	acc.scheduleDebouncedReply(chat)

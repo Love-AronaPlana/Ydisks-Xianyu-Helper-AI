@@ -145,19 +145,28 @@ func (c *ClientImpl) fetchItemsPageOnce(ctx context.Context, cookiesStr string, 
 		return nil, decoded.Ret, updated, nil
 	}
 
+	// cards、cardsOK 验证平台确实返回商品列表；缺失或畸形响应不能伪装成完整空列表。
+	cards, cardsOK := decoded.Data["cardList"].([]any)
+	if !cardsOK {
+		return nil, decoded.Ret, updated, fmt.Errorf("商品列表缺少有效 cardList，未执行同步")
+	}
 	// items 用于本次流程后续判断的商品列表
 	items := parseItemList(decoded.Data)
+	if !validItemListCards(cards) {
+		return nil, decoded.Ret, updated, fmt.Errorf("商品列表包含无法识别的商品，未执行同步")
+	}
 	// totalCount、totalPages 用于本次流程后续判断的总数Count、totalPages
 	totalCount, totalPages := itemListPagination(decoded.Data, pageNumber, pageSize)
 	return &ItemListResult{
-		Items:          items,
-		PageNumber:     pageNumber,
-		PageSize:       pageSize,
-		CurrentCount:   len(items),
-		TotalCount:     totalCount,
-		TotalPages:     totalPages,
-		SavedCountHint: len(items),
-		UpdatedCookies: updated,
+		Items:              items,
+		PageNumber:         pageNumber,
+		PageSize:           pageSize,
+		CurrentCount:       len(cards),
+		TotalCount:         totalCount,
+		ReportedTotalCount: itemListReportedTotal(decoded.Data),
+		TotalPages:         totalPages,
+		SavedCountHint:     len(items),
+		UpdatedCookies:     updated,
 	}, decoded.Ret, updated, nil
 }
 
@@ -178,6 +187,10 @@ func (c *ClientImpl) FetchAllItems(ctx context.Context, cookiesStr string, pageS
 	fetchedPages := 0
 	// all 用于本次流程后续判断的all
 	var all []ItemListItem
+	// seenIDs 检测重复页或跨页重复商品，无法证明全集完整时禁止本地 reconcile。
+	seenIDs := make(map[string]struct{})
+	// fetchedCount 是含平台占位卡的已取条数；expectedCount 仅使用平台明确给出的总量。
+	fetchedCount, expectedCount := 0, 0
 	for maxPages <= 0 || page <= maxPages {
 		// res、err 用于本次流程后续判断的res、err
 		res, err := c.FetchItemsPage(ctx, currentCookies, page, pageSize)
@@ -185,19 +198,43 @@ func (c *ClientImpl) FetchAllItems(ctx context.Context, cookiesStr string, pageS
 			return nil, err
 		}
 		currentCookies = res.UpdatedCookies
+		fetchedCount += res.CurrentCount
+		if res.ReportedTotalCount > 0 {
+			if expectedCount > 0 && expectedCount != res.ReportedTotalCount {
+				return nil, fmt.Errorf("商品分页期间总数变化，请重新同步")
+			}
+			expectedCount = res.ReportedTotalCount
+		}
+		// item 是本页的一个远端商品；重复身份意味着分页快照不稳定。
+		for _, item := range res.Items {
+			// exists 表示此商品是否已经在先前页出现。
+			if _, exists := seenIDs[item.ID]; exists {
+				return nil, fmt.Errorf("商品分页重复，请重新同步")
+			}
+			seenIDs[item.ID] = struct{}{}
+		}
+		if res.CurrentCount == 0 && res.TotalPages > page {
+			return nil, fmt.Errorf("商品分页提前返回空页，请重新同步")
+		}
 		all = append(all, res.Items...)
 		fetchedPages = page
 		if res.TotalPages > 0 && page >= res.TotalPages {
 			break
 		}
-		if res.TotalPages <= 0 && len(res.Items) < pageSize {
+		if res.TotalPages <= 0 && res.CurrentCount < pageSize {
 			break
+		}
+		if maxPages > 0 && page >= maxPages {
+			return nil, fmt.Errorf("商品同步达到页数上限但尚未完成，请提高 max_pages 后重试")
 		}
 		page++
 		if // err 用于本次流程后续判断的err
 		err := sleepCtx(ctx, ItemPageGap); err != nil {
 			return nil, err
 		}
+	}
+	if expectedCount > 0 && fetchedCount != expectedCount {
+		return nil, fmt.Errorf("商品列表实际条数与平台总数不符，请重新同步")
 	}
 	return &ItemListResult{
 		Items:          all,
@@ -209,6 +246,38 @@ func (c *ClientImpl) FetchAllItems(ctx context.Context, cookiesStr string, pageS
 		SavedCountHint: len(all),
 		UpdatedCookies: currentCookies,
 	}, nil
+}
+
+// itemListReportedTotal 从 data 读取平台明确报告的非零商品总数，返回零表示未提供，不使用页数推算。
+func itemListReportedTotal(data map[string]any) int {
+	// key 是平台已知的总数字段别名。
+	for _, key := range []string{"totalCount", "total_count", "total"} {
+		// count 是此字段提供的商品总条数。
+		if count := mtopInt(data[key]); count > 0 {
+			return count
+		}
+	}
+	return 0
+}
+
+// validItemListCards 校验 cards 每张卡片都包含可识别身份；auto_ 平台占位卡可过滤，但畸形商品不能假装不存在。
+func validItemListCards(cards []any) bool {
+	// rawCard 是本页待验证的卡片对象。
+	for _, rawCard := range cards {
+		// card、ok 保存外层卡片及其结构是否有效。
+		card, ok := rawCard.(map[string]any)
+		if !ok {
+			return false
+		}
+		// data 保存平台商品正文；缺失时无法确认这是有效商品列表。
+		data, _ := card["cardData"].(map[string]any)
+		// params 保存平台详情跳转参数中的商品标识。
+		params, _ := data["detailParams"].(map[string]any)
+		if strings.TrimSpace(mtopString(params["itemId"])) == "" && strings.TrimSpace(mtopString(data["id"])) == "" {
+			return false
+		}
+	}
+	return true
 }
 
 // itemListPagination 封装商品ListPagination业务协调。

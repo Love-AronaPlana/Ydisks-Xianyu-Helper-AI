@@ -73,12 +73,22 @@ export interface ChatSession {
 	account_id: string;
 	/** 会话稳定标识。 */
 	chat_id: string;
-	/** 买家平台标识。 */
-	buyer_id: string;
-	/** 买家昵称。 */
-	buyer_name: string;
-	/** 买家头像地址。 */
-	buyer_avatar_url?: string;
+	/** 当前账号之外的会话对端平台标识。 */
+	peer_user_id: string;
+	/** 会话对端昵称。 */
+	peer_name: string;
+	/** 会话对端头像地址。 */
+	peer_avatar_url?: string;
+	/** 当前账号在角色商品中的身份；旧会话尚未识别时为 unknown。 */
+	account_role?: 'seller' | 'buyer' | 'unknown';
+	/** 已确认的买家平台标识。 */
+	buyer_user_id?: string;
+	/** 已确认的卖家平台标识。 */
+	seller_user_id?: string;
+	/** 角色结论绑定的商品标识。 */
+	role_item_id?: string;
+	/** 角色结论的非敏感证据来源。 */
+	role_source?: string;
 	/** 会话关联商品标识。 */
 	item_id?: string;
 	/** 会话关联商品标题。 */

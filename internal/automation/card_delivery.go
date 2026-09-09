@@ -54,18 +54,30 @@ func (e *automationActionExecutor) sendCardWithProof(ctx context.Context, task T
 		if imageURL != "" {
 			// sendErr 保存图片消息发送错误。
 			if sendErr := e.sendImage(ctx, task, imageURL, card.ID); sendErr != nil {
-				return actionExecutionResult{sent: sent, proof: proof}, classifyMessageSendError(sendErr)
+				// reviewProof 保存图片传输结果未知时的原始地址；不重新读取卡密组，避免人工补发改变内容。
+				reviewProof := shipmentDeliveryProof{picList: []string{imageURL}, messages: []db.AutomationDeliveryMessage{{Kind: "image", Content: imageURL}}}
+				if errors.Is(sendErr, ErrMessageNotSent) {
+					return actionExecutionResult{sent: sent, proof: proof}, classifyMessageSendError(sendErr)
+				}
+				return actionExecutionResult{sent: sent, proof: proof, reviewProof: reviewProof}, classifyMessageSendError(sendErr)
 			}
 			proof.picList = append(proof.picList, imageURL)
+			proof.messages = append(proof.messages, db.AutomationDeliveryMessage{Kind: "image", Content: imageURL})
 		}
 		if strings.TrimSpace(content) != "" {
 			// renderedContent 是实际发送给买家的文本，也作为确认发货凭证提交。
 			renderedContent := renderTemplate(content, task)
 			// sendErr 保存文字消息发送错误。
 			if sendErr := e.sendText(ctx, task, renderedContent); sendErr != nil {
-				return actionExecutionResult{sent: sent, proof: proof}, classifyMessageSendError(sendErr)
+				// reviewProof 保存结果未知的最终渲染文本；卡密补发必须使用该文本而非再次模板渲染。
+				reviewProof := shipmentDeliveryProof{tradeText: renderedContent, messages: []db.AutomationDeliveryMessage{{Kind: "text", Content: renderedContent}}}
+				if errors.Is(sendErr, ErrMessageNotSent) {
+					return actionExecutionResult{sent: sent, proof: proof}, classifyMessageSendError(sendErr)
+				}
+				return actionExecutionResult{sent: sent, proof: proof, reviewProof: reviewProof}, classifyMessageSendError(sendErr)
 			}
 			proof.tradeText = appendTradeText(proof.tradeText, renderedContent)
+			proof.messages = append(proof.messages, db.AutomationDeliveryMessage{Kind: "text", Content: renderedContent})
 		}
 		if strings.TrimSpace(content) == "" && strings.TrimSpace(imageURL) == "" {
 			return actionExecutionResult{sent: sent, proof: proof}, fmt.Errorf("卡密组 %d 没有可发送内容", card.ID)
@@ -109,9 +121,12 @@ func (e *automationActionExecutor) sendAPICardWithProof(ctx context.Context, tas
 		}
 		// sendErr 保存已取得卡密后向买家发送消息的结果；此时失败不能安全重放 API 请求。
 		if sendErr := e.sendText(ctx, task, result.Content); sendErr != nil {
-			return actionExecutionResult{sent: sent, proof: proof}, uncertainAction(sendErr)
+			// reviewProof 保存 API 已返回的唯一内容；即使发送结果未知也只能重发该快照，不能再次调用 API。
+			reviewProof := shipmentDeliveryProof{tradeText: result.Content, messages: []db.AutomationDeliveryMessage{{Kind: "text", Content: result.Content}}}
+			return actionExecutionResult{sent: sent, proof: proof, reviewProof: reviewProof}, uncertainAction(sendErr)
 		}
 		proof.tradeText = appendTradeText(proof.tradeText, result.Content)
+		proof.messages = append(proof.messages, db.AutomationDeliveryMessage{Kind: "text", Content: result.Content})
 		sent++
 	}
 	return actionExecutionResult{sent: sent, proof: proof}, nil
@@ -150,9 +165,12 @@ func (e *automationActionExecutor) sendDataCardWithProof(ctx context.Context, ta
 					return actionExecutionResult{sent: sent, proof: proof}, sendErr
 				}
 				// 请求已交给传输层后无法判断远端是否收到，保留消费状态并人工核对。
-				return actionExecutionResult{sent: sent, proof: proof}, uncertainAction(sendErr)
+				// reviewProof 保存已消费但发送结果未知的数据卡密，补发必须直接使用该内容而不能再次扣库存。
+				reviewProof := shipmentDeliveryProof{tradeText: renderedContent, messages: []db.AutomationDeliveryMessage{{Kind: "text", Content: renderedContent}}}
+				return actionExecutionResult{sent: sent, proof: proof, reviewProof: reviewProof}, uncertainAction(sendErr)
 			}
 			proof.tradeText = appendTradeText(proof.tradeText, renderedContent)
+			proof.messages = append(proof.messages, db.AutomationDeliveryMessage{Kind: "text", Content: renderedContent})
 		}
 		sent++
 	}

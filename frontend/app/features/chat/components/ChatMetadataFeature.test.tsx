@@ -13,7 +13,7 @@ const useChatMetadataMock = vi.mocked(useChatMetadata);
 // quickReplyFixture 是用于验证操作顺序和关闭行为的账号级快捷回复。
 const quickReplyFixture: ChatQuickReply = { id: 1, account_id: 'account-1', content: '测试话术', created_at: 1 };
 // sessionFixture 是使快捷回复发送按钮可用的当前聊天会话。
-const sessionFixture: ChatSession = { account_id: 'account-1', chat_id: 'chat-1', buyer_id: 'buyer-1', buyer_name: '买家', last_message: '', last_message_at: 1, unread_count: 0 };
+const sessionFixture: ChatSession = { account_id: 'account-1', chat_id: 'chat-1', peer_user_id: 'buyer-1', peer_name: '买家', account_role: 'seller', buyer_user_id: 'buyer-1', seller_user_id: 'self-1', last_message: '', last_message_at: 1, unread_count: 0 };
 
 /** metadataFixture 构造抽屉组件交互所需的完整元数据状态，并允许测试观测复制动作。 */
 const metadataFixture = (copyQuickReply: ChatMetadataState['copyQuickReply']): ChatMetadataState => ({
@@ -53,4 +53,17 @@ describe('ChatMetadataFeature', /* 当前回调验证快捷回复抽屉的操作
     fireEvent.pointerDown(screen.getByRole('button', { name: '抽屉外区域' }));
     expect(closeQuickReplyPanel).toHaveBeenCalledTimes(3);
   });
+
+	test('仅卖家侧已确认买家显示备注入口', /* 当前回调验证买家侧会话不会把对端卖家误当作买家记录备注。 */ () => {
+		// copyQuickReply 是本场景不触发的复制替身。
+		const copyQuickReply = vi.fn().mockResolvedValue(undefined);
+		useChatMetadataMock.mockReturnValue(metadataFixture(copyQuickReply));
+		// view 是可切换会话角色重新渲染的组件实例。
+		const view = render(<ChatMetadataFeature activeAccountID="account-1" selectedSession={sessionFixture} quickReplyPanelOpen={false} closeQuickReplyPanel={vi.fn()} sendQuickReply={vi.fn()} sending={false} accountOnline />);
+		expect(within(view.container).getByRole('button', { name: '添加用户备注' })).not.toBeNull();
+		// buyerSideSession 把当前账号设为买家，对端因此是卖家。
+		const buyerSideSession: ChatSession = { ...sessionFixture, account_role: 'buyer', buyer_user_id: 'self-1', seller_user_id: 'seller-peer', peer_user_id: 'seller-peer', peer_name: '卖家' };
+		view.rerender(<ChatMetadataFeature activeAccountID="account-1" selectedSession={buyerSideSession} quickReplyPanelOpen={false} closeQuickReplyPanel={vi.fn()} sendQuickReply={vi.fn()} sending={false} accountOnline />);
+		expect(within(view.container).queryByRole('button', { name: '添加用户备注' })).toBeNull();
+	});
 });

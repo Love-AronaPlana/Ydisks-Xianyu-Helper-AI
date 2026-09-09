@@ -166,14 +166,14 @@ func (s *Server) sendChatImage(w http.ResponseWriter, r *http.Request) {
 	accountID := strings.TrimSpace(r.FormValue("account_id"))
 	// chatID 用于本次流程后续判断的聊天ID
 	chatID := strings.TrimSpace(r.FormValue("chat_id"))
-	// buyerID 用于本次流程后续判断的买家ID
-	buyerID := strings.TrimSpace(r.FormValue("buyer_id"))
+	// peerUserID 是图片接收方的平台标识；买家侧会话中该值可以是卖家。
+	peerUserID := strings.TrimSpace(r.FormValue("peer_user_id"))
 	if !s.ownsAccount(r, accountID) {
 		writeErr(w, http.StatusForbidden, "无权操作该账号")
 		return
 	}
-	if chatID == "" || buyerID == "" {
-		writeErr(w, http.StatusBadRequest, "会话和买家不能为空")
+	if chatID == "" || peerUserID == "" {
+		writeErr(w, http.StatusBadRequest, "会话和对方用户不能为空")
 		return
 	}
 	// file、header、err 用于本次流程后续判断的file、header、err
@@ -196,8 +196,8 @@ func (s *Server) sendChatImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// session 保存已完成账号归属校验的应用层会话摘要。
-	session := chatapp.Session{AccountID: accountID, ChatID: chatID, BuyerID: buyerID,
-		BuyerName: r.FormValue("buyer_name"), BuyerAvatar: r.FormValue("buyer_avatar_url"),
+	session := chatapp.Session{AccountID: accountID, ChatID: chatID, PeerUserID: peerUserID,
+		PeerName: r.FormValue("peer_name"), PeerAvatar: r.FormValue("peer_avatar_url"),
 		ItemID: r.FormValue("item_id"), ItemTitle: r.FormValue("item_title")}
 	// sent、err 用于本次流程后续判断的sent、err
 	sent, err := s.chatApplication().SendImage(r.Context(), chatapp.ImageInput{Session: session, Filename: header.Filename, ContentType: contentType, Data: data})
@@ -286,13 +286,20 @@ func (s *Server) listChatMessages(w http.ResponseWriter, r *http.Request) {
 
 // sendChatMessageRequest 用于本次流程后续判断的send聊天消息请求
 type sendChatMessageRequest struct {
+	// AccountID 是消息所属账号标识。
 	AccountID string `json:"account_id"`
-	ChatID    string `json:"chat_id"`
-	BuyerID   string `json:"buyer_id"`
-	BuyerName string `json:"buyer_name"`
-	ItemID    string `json:"item_id"`
+	// ChatID 是目标会话标识。
+	ChatID string `json:"chat_id"`
+	// PeerUserID 是消息接收方平台标识。
+	PeerUserID string `json:"peer_user_id"`
+	// PeerName 是消息接收方展示名称。
+	PeerName string `json:"peer_name"`
+	// ItemID 是会话关联商品标识。
+	ItemID string `json:"item_id"`
+	// ItemTitle 是会话关联商品标题。
 	ItemTitle string `json:"item_title"`
-	Text      string `json:"text"`
+	// Text 是待发送文本。
+	Text string `json:"text"`
 }
 
 // sendChatMessage 封装send聊天消息业务协调。
@@ -308,14 +315,14 @@ func (s *Server) sendChatMessage(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "请求格式错误")
 		return
 	}
-	input.AccountID, input.ChatID, input.BuyerID = strings.TrimSpace(input.AccountID), strings.TrimSpace(input.ChatID), strings.TrimSpace(input.BuyerID)
+	input.AccountID, input.ChatID, input.PeerUserID = strings.TrimSpace(input.AccountID), strings.TrimSpace(input.ChatID), strings.TrimSpace(input.PeerUserID)
 	input.Text = strings.TrimSpace(input.Text)
 	if !s.ownsAccount(r, input.AccountID) {
 		writeErr(w, http.StatusForbidden, "无权操作该账号")
 		return
 	}
-	if input.ChatID == "" || input.BuyerID == "" || input.Text == "" {
-		writeErr(w, http.StatusBadRequest, "会话、买家和消息内容不能为空")
+	if input.ChatID == "" || input.PeerUserID == "" || input.Text == "" {
+		writeErr(w, http.StatusBadRequest, "会话、对方用户和消息内容不能为空")
 		return
 	}
 	if len([]rune(input.Text)) > 2000 {
@@ -323,7 +330,7 @@ func (s *Server) sendChatMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// sent、err 保存应用层发送结果及错误；应用层返回的消息不含凭证。
-	sent, err := s.chatApplication().SendText(r.Context(), chatapp.OutgoingInput{Session: chatapp.Session{AccountID: input.AccountID, ChatID: input.ChatID, BuyerID: input.BuyerID, BuyerName: input.BuyerName, ItemID: input.ItemID, ItemTitle: input.ItemTitle}, Text: input.Text})
+	sent, err := s.chatApplication().SendText(r.Context(), chatapp.OutgoingInput{Session: chatapp.Session{AccountID: input.AccountID, ChatID: input.ChatID, PeerUserID: input.PeerUserID, PeerName: input.PeerName, ItemID: input.ItemID, ItemTitle: input.ItemTitle}, Text: input.Text})
 	if err != nil {
 		if errors.Is(err, chatapp.ErrUnavailable) {
 			writeErr(w, http.StatusServiceUnavailable, "聊天服务未启用")

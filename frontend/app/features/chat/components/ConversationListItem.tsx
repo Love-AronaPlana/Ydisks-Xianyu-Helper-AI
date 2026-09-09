@@ -22,13 +22,13 @@ export interface ConversationListItemProps {
 /** ConversationListItem 将会话选择按钮与悬停删除按钮并列，避免嵌套交互元素。 */
 export const ConversationListItem: React.FC<ConversationListItemProps> = ({ session, active, formatClock, onSelect, onDelete, deleteDisabled = false }) => (
   <div className={`group relative border-b border-slate-100 transition-colors ${active ? 'bg-white shadow-chat-active' : 'hover:bg-white/80 focus-within:bg-white/80'}`}>
-    <button type="button" aria-label={`打开与${session.buyer_name || `用户 ${session.buyer_id}`}的会话`} aria-current={active ? 'true' : undefined} onClick={onSelect} className="flex w-full gap-3 p-3.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-300">
+    <button type="button" aria-label={`打开与${session.peer_name || `用户 ${session.peer_user_id}`}的会话`} aria-current={active ? 'true' : undefined} onClick={onSelect} className="flex w-full gap-3 p-3.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-300">
       <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-full bg-slate-200 text-slate-500">
-        {session.buyer_avatar_url ? <img src={session.buyer_avatar_url} alt="" className="h-full w-full object-cover" /> : <UserRound className="h-5 w-5" />}
+        {session.peer_avatar_url ? <img src={session.peer_avatar_url} alt="" className="h-full w-full object-cover" /> : <UserRound className="h-5 w-5" />}
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <span className="truncate text-sm font-extrabold text-slate-900">{session.buyer_name || `用户 ${session.buyer_id}`}</span>
+          <span className="truncate text-sm font-extrabold text-slate-900">{session.peer_name || `用户 ${session.peer_user_id}`}</span>
         </div>
         <div className="mt-1 flex items-center gap-2">
           <span className="truncate text-xs text-slate-500">{session.last_message || '暂无消息'}</span>
@@ -41,7 +41,7 @@ export const ConversationListItem: React.FC<ConversationListItemProps> = ({ sess
         {session.item_image_url && <img src={session.item_image_url} alt="" className="h-9 w-11 rounded-[4px] border border-slate-200 object-cover" />}
       </div>
     </button>
-	<button type="button" title={deleteDisabled ? "消息发送中，暂不能删除" : "删除会话"} aria-label={`删除与${session.buyer_name || `用户 ${session.buyer_id}`}的会话`} onClick={onDelete} disabled={deleteDisabled} className="conversation-delete-action pointer-events-none absolute right-3 top-3 flex h-5 w-5 items-center justify-center rounded-md border border-red-100 bg-white text-red-500 opacity-0 shadow-sm transition hover:border-red-200 hover:bg-red-50 hover:text-red-600 focus:pointer-events-auto focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-red-100 disabled:cursor-not-allowed disabled:border-slate-100 disabled:text-slate-300 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 max-sm:pointer-events-auto max-sm:opacity-100">
+	<button type="button" title={deleteDisabled ? "消息发送中，暂不能删除" : "删除会话"} aria-label={`删除与${session.peer_name || `用户 ${session.peer_user_id}`}的会话`} onClick={onDelete} disabled={deleteDisabled} className="conversation-delete-action pointer-events-none absolute right-3 top-3 flex h-5 w-5 items-center justify-center rounded-md border border-red-100 bg-white text-red-500 opacity-0 shadow-sm transition hover:border-red-200 hover:bg-red-50 hover:text-red-600 focus:pointer-events-auto focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-red-100 disabled:cursor-not-allowed disabled:border-slate-100 disabled:text-slate-300 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 max-sm:pointer-events-auto max-sm:opacity-100">
       <Trash2 className="h-3 w-3" />
     </button>
   </div>

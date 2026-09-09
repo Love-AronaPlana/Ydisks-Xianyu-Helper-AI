@@ -12,11 +12,6 @@ const orderListMocks = vi.hoisted(/* orderListMockFactory 创建订单页面共�
   setSearchText: vi.fn(),
   setPage: vi.fn(),
   loadOrders: vi.fn(),
-  openImportModal: vi.fn(),
-  closeImportModal: vi.fn(),
-  setImportFile: vi.fn(),
-  handleImportOrders: vi.fn(),
-  handleRetryImport: vi.fn(),
   syncOrders: vi.fn(),
   syncSingleOrder: vi.fn(),
   manualShipOrder: vi.fn(),
@@ -42,18 +37,6 @@ vi.mock('../hooks', /* ordersHooksMockFactory 提供订单查询与导入 Hook �
     accountName: /* accountNameMock 返回订单筛选账号名称。 */ () => '主账号 · account',
     accountNickname: /* accountNicknameMock 返回订单行账号名称。 */ () => '主账号',
     getItemNameById: /* itemNameMock 返回订单商品名称。 */ (_cookieId: string, _itemId: string, orderItemTitle?: string) => orderItemTitle || '测试商品',
-  }),
-  useOrderImport: /* useOrderImportMock 返回订单导入弹窗状态。 */ () => ({
-    showImportModal: false,
-    importFile: null,
-    setImportFile: orderListMocks.setImportFile,
-    importResult: null,
-    importing: false,
-    importError: '',
-    openImportModal: orderListMocks.openImportModal,
-    closeImportModal: orderListMocks.closeImportModal,
-    handleImportOrders: orderListMocks.handleImportOrders,
-    handleRetryImport: orderListMocks.handleRetryImport,
   }),
 }));
 
@@ -124,7 +107,7 @@ describe('OrderList 页面组合行为', /* 当前回调验证订单筛选、编
     vi.restoreAllMocks();
   });
 
-  test('筛选栏、同步和导入按钮转发页面操作', /* 当前回调验证订单页面顶部操作组合边界。 */ async () => {
+  test('筛选栏和同步保留，人工插入订单入口已移除', /* 当前回调验证订单页面顶部操作组合边界。 */ async () => {
     render(<OrderList />);
     fireEvent.click(screen.getByText('待发货筛选'));
     expect(orderListMocks.setFilter).toHaveBeenCalledWith('pending_ship');
@@ -141,8 +124,7 @@ describe('OrderList 页面组合行为', /* 当前回调验证订单筛选、编
     expect(orderListMocks.loadOrders).toHaveBeenCalled();
     expect(window.alert).toHaveBeenCalledWith('同步完成');
 
-    fireEvent.click(screen.getByText('插入订单'));
-    expect(orderListMocks.openImportModal).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText('插入订单')).toBeNull();
   });
 
   test('订单详情和编辑保存保持字段映射', /* 当前回调验证订单详情展示和编辑提交边界。 */ async () => {

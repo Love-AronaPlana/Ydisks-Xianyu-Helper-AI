@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -158,9 +159,31 @@ func (s *Service) RecordConversationPage(ctx context.Context, accountID, myID st
 		session := db.ChatSession{CookieID: accountID, ChatID: cid, BuyerID: peerID, BuyerName: peerName, BuyerAvatar: avatar,
 			ItemID: cleanNilString(ext["itemId"]), ItemTitle: cleanNilString(ext["itemTitle"]), ItemImageURL: cleanNilString(ext["itemMainPic"]), LastMessage: summary,
 			LastMessageAt: lastMessageAt, UnreadCount: unreadCount}
+		// roleRepository、roleSupported 表示生产仓储是否支持纯本地商品归属判断和角色持久化。
+		roleRepository, roleSupported := s.repository.(sessionRoleRepository)
+		if roleSupported && session.ItemID != "" && strings.TrimSpace(myID) != "" {
+			// owned、ownedErr 表示会话商品是否已存在于当前账号的本地商品表。
+			owned, ownedErr := roleRepository.ItemExists(ctx, accountID, session.ItemID)
+			if ownedErr != nil {
+				return page, ownedErr
+			}
+			if owned {
+				session.AccountRole = "seller"
+				session.BuyerUserID = peerID
+				session.SellerUserID = myID
+				session.RoleItemID = session.ItemID
+				session.RoleSource = "local_item"
+			}
+		}
 		if // err 用于本次流程后续判断的err
 		err := s.repository.UpsertSession(ctx, session); err != nil {
 			return page, err
+		}
+		if roleSupported && session.AccountRole == "seller" {
+			// roleErr 保存本地商品证据的角色写入结果；会话刚写入后必须固定该结论。
+			if roleErr := roleRepository.UpdateSessionRole(ctx, accountID, cid, session.ItemID, session.AccountRole, session.BuyerUserID, session.SellerUserID, session.RoleSource); roleErr != nil {
+				return page, roleErr
+			}
 		}
 		if // err 用于本次流程后续判断的err
 		err := s.repository.SyncSessionSummary(ctx, accountID, cid, summary, lastMessageAt, modifyTime, session.UnreadCount); err != nil {
@@ -284,12 +307,14 @@ func cleanNilString(value any) string {
 // Incoming 用于本次流程后续判断的Incoming
 type Incoming struct {
 	AccountID string
-	ChatID    string
-	BuyerID   string
-	BuyerName string
-	Text      string
-	MessageID string
-	ItemID    string
+	// AccountUserID 是从当前账号凭证快照解析出的平台用户标识，不包含 Cookie 或 Token。
+	AccountUserID string
+	ChatID        string
+	BuyerID       string
+	BuyerName     string
+	Text          string
+	MessageID     string
+	ItemID        string
 	// ObservedAt 是引擎首次接纳实时消息的 Unix 毫秒时间；零值时由聊天服务在入口处补齐。
 	ObservedAt int64
 	Raw        map[string]any
@@ -352,6 +377,19 @@ func (s *Service) RecordIncoming(ctx context.Context, in Incoming) (*db.ChatMess
 	session := db.ChatSession{CookieID: in.AccountID, ChatID: in.ChatID, BuyerID: in.BuyerID,
 		BuyerName: in.BuyerName, BuyerAvatar: extractString(in.Raw, "avatar", "avatarUrl", "senderAvatar"),
 		ItemID: in.ItemID, ItemTitle: extractString(in.Raw, "itemTitle", "title"), ItemImageURL: extractString(in.Raw, "itemMainPic", "itemImage", "itemImageUrl")}
+	// roleRepository 是可选的本地角色仓储；生产实现具备该能力，轻量测试替身可保持 unknown。
+	roleRepository, roleSupported := s.repository.(sessionRoleRepository)
+	if roleSupported && strings.TrimSpace(in.ItemID) != "" && strings.TrimSpace(in.AccountUserID) != "" && strings.TrimSpace(in.BuyerID) != "" {
+		// owned、ownedErr 表示当前商品是否存在于账号的本地有效商品集合。
+		owned, ownedErr := roleRepository.ItemExists(ctx, in.AccountID, in.ItemID)
+		if ownedErr == nil && owned {
+			session.AccountRole = "seller"
+			session.BuyerUserID = in.BuyerID
+			session.SellerUserID = in.AccountUserID
+			session.RoleItemID = in.ItemID
+			session.RoleSource = "local_item"
+		}
+	}
 	// messageType、content 用于本次流程后续判断的消息Type、content
 	messageType, content := extractMessageContent(in.Raw, in.Text)
 	// mediaDuration 保存平台语音载荷的秒级时长；非语音或缺失时保持零值。
@@ -369,10 +407,22 @@ func (s *Service) RecordIncoming(ctx context.Context, in Incoming) (*db.ChatMess
 		SenderName: in.BuyerName, MessageType: messageType, Content: content, MediaDuration: mediaDuration, Status: "received", SentAt: sentAt, ObservedAt: observedAt}
 	// stored、inserted、err 保存落库消息、首次插入标识及错误；系统消息永不增加用户红点。
 	stored, inserted, err := s.repository.SaveMessage(ctx, session, message, messageType != "system")
-	if err == nil && inserted {
+	if err != nil {
+		return stored, inserted, err
+	}
+	// roleErr 保存消息落库之后的角色持久化错误；它只能阻止自动回复，不能阻止已落库消息广播。
+	var roleErr error
+	if session.AccountRole == "seller" && roleSupported {
+		// roleErr 保存本地商品证据的会话角色写入结果；消息已经安全落库时仍向调用方报告数据库失败。
+		roleErr = roleRepository.UpdateSessionRole(ctx, in.AccountID, in.ChatID, in.ItemID, session.AccountRole, session.BuyerUserID, session.SellerUserID, session.RoleSource)
+		if errors.Is(roleErr, db.ErrNotFound) {
+			roleErr = nil
+		}
+	}
+	if inserted {
 		s.PublishContext(ctx, in.AccountID, Event{Type: "message.created", Message: stored, Session: &session})
 	}
-	return stored, inserted, err
+	return stored, inserted, roleErr
 }
 
 // RecordHistoryPage normalizes official IM history and stores it idempotently.

@@ -116,7 +116,11 @@ func TestAutomationDeliveryProofIsEncryptedAndRestored(t *testing.T) {
 		t.Fatal(err)
 	}
 	// proof 保存不会写入延迟任务或日志的确认发货凭证。
-	proof := AutomationDeliveryProof{TradeText: "TEST-CARD-CONTENT", PicList: []string{"https://example.invalid/card.png"}}
+	proof := AutomationDeliveryProof{
+		TradeText: "TEST-CARD-CONTENT",
+		PicList:   []string{"https://example.invalid/card.png"},
+		Messages:  []AutomationDeliveryMessage{{Kind: "text", Content: "TEST-CARD-CONTENT"}, {Kind: "image", Content: "https://example.invalid/card.png"}},
+	}
 	// err 保存凭证和动作游标原子推进错误。
 	if err := store.Automation.AdvanceRunAction(ctx, AutomationRunActionAdvance{RunID: runID, Attempt: run.AttemptCount, Cursor: 0, SentDelta: 1, DeliveryProof: &proof}); err != nil {
 		t.Fatal(err)
@@ -132,7 +136,7 @@ func TestAutomationDeliveryProofIsEncryptedAndRestored(t *testing.T) {
 	}
 	// restored、err 保存重读后的凭证，模拟延迟任务或服务重启恢复。
 	restored, err := store.Automation.GetRun(ctx, runID)
-	if err != nil || restored.DeliveryProof.TradeText != proof.TradeText || len(restored.DeliveryProof.PicList) != 1 {
+	if err != nil || restored.DeliveryProof.TradeText != proof.TradeText || len(restored.DeliveryProof.PicList) != 1 || len(restored.DeliveryProof.Messages) != 2 || restored.DeliveryProof.Messages[0].Content != "TEST-CARD-CONTENT" {
 		t.Fatalf("restored proof mismatch: err=%v", err)
 	}
 }
@@ -1049,7 +1053,7 @@ func TestAutomationQuarantinePreservesDeliveryProofUntilCancel(t *testing.T) {
 	}
 	// quarantined、readErr 保存隔离后的运行和凭证，确认人工处理期间凭证仍可恢复。
 	quarantined, readErr := store.Automation.GetRun(ctx, runID)
-	if readErr != nil || quarantined.Status != "needs_review" || quarantined.DeliveryProof.TradeText != proof.TradeText || len(quarantined.DeliveryProof.PicList) != 1 {
+	if readErr != nil || quarantined.Status != "needs_review" || !quarantined.ActionStarted || quarantined.DeliveryProof.TradeText != proof.TradeText || len(quarantined.DeliveryProof.PicList) != 1 {
 		t.Fatalf("隔离后凭证异常: run=%+v err=%v", quarantined, readErr)
 	}
 	// cancelResolutionErr 保存确认发货未知运行的取消处理错误。

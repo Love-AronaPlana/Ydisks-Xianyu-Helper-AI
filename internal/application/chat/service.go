@@ -70,12 +70,22 @@ type Session struct {
 	AccountID string
 	// ChatID 是平台聊天会话标识。
 	ChatID string
-	// BuyerID 是买家平台标识。
-	BuyerID string
-	// BuyerName 是买家展示名称。
-	BuyerName string
-	// BuyerAvatar 是买家头像地址。
-	BuyerAvatar string
+	// PeerUserID 是当前账号之外的会话对端平台标识，可能是买家或卖家。
+	PeerUserID string
+	// PeerName 是会话对端展示名称。
+	PeerName string
+	// PeerAvatar 是会话对端头像地址。
+	PeerAvatar string
+	// AccountRole 是当前账号在 RoleItemID 对应商品会话中的角色。
+	AccountRole string
+	// BuyerUserID 是已确认的买家平台标识；角色未知时为空。
+	BuyerUserID string
+	// SellerUserID 是已确认的卖家平台标识；角色未知时为空。
+	SellerUserID string
+	// RoleItemID 是角色结论绑定的商品标识。
+	RoleItemID string
+	// RoleSource 是角色结论的非敏感证据来源。
+	RoleSource string
 	// ItemID 是会话关联商品标识。
 	ItemID string
 	// ItemTitle 是会话关联商品标题。
@@ -92,16 +102,16 @@ type Session struct {
 
 // Identity 是平台身份查询返回的非敏感展示信息。
 type Identity struct {
-	// BuyerName 是平台返回的买家展示名称。
-	BuyerName string
-	// BuyerAvatar 是平台返回的买家头像地址。
-	BuyerAvatar string
+	// PeerName 是平台返回的会话对端展示名称。
+	PeerName string
+	// PeerAvatar 是平台返回的会话对端头像地址。
+	PeerAvatar string
 }
 
 // IdentityResolver 定义聊天应用获取平台会话展示身份的最小能力。
 // 凭证读取、平台请求和凭证刷新均由适配器内部完成，应用层只接收展示字段。
 type IdentityResolver interface {
-	// Resolve 根据账号和聊天会话查询非敏感的买家展示身份。
+	// Resolve 根据账号和聊天会话查询非敏感的对端展示身份。
 	Resolve(ctx context.Context, accountID, chatID string) (Identity, error)
 }
 
@@ -202,8 +212,8 @@ type SessionRepository interface {
 	Repository
 	// DeleteEmptySessions 删除指定账号中没有有效消息的空会话壳。
 	DeleteEmptySessions(ctx context.Context, accountID string) error
-	// UpdateSessionIdentity 更新会话的买家展示名称和头像。
-	UpdateSessionIdentity(ctx context.Context, accountID, chatID, buyerID, buyerName, buyerAvatar string) error
+	// UpdateSessionIdentity 更新会话对端的展示名称和头像。
+	UpdateSessionIdentity(ctx context.Context, accountID, chatID, peerUserID, peerName, peerAvatar string) error
 	// ExistsOwned 判断账号是否归属于指定用户，只返回存在性，不返回敏感字段。
 	ExistsOwned(ctx context.Context, userID int64, accountID string) (bool, error)
 	// MarkRead 将指定用户拥有的会话未读数归零。
@@ -567,26 +577,26 @@ func (s *Service) ResolveSessionIdentity(ctx context.Context, session Session) (
 	}
 	// resolveErr 保存平台身份查询失败，供 HTTP 层决定是否触发会话恢复。
 	var resolveErr error
-	if session.BuyerID != "1400" && s.identityResolver != nil {
+	if session.PeerUserID != "1400" && s.identityResolver != nil {
 		// identity 和 err 保存平台适配器返回的非敏感身份及调用错误。
 		identity, err := s.identityResolver.Resolve(ctx, session.AccountID, session.ChatID)
 		if err != nil {
 			resolveErr = err
 		} else {
-			// name 是去除空白后的平台买家名称。
-			if name := strings.TrimSpace(identity.BuyerName); name != "" {
-				session.BuyerName = name
+			// name 是去除空白后的平台对端名称。
+			if name := strings.TrimSpace(identity.PeerName); name != "" {
+				session.PeerName = name
 			}
-			// avatar 是去除空白后的平台买家头像地址。
-			if avatar := strings.TrimSpace(identity.BuyerAvatar); avatar != "" {
-				session.BuyerAvatar = avatar
+			// avatar 是去除空白后的平台对端头像地址。
+			if avatar := strings.TrimSpace(identity.PeerAvatar); avatar != "" {
+				session.PeerAvatar = avatar
 			}
 		}
 	}
 	// repository 保存会话身份更新所需的窄端口。
 	if repository, ok := s.repository.(SessionRepository); ok {
 		// _ 表示身份缓存更新失败不应覆盖旧 handler 的展示容错语义。
-		_ = repository.UpdateSessionIdentity(ctx, session.AccountID, session.ChatID, session.BuyerID, session.BuyerName, session.BuyerAvatar)
+		_ = repository.UpdateSessionIdentity(ctx, session.AccountID, session.ChatID, session.PeerUserID, session.PeerName, session.PeerAvatar)
 	}
 	return session, resolveErr
 }
@@ -635,7 +645,7 @@ func (s *Service) RefreshSessionIdentities(ctx context.Context, accountID string
 	queueDone := false
 	// index 表示当前排队会话在结果切片中的下标。
 	for index := range result {
-		if result[index].BuyerID == "1400" {
+		if result[index].PeerUserID == "1400" {
 			continue
 		}
 		select {

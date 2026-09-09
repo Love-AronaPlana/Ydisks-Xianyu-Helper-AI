@@ -92,10 +92,12 @@ func (e *automationActionExecutor) sendTemplate(ctx context.Context, task Task, 
 				return actionExecutionResult{}, sendErr
 			}
 			result.reviewProof.tradeText = appendTradeText(result.reviewProof.tradeText, text)
+			result.reviewProof.messages = append(result.reviewProof.messages, db.AutomationDeliveryMessage{Kind: "text", Content: text})
 			return result, uncertainAction(sendErr)
 		}
 		result.sent++
 		result.proof.tradeText = appendTradeText(result.proof.tradeText, text)
+		result.proof.messages = append(result.proof.messages, db.AutomationDeliveryMessage{Kind: "text", Content: text})
 	}
 	if result.sent == 0 {
 		// notSentErr 表示模板渲染后没有任何可确认发送的消息。

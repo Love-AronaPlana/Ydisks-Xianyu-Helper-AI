@@ -11,7 +11,7 @@ OrderRefreshResponse,
 OrderSingleRefreshResponse,
 PaginatedResponse
 } from './models';
-import { contractClient, contractMultipartBody, runContractRequest } from '../../../shared/api-contract/client';
+import { contractClient,  runContractRequest } from '../../../shared/api-contract/client';
 import { type RequestControlOptions } from '../../../shared/http/client';
 import { collectionFrom, objectFrom } from '../../../shared/http/contract';
 export type * from './models';
@@ -297,26 +297,6 @@ export const manualShipOrder = async (orderIds: string[], shipMode: 'status_only
       signal,
     }));
     return normalizeOrderBatchResponse(response);
-}
-
-// importOrders 导入订单。
-export const importOrders = async (data: Partial<Order>[] | FormData, options?: RequestControlOptions): Promise<OrderBatchResponse> => {
-	// isFormData 是否为表单请求，用于当前 API 处理流程。
-	const isFormData = data instanceof FormData;
-	if (isFormData) {
-		// response 是生成契约约束的文件导入 transport DTO。
-		const response = await runContractRequest(/* signal 是本次订单表格导入请求的超时与取消控制信号。 */ signal => contractClient.POST('/api/v1/orders/import', {
-			body: contractMultipartBody(data),
-			signal,
-		}), options);
-		return normalizeOrderBatchResponse(response);
-	}
-	// response 是生成契约约束的 JSON 导入 transport DTO。
-	const response = await runContractRequest(/* signal 是本次订单 JSON 导入请求的超时与取消控制信号。 */ signal => contractClient.POST('/api/v1/orders/import', {
-		body: data,
-		signal,
-	}), options);
-	return normalizeOrderBatchResponse(response);
 }
 
 // normalizeOrderBatchResponse 将生成 transport DTO 转为兼容历史订单页面的受限结果状态。

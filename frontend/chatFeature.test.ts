@@ -35,7 +35,7 @@ describe('online chat UI contract', () => {
 		const chat = source('app/features/chat/pages/Chat.tsx'); /* chat 表示chat。 */
 		const conversation = source('app/features/chat/components/ConversationListItem.tsx'); /* conversation 保存从聊天页拆出的会话行展示源码。 */
 		const chatHook = source('app/features/chat/hooks.ts'); /* chatHook 表示chatHook。 */
-		expect(chat).toContain('selectedSession.buyer_avatar_url');
+	expect(chat).toContain('selectedSession.peer_avatar_url');
 		expect(chat).toContain('activeAccount?.avatar_url');
 		expect(chat).toContain("message.message_type === 'image'");
 		expect(chat).toContain("message.message_type === 'video'");

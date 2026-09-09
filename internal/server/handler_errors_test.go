@@ -176,7 +176,7 @@ func TestAdminEndpointRejectsNonAdmin(t *testing.T) {
 	}
 }
 
-// TestOrderImportEmptyBody 空导入内容应 400。
+// TestOrderImportEmptyBody 空请求也返回永久停用，不能绕过退役入口。
 func TestOrderImportEmptyBody(t *testing.T) {
 	// srv、cleanup 用于本次流程后续判断的srv、cleanup
 	srv, _, cleanup := newTestServer(t)
@@ -193,8 +193,8 @@ func TestOrderImportEmptyBody(t *testing.T) {
 	// rec 用于本次流程后续判断的rec
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("空导入应 400，got %d body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("已移除导入应 501，got %d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

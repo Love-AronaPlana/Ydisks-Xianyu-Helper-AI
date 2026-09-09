@@ -479,7 +479,7 @@ func TestImportOrdersRejectsInvalidAmountWithoutWritingOrder(t *testing.T) {
 	// rec 用于本次流程后续判断的rec
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "普通格式") {
+	if rec.Code != http.StatusNotImplemented || !strings.Contains(rec.Body.String(), "人工插入订单功能已移除") {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	if // err 用于本次流程后续判断的err
@@ -506,7 +506,7 @@ func TestImportOrdersRejectsUnknownStatusWithoutWritingOrder(t *testing.T) {
 	// rec 用于本次流程后续判断的rec
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "不支持的订单状态") {
+	if rec.Code != http.StatusNotImplemented || !strings.Contains(rec.Body.String(), "人工插入订单功能已移除") {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	if // err 用于本次流程后续判断的err
@@ -537,7 +537,7 @@ func TestImportOrdersRollsBackOrderWhenItemWriteFails(t *testing.T) {
 	// rec 用于本次流程后续判断的rec
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "补全商品信息失败") {
+	if rec.Code != http.StatusNotImplemented || !strings.Contains(rec.Body.String(), "人工插入订单功能已移除") {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	if // err 用于本次流程后续判断的err

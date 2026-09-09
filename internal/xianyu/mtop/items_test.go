@@ -93,7 +93,7 @@ func TestFetchItemsPageMissingUnbCookie(t *testing.T) {
 func TestFetchItemsPageEmptyCardList(t *testing.T) {
 	// server 用于本次流程后续判断的server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"ret":["SUCCESS::调用成功"],"data":{}}`)
+		fmt.Fprint(w, `{"ret":["SUCCESS::调用成功"],"data":{"cardList":[]}}`)
 	}))
 	defer server.Close()
 
@@ -178,7 +178,7 @@ func TestFetchItemsPageParseFailure(t *testing.T) {
 func TestFetchItemsPageDefaultsInvalidPage(t *testing.T) {
 	// server 用于本次流程后续判断的server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"ret":["SUCCESS::调用成功"],"data":{}}`)
+		fmt.Fprint(w, `{"ret":["SUCCESS::调用成功"],"data":{"cardList":[]}}`)
 	}))
 	defer server.Close()
 
@@ -306,17 +306,56 @@ func TestFetchAllItemsUsesRemotePageCountWhenPageIsShort(t *testing.T) {
 	}
 }
 
+// TestFetchAllItemsAutoPlaceholderDoesNotTruncate 验证平台占位卡不会让未知总页数的商品同步提前结束。
+func TestFetchAllItemsAutoPlaceholderDoesNotTruncate(t *testing.T) {
+	// pageReqs 记录商品列表实际请求页数，证明补齐只沿既有分页继续一次。
+	var pageReqs atomic.Int32
+	// server 模拟首页含占位卡、第二页为短页的商品列表接口。
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// page 是本次请求对应的平台页码，由调用次数稳定驱动测试响应。
+		page := pageReqs.Add(1)
+		if page == 1 {
+			fmt.Fprint(w, `{"ret":["SUCCESS::调用成功"],"data":{"cardList":[
+			  {"cardData":{"title":"平台占位卡","detailParams":{"itemId":"auto_guide"}}},
+			  {"cardData":{"title":"商品一","detailParams":{"itemId":"i1"}}}
+			]}}`)
+			return
+		}
+		fmt.Fprint(w, `{"ret":["SUCCESS::调用成功"],"data":{"cardList":[
+		  {"cardData":{"title":"商品二","detailParams":{"itemId":"i2"}}}
+		]}}`)
+	}))
+	defer server.Close()
+
+	// transport 把签名后的平台请求改写到本地测试服务，不访问真实闲鱼。
+	transport := &rewriteTransport{base: server.Client().Transport, target: server.URL}
+	// client 使用本地 HTTP 夹具执行真实分页和过滤逻辑。
+	client := &ClientImpl{HTTPClient: &http.Client{Transport: transport, Timeout: 5 * time.Second}}
+	// result、err 是两页完整同步结果及其错误。
+	result, err := client.FetchAllItems(context.Background(), consignCookies, 2, 3)
+	if err != nil {
+		t.Fatalf("含占位卡的完整分页不应失败: %v", err)
+	}
+	if pageReqs.Load() != 2 {
+		t.Fatalf("商品分页请求数=%d want 2", pageReqs.Load())
+	}
+	if len(result.Items) != 2 || result.Items[0].ID != "i1" || result.Items[1].ID != "i2" {
+		t.Fatalf("占位卡过滤后的商品全集=%+v", result.Items)
+	}
+}
+
 // TestFetchAllItemsMaxPagesCap: maxPages 限制最大页数。
 func TestFetchAllItemsMaxPagesCap(t *testing.T) {
 	// pageReqs 用于本次流程后续判断的页码Reqs
 	var pageReqs atomic.Int32
 	// server 用于本次流程后续判断的server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		pageReqs.Add(1)
+		// page 是当前夹具请求页，保证达到预算前不会因重复商品提前失败。
+		page := pageReqs.Add(1)
 		// 每页满（pageSize=1），但 maxPages=2 应只取 2 页
-		fmt.Fprint(w, `{"ret":["SUCCESS::调用成功"],"data":{"cardList":[
-		  {"cardData":{"title":"x","detailParams":{"itemId":"i1"}}}
-		]}}`)
+		fmt.Fprintf(w, `{"ret":["SUCCESS::调用成功"],"data":{"cardList":[
+		  {"cardData":{"title":"x","detailParams":{"itemId":"i%d"}}}
+		 ]}}`, page)
 	}))
 	defer server.Close()
 
@@ -329,11 +368,8 @@ func TestFetchAllItemsMaxPagesCap(t *testing.T) {
 	defer cancel()
 	// res、err 用于本次流程后续判断的res、err
 	res, err := client.FetchAllItems(ctx, consignCookies, 1, 2)
-	if err != nil {
-		t.Fatalf("err=%v", err)
-	}
-	if len(res.Items) != 2 {
-		t.Fatalf("items=%d want 2", len(res.Items))
+	if err == nil || res != nil || !strings.Contains(err.Error(), "页数上限") {
+		t.Fatalf("不完整分页不得返回可同步全集: result=%v err=%v", res, err)
 	}
 	if pageReqs.Load() != 2 {
 		t.Fatalf("pageReqs=%d want 2", pageReqs.Load())
@@ -347,7 +383,7 @@ func TestFetchAllItemsEmptyFirstPage(t *testing.T) {
 	// server 用于本次流程后续判断的server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		pageReqs.Add(1)
-		fmt.Fprint(w, `{"ret":["SUCCESS::调用成功"],"data":{}}`)
+		fmt.Fprint(w, `{"ret":["SUCCESS::调用成功"],"data":{"cardList":[]}}`)
 	}))
 	defer server.Close()
 
@@ -372,7 +408,7 @@ func TestFetchAllItemsEmptyFirstPage(t *testing.T) {
 func TestFetchAllItemsDefaultPageSize(t *testing.T) {
 	// server 用于本次流程后续判断的server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"ret":["SUCCESS::调用成功"],"data":{}}`)
+		fmt.Fprint(w, `{"ret":["SUCCESS::调用成功"],"data":{"cardList":[]}}`)
 	}))
 	defer server.Close()
 

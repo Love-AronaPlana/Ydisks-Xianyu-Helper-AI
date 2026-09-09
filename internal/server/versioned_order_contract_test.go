@@ -217,9 +217,9 @@ func TestVersionedOrderRefreshAndBatchRoutesPreserveLegacyContracts(t *testing.T
 	// importRecorder 是捕获版本化导入响应的记录器。
 	importRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(importRecorder, importReq)
-	assertOpenAPISuccessResponse(t, importReq, importRecorder)
+	assertOpenAPIExpectedStatusResponse(t, importReq, importRecorder, http.StatusNotImplemented)
 
-	// legacyImportReq 是验证旧导入入口仍可用的请求。
+	// legacyImportReq 是验证旧导入入口也已永久停用的请求。
 	legacyImportReq := httptest.NewRequest(http.MethodPost, "/api/orders/import", strings.NewReader(`[]`))
 	legacyImportReq.AddCookie(sessionCookie)
 	// legacyImportRecorder 是捕获旧导入响应的记录器。

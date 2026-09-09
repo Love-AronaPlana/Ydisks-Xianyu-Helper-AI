@@ -257,7 +257,9 @@ func TestCenterDoesNotRequestAPICardBeforeWebSocketReady(t *testing.T) {
 	// ruleErr 是创建 API 卡密自动发货规则的数据库错误。
 	if _, ruleErr := store.Automation.Create(ctx, db.AutomationRuleInput{
 		UserID: admin.ID, CookieID: "cid", Name: "api-before-websocket", TriggerType: TriggerOrderPaid, Enabled: true,
-		Actions: []db.AutomationActionInput{{ActionType: ActionSendCard, CardID: cardID, DeliveryCount: 1, Enabled: true}},
+		// 通用夹具明确确认全部商品，继续覆盖连接未就绪时禁止调用卡密 API 的边界。
+		ConfigJSON: `{"allow_all_items":true}`,
+		Actions:    []db.AutomationActionInput{{ActionType: ActionSendCard, CardID: cardID, DeliveryCount: 1, Enabled: true}},
 	}); ruleErr != nil {
 		t.Fatal(ruleErr)
 	}
@@ -407,6 +409,60 @@ func TestCardDefinitelyNotSentIsRetriedAndDataInventoryRestored(t *testing.T) {
 				t.Fatalf("连接恢复后应发送一次卡密，got %v", sender.texts)
 			}
 		})
+	}
+}
+
+// TestBuyerReviewedGiftPersistsConsumedCardOnUncertainEcho 验证评价赠品在 WebSocket 回显超时后保存已消费卡密原文，
+// 后续处理只能重放该快照，不能再次扣减库存或重新调用卡密来源。
+func TestBuyerReviewedGiftPersistsConsumedCardOnUncertainEcho(t *testing.T) {
+	// store、cleanup 保存评价赠品回归测试使用的数据库及清理函数。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	// ctx 保存本测试数据库和自动化执行共用的上下文。
+	ctx := context.Background()
+	// admin 保存卡密组和评价规则所属管理员。
+	admin, adminErr := store.Users.GetByUsername(ctx, "admin")
+	if adminErr != nil {
+		t.Fatal(adminErr)
+	}
+	// cardID 保存只含一条库存卡密的赠品组标识。
+	cardID, cardErr := store.Cards.Create(ctx, &db.CardFull{Name: "review-data-gift", Type: "data", DataContent: "REVIEW-GIFT-CODE", Enabled: true, UserID: admin.ID})
+	if cardErr != nil {
+		t.Fatal(cardErr)
+	}
+	// ruleID 保存评价后发送赠品规则标识。
+	ruleID, ruleErr := store.Automation.Create(ctx, db.AutomationRuleInput{
+		UserID: admin.ID, CookieID: "cid", ItemID: "review-item", Name: "评价赠品快照", TriggerType: TriggerBuyerReviewed, Enabled: true,
+		Actions: []db.AutomationActionInput{{ActionType: ActionSendCard, CardID: cardID, DeliveryCount: 1, Enabled: true}},
+	})
+	if ruleErr != nil {
+		t.Fatal(ruleErr)
+	}
+	// sender 模拟消息已经写入 WebSocket、但等待卖家自身回显超时的结果不确定场景。
+	sender := &testSender{err: errors.New("等待卖家自身 WebSocket 回显超时")}
+	// center 使用真实运行协调器执行评价赠品规则，确保快照经过生产持久化路径。
+	center := New(store, testSenderProvider{sender: sender}, nil)
+	// task 保存买家评价事件携带的订单、商品和会话事实。
+	task := Task{Source: "ws", AccountID: "cid", TriggerType: TriggerBuyerReviewed, OrderID: "review-proof-order", ItemID: "review-item", ChatID: "chat", BuyerID: "buyer", Quantity: "1"}
+	// runErr 保存预期的人工核对错误；该错误不能导致库存恢复后再次领卡。
+	runErr := center.HandleTask(ctx, task)
+	if !errors.Is(runErr, errAutomationNeedsReview) {
+		t.Fatalf("评价赠品回显超时应进入人工核对: %v", runErr)
+	}
+	// run、readErr 保存按规则及事件幂等键读取到的运行与读取错误。
+	run, readErr := store.Automation.GetRunByRuleAndTrigger(ctx, ruleID, buildTriggerKey(task))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if run.Status != "needs_review" || !run.ActionStarted || len(run.DeliveryProof.Messages) != 1 || run.DeliveryProof.Messages[0].Kind != "text" || run.DeliveryProof.Messages[0].Content != "REVIEW-GIFT-CODE" {
+		t.Fatalf("评价赠品快照异常: run=%+v", run)
+	}
+	// inventory 保存发送结果不确定后的剩余库存；已取出的唯一卡密不得回库后被二次扣减。
+	var inventory string
+	// inventoryErr 保存读取卡密库存失败的数据库错误。
+	inventoryErr := store.DB.QueryRowContext(ctx, `SELECT data_content FROM cards WHERE id=?`, cardID).Scan(&inventory)
+	if inventoryErr != nil || strings.TrimSpace(inventory) != "" {
+		t.Fatalf("结果不确定的评价赠品不得恢复库存: inventory=%q err=%v", inventory, inventoryErr)
 	}
 }
 
@@ -1333,6 +1389,18 @@ func TestCenterOrderPaidSendsCardBeforeConfirmShipment(t *testing.T) {
 		t.Fatalf("HandleTask: %v", err)
 	}
 
+	// modernTask 是 issue #38 的新版付款卡片，残留未付款提醒不能覆盖付款正文，也不能产生重复发货。
+	modernTask := ExtractTaskFromWS("cid", "unb=123; _m_h5_tk=tk_1;", mustMap(t, `{"1":"new-message","2":"chat-1@goofish","3":1,"4":{"reminderContent":"[已付款，待发货]","redReminder":"等待买家付款","bizTag":"{\"taskName\":\"已拍下_未付款_卖家\"}","extJson":"{\"updateKey\":\"chat-1:order-seq:10:PAID:26\"}","reminderUrl":"fleamarket://message_chat?itemId=item-1&peerUserId=buyer-1"}}`))
+	if modernTask == nil || modernTask.TriggerType != TriggerOrderPaid {
+		t.Fatal("新版付款卡片未识别")
+	}
+	// replay 是平台重复推送的序号，重复事件不得再次发卡或确认发货。
+	for replay := 0; replay < 2; replay++ {
+		if replayErr := center.HandleTask(ctx, *modernTask); replayErr != nil { // replayErr 是重复投递的处理结果。
+			t.Fatal(replayErr)
+		}
+	}
+
 	// want 用于本次流程后续判断的want
 	want := []string{"send:CARD-1", "confirm"}
 	if len(events) != len(want) {
@@ -1575,11 +1643,177 @@ func TestManualFullDeliveryIsImmediateIdempotentAndForcesConfirmation(t *testing
 		t.Fatalf("确认发货应携带已发送的卡密文本: %q", mtopMock.consignTradeTextIn)
 	}
 	if // err 用于本次流程后续判断的err
-	_, err := center.ManualFullDelivery(ctx, order); err == nil || !strings.Contains(err.Error(), "执行过") {
+	_, err := center.ManualFullDelivery(ctx, order); err == nil || !strings.Contains(err.Error(), "已完成完整发货") {
 		t.Fatalf("duplicate manual delivery should be rejected: %v", err)
 	}
 	if len(sender.texts) != 1 || mtopMock.consignCalls != 1 {
 		t.Fatalf("duplicate request caused side effects: texts=%v consign=%d", sender.texts, mtopMock.consignCalls)
+	}
+}
+
+// TestManualFullDeliveryBypassesEmptyAutomaticRunAfterOfficialShipment 验证闲鱼官方已确认但自动运行未发送内容时，
+// 人工完整发货使用独立幂等键仍会向买家发送卡密，并把平台“已发货”作为幂等成功处理。
+func TestManualFullDeliveryBypassesEmptyAutomaticRunAfterOfficialShipment(t *testing.T) {
+	// ctx、store、center、sender、mtopMock、order、cleanup 保存可观察人工发货副作用的完整夹具。
+	ctx, store, center, sender, mtopMock, order, cleanup := newManualDeliveryFixture(t, "official-shipped-order")
+	defer cleanup()
+	// ruleID、ruleErr 保存当前商品付款发货规则标识，供构造历史自动运行使用。
+	var ruleID int64
+	// ruleErr 保存读取付款发货规则标识失败的数据库错误。
+	ruleErr := store.DB.QueryRowContext(ctx, `SELECT id FROM automation_rules WHERE cookie_id=? AND item_id=? AND trigger_type=?`, order.CookieID, order.ItemID, TriggerOrderPaid).Scan(&ruleID)
+	if ruleErr != nil {
+		t.Fatal(ruleErr)
+	}
+	// automaticTask 保存历史自动付款事件；它没有发送内容便失败，不应阻断人工补发。
+	automaticTask := Task{AccountID: order.CookieID, TriggerType: TriggerOrderPaid, OrderID: order.OrderID}
+	// automaticRunID、started、startErr 保存历史自动运行的创建结果。
+	automaticRunID, started, startErr := store.Automation.TryStartRun(ctx, db.AutomationRun{
+		RuleID: ruleID, CookieID: order.CookieID, ItemID: order.ItemID, OrderID: order.OrderID,
+		TriggerType: TriggerOrderPaid, TriggerKey: buildTriggerKey(automaticTask), LeaseExpiresAt: time.Now().Add(time.Minute).Unix(),
+	})
+	if startErr != nil || !started {
+		t.Fatalf("创建空自动运行失败: id=%d started=%v err=%v", automaticRunID, started, startErr)
+	}
+	// finishErr 保存将历史自动运行收口为零发送失败的结果；该记录模拟此前平台状态已确认但买家内容未发送。
+	finishErr := store.Automation.FinishRun(ctx, automaticRunID, 1, "failed", 0, "发送器尚未就绪")
+	if finishErr != nil {
+		t.Fatal(finishErr)
+	}
+	// consignOk、consignRet 模拟闲鱼官方已经确认状态后的稳定幂等返回。
+	mtopMock.consignOk = false
+	mtopMock.consignRet = []string{"FAIL_BIZ_ORDER_ALREADY_DELIVERY"}
+	// sent、deliveryErr 保存人工补发发送数量和最终业务结果。
+	sent, deliveryErr := center.ManualFullDelivery(ctx, order)
+	if deliveryErr != nil || sent != 1 || len(sender.texts) != 1 || sender.texts[0] != "MANUAL-CARD" || mtopMock.consignCalls != 1 {
+		t.Fatalf("官方已确认后的人工补发异常: sent=%d texts=%v consign=%d err=%v", sent, sender.texts, mtopMock.consignCalls, deliveryErr)
+	}
+}
+
+// TestManualFullDeliveryBypassesLegacyFalseSuccessWithoutProof 验证 v1.0.10 仅完成 WebSocket 写入便记成功、
+// 且确认发货后没有保留内容快照的历史运行不会继续阻断人工完整发货。
+func TestManualFullDeliveryBypassesLegacyFalseSuccessWithoutProof(t *testing.T) {
+	// ctx、store、center、sender、mtopMock、order、cleanup 保存旧版假成功回归场景的完整夹具。
+	ctx, store, center, sender, mtopMock, order, cleanup := newManualDeliveryFixture(t, "legacy-false-success-order")
+	defer cleanup()
+	// ruleID 保存当前商品付款发货规则标识，用于构造 v1.0.10 留下的自动运行。
+	var ruleID int64
+	// ruleErr 保存读取付款发货规则标识失败的数据库错误。
+	ruleErr := store.DB.QueryRowContext(ctx, `SELECT id FROM automation_rules WHERE cookie_id=? AND item_id=? AND trigger_type=?`, order.CookieID, order.ItemID, TriggerOrderPaid).Scan(&ruleID)
+	if ruleErr != nil {
+		t.Fatal(ruleErr)
+	}
+	// legacyTask 保存旧版自动付款事件；其幂等键与当前人工完整发货相互隔离。
+	legacyTask := Task{AccountID: order.CookieID, TriggerType: TriggerOrderPaid, OrderID: order.OrderID}
+	// legacyRunID、started、startErr 保存旧版运行创建结果。
+	legacyRunID, started, startErr := store.Automation.TryStartRun(ctx, db.AutomationRun{
+		RuleID: ruleID, CookieID: order.CookieID, ItemID: order.ItemID, OrderID: order.OrderID,
+		TriggerType: TriggerOrderPaid, TriggerKey: buildTriggerKey(legacyTask), LeaseExpiresAt: time.Now().Add(time.Minute).Unix(),
+	})
+	if startErr != nil || !started {
+		t.Fatalf("创建旧版自动运行失败: id=%d started=%v err=%v", legacyRunID, started, startErr)
+	}
+	// finishErr 模拟旧版把一次未验证回显的写入记为成功，同时没有留下可证明买家收货的快照。
+	finishErr := store.Automation.FinishRun(ctx, legacyRunID, 1, "success", 1, "")
+	if finishErr != nil {
+		t.Fatal(finishErr)
+	}
+	// consignOk、consignRet 模拟官方订单状态已经发货；人工流程仍应发送内容并把该响应视为幂等成功。
+	mtopMock.consignOk = false
+	mtopMock.consignRet = []string{"FAIL_BIZ_ORDER_ALREADY_DELIVERY"}
+	// sent、deliveryErr 保存人工完整发货结果。
+	sent, deliveryErr := center.ManualFullDelivery(ctx, order)
+	if deliveryErr != nil || sent != 1 || len(sender.texts) != 1 || sender.texts[0] != "MANUAL-CARD" || mtopMock.consignCalls != 1 {
+		t.Fatalf("旧版假成功后的人工发货异常: sent=%d texts=%v consign=%d err=%v", sent, sender.texts, mtopMock.consignCalls, deliveryErr)
+	}
+}
+
+// TestManualFullDeliveryBlocksUncertainAPICardRun 验证卡密接口结果未知时，即使尚未发送买家消息，
+// 人工完整发货也不得重新调用接口或领取新卡，以避免重复扣费。
+func TestManualFullDeliveryBlocksUncertainAPICardRun(t *testing.T) {
+	// ctx、store、center、sender、order、cleanup 保存检查未知 API 卡密运行的测试夹具。
+	ctx, store, center, sender, _, order, cleanup := newManualDeliveryFixture(t, "uncertain-api-card-order")
+	defer cleanup()
+	// ruleID、ruleErr 保存当前订单付款规则标识，供创建历史自动运行使用。
+	var ruleID int64
+	// ruleErr 保存读取付款发货规则标识失败的数据库错误。
+	ruleErr := store.DB.QueryRowContext(ctx, `SELECT id FROM automation_rules WHERE cookie_id=? AND item_id=? AND trigger_type=?`, order.CookieID, order.ItemID, TriggerOrderPaid).Scan(&ruleID)
+	if ruleErr != nil {
+		t.Fatal(ruleErr)
+	}
+	// automaticTask 保存历史自动付款事件，自动与人工运行必须使用不同幂等键。
+	automaticTask := Task{AccountID: order.CookieID, TriggerType: TriggerOrderPaid, OrderID: order.OrderID}
+	// automaticRunID、started、startErr 保存历史未知 API 卡密运行的创建结果。
+	automaticRunID, started, startErr := store.Automation.TryStartRun(ctx, db.AutomationRun{
+		RuleID: ruleID, CookieID: order.CookieID, ItemID: order.ItemID, OrderID: order.OrderID,
+		TriggerType: TriggerOrderPaid, TriggerKey: buildTriggerKey(automaticTask), LeaseExpiresAt: time.Now().Add(time.Minute).Unix(),
+	})
+	if startErr != nil || !started {
+		t.Fatalf("创建未知 API 卡密运行失败: id=%d started=%v err=%v", automaticRunID, started, startErr)
+	}
+	// finishErr 将无快照的未知接口结果收口；该前缀代表远端可能已扣费，不能自动补发。
+	finishErr := store.Automation.FinishRun(ctx, automaticRunID, 1, "failed", 0, db.NoRetryErrorPrefix+"卡密接口响应超时")
+	if finishErr != nil {
+		t.Fatal(finishErr)
+	}
+	// deliveryErr 保存人工请求的保护性拒绝结果。
+	_, deliveryErr := center.ManualFullDelivery(ctx, order)
+	if deliveryErr == nil || !strings.Contains(deliveryErr.Error(), "避免重复扣费") || len(sender.texts) != 0 {
+		t.Fatalf("未知 API 卡密运行不应重发: texts=%v err=%v", sender.texts, deliveryErr)
+	}
+}
+
+// TestManualFullDeliveryReplaysStoredContentWithoutReadingCards 验证失败后的人工补发只发送已有快照，
+// 不重新执行规则卡密动作，因而不会再次领取或扣除卡密。
+func TestManualFullDeliveryReplaysStoredContentWithoutReadingCards(t *testing.T) {
+	// ctx、store、center、sender、mtopMock、order、cleanup 保存重发快照所需夹具和可观察依赖。
+	ctx, store, center, sender, mtopMock, order, cleanup := newManualDeliveryFixture(t, "replay-snapshot-order")
+	defer cleanup()
+	// ruleID、ruleErr 保存当前商品付款规则标识，供创建同一人工幂等运行使用。
+	var ruleID int64
+	// ruleErr 保存读取付款发货规则标识失败的数据库错误。
+	ruleErr := store.DB.QueryRowContext(ctx, `SELECT id FROM automation_rules WHERE cookie_id=? AND item_id=? AND trigger_type=?`, order.CookieID, order.ItemID, TriggerOrderPaid).Scan(&ruleID)
+	if ruleErr != nil {
+		t.Fatal(ruleErr)
+	}
+	// manualTask 保存人工补发的固定订单事实；manualKey 必须与生产逻辑完全一致。
+	manualTask := Task{AccountID: order.CookieID, TriggerType: TriggerOrderPaid, OrderID: order.OrderID}
+	// manualKey 保存人工完整发货独立幂等键，用于定位同订单原样重发快照。
+	manualKey := buildManualDeliveryTriggerKey(manualTask)
+	// runID、started、startErr 保存含快照的历史人工运行创建结果。
+	runID, started, startErr := store.Automation.TryStartRun(ctx, db.AutomationRun{
+		RuleID: ruleID, CookieID: order.CookieID, ItemID: order.ItemID, OrderID: order.OrderID,
+		TriggerType: TriggerOrderPaid, TriggerKey: manualKey, LeaseExpiresAt: time.Now().Add(time.Minute).Unix(),
+	})
+	if startErr != nil || !started {
+		t.Fatalf("创建人工快照运行失败: id=%d started=%v err=%v", runID, started, startErr)
+	}
+	// currentRun、runErr 保存当前运行租约和代次，推进检查点前必须复用该代次。
+	currentRun, runErr := store.Automation.GetRun(ctx, runID)
+	if runErr != nil {
+		t.Fatal(runErr)
+	}
+	// actionStarted、actionStartErr 保存占用第一个动作检查点的结果，使快照写入保持生产路径的 CAS 约束。
+	actionStarted, actionStartErr := store.Automation.StartRunAction(ctx, runID, currentRun.AttemptCount, 0, time.Now().Add(time.Minute).Unix())
+	if actionStartErr != nil || !actionStarted {
+		t.Fatalf("领取人工快照动作失败: started=%v err=%v", actionStarted, actionStartErr)
+	}
+	// proof 保存此前已经确定但未能完成发货的唯一卡密内容；重发必须只使用这条消息。
+	proof := db.AutomationDeliveryProof{TradeText: "SNAPSHOT-CARD", Messages: []db.AutomationDeliveryMessage{{Kind: "text", Content: "SNAPSHOT-CARD"}}}
+	// quarantineErr 模拟消息结果不确定时直接从已占用动作进入人工核对；该生产路径保留 action_started 作为禁止普通重试的标记，
+	// 但原样补发收口必须兼容该标记，不能依赖 AdvanceRunAction 预先清理动作占用。
+	quarantineErr := store.Automation.QuarantineRunResultWithProof(ctx, runID, currentRun.AttemptCount, 1, "消息回显超时", &proof)
+	if quarantineErr != nil {
+		t.Fatal(quarantineErr)
+	}
+	// sent、deliveryErr 保存人工补发快照发送结果；规则配置中的 MANUAL-CARD 不得再次出现。
+	sent, deliveryErr := center.ManualFullDelivery(ctx, order)
+	if deliveryErr != nil || sent != 1 || len(sender.texts) != 1 || sender.texts[0] != "SNAPSHOT-CARD" || mtopMock.consignCalls != 1 {
+		t.Fatalf("快照补发异常: sent=%d texts=%v consign=%d err=%v", sent, sender.texts, mtopMock.consignCalls, deliveryErr)
+	}
+	// replayedRun、replayedErr 保存补发后的运行终态，成功后仍须保留加密快照供审计与后续状态补偿使用。
+	replayedRun, replayedErr := store.Automation.GetRun(ctx, runID)
+	if replayedErr != nil || replayedRun.Status != "success" || len(replayedRun.DeliveryProof.Messages) != 1 || replayedRun.DeliveryProof.Messages[0].Content != "SNAPSHOT-CARD" {
+		t.Fatalf("快照补发收口异常: run=%+v err=%v", replayedRun, replayedErr)
 	}
 }
 

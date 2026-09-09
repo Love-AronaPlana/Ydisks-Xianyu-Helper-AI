@@ -116,8 +116,8 @@ func (r chatOutgoingRepository) SetOutgoingStatus(ctx context.Context, accountID
 // dbChatSession 将应用层会话摘要转换为领域层写入模型，不携带账号凭证。
 func dbChatSession(session chatapp.Session) db.ChatSession {
 	return db.ChatSession{
-		CookieID: session.AccountID, ChatID: session.ChatID, BuyerID: session.BuyerID,
-		BuyerName: session.BuyerName, BuyerAvatar: session.BuyerAvatar, ItemID: session.ItemID,
+		CookieID: session.AccountID, ChatID: session.ChatID, BuyerID: session.PeerUserID,
+		BuyerName: session.PeerName, BuyerAvatar: session.PeerAvatar, AccountRole: session.AccountRole, BuyerUserID: session.BuyerUserID, SellerUserID: session.SellerUserID, RoleItemID: session.RoleItemID, RoleSource: session.RoleSource, ItemID: session.ItemID,
 		ItemTitle: session.ItemTitle, ItemImageURL: session.ItemImageURL, LastMessage: session.LastMessage, LastMessageAt: session.LastMessageAt,
 		UnreadCount: session.UnreadCount,
 	}

@@ -78,7 +78,7 @@ func TestChatSendingWrappersMapOutgoingAndMediaMessages(t *testing.T) {
 	// repository 保存真实领域聊天服务包装后的应用外发仓储。
 	repository := NewChatOutgoingRepository(domainchat.New(store))
 	// session 保存外发消息共同使用的应用会话摘要。
-	session := chatapp.Session{AccountID: "cid", ChatID: "chat-send", BuyerID: "buyer-send", BuyerName: "买家"}
+	session := chatapp.Session{AccountID: "cid", ChatID: "chat-send", PeerUserID: "buyer-send", PeerName: "买家"}
 	// textMessage、textErr 保存文本外发消息的模型转换结果。
 	textMessage, textErr := repository.CreateOutgoing(ctx, session, "你好")
 	if textErr != nil || textMessage.Content != "你好" || textMessage.AccountID != "cid" {

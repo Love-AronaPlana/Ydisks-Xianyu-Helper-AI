@@ -119,7 +119,7 @@ export const useChatMetadata = (activeAccountID: string, selectedSession: ChatSe
     // sequence 保存本次买家备注请求代次。
     const sequence = ++noteSequenceRef.current;
     // buyerID 保存当前选中会话的稳定买家标识；没有会话时不发起请求。
-    const buyerID = selectedSession?.buyer_id || '';
+    const buyerID = selectedSession?.account_role === 'seller' ? (selectedSession.buyer_user_id || '') : '';
     if (!activeAccountID || !buyerID) {
       setBuyerNote(null);
       setNoteLoading(false);
@@ -142,7 +142,7 @@ export const useChatMetadata = (activeAccountID: string, selectedSession: ChatSe
       if (!controller.signal.aborted && sequence === noteSequenceRef.current) setNoteLoading(false);
     });
     return /* 当前 cleanup 取消会话切换后不再有效的买家备注请求。 */ () => controller.abort();
-  }, [activeAccountID, selectedSession?.buyer_id]);
+  }, [activeAccountID, selectedSession?.account_role, selectedSession?.buyer_user_id]);
 
   useEffect(/* 当前副作用在 Hook 卸载时清理复制反馈计时器，避免卸载后写入 React 状态。 */ () => {
     /** cleanupCopyTimer 清理仍在运行的复制反馈计时器。 */
@@ -239,7 +239,7 @@ export const useChatMetadata = (activeAccountID: string, selectedSession: ChatSe
   /** saveBuyerNote 保存当前会话买家的备注，并在成功后回到只读查看状态。 */
   const saveBuyerNote = useCallback(/* 当前回调提交买家备注编辑表单。 */ async (): Promise<void> => {
     // buyerID 保存当前会话的稳定买家标识；会话切换后不允许把旧备注写到新买家。
-    const buyerID = selectedSession?.buyer_id || '';
+    const buyerID = selectedSession?.account_role === 'seller' ? (selectedSession.buyer_user_id || '') : '';
     if (!activeAccountID || !buyerID || noteSaving) return;
     setNoteSaving(true);
     setMetadataError('');
@@ -254,7 +254,7 @@ export const useChatMetadata = (activeAccountID: string, selectedSession: ChatSe
     } finally {
       setNoteSaving(false);
     }
-  }, [activeAccountID, noteDraft, noteSaving, selectedSession?.buyer_id]);
+  }, [activeAccountID, noteDraft, noteSaving, selectedSession?.account_role, selectedSession?.buyer_user_id]);
 
   /** clearMetadataError 清除快捷回复和备注区域最近展示的错误。 */
   const clearMetadataError = useCallback(/* 当前回调在用户继续编辑或关闭错误提示时清空旧错误。 */ (): void => {

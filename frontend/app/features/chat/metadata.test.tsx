@@ -25,7 +25,7 @@ const getQuickRepliesMock = vi.mocked(getChatQuickReplies);
 const saveBuyerNoteMock = vi.mocked(saveChatBuyerNote);
 
 // sessionFixture 是当前账号下供备注隔离测试使用的会话摘要。
-const sessionFixture: ChatSession = { account_id: 'account-1', chat_id: 'chat-1', buyer_id: 'buyer-1', buyer_name: '买家', last_message: '', last_message_at: 1, unread_count: 0 };
+const sessionFixture: ChatSession = { account_id: 'account-1', chat_id: 'chat-1', peer_user_id: 'buyer-1', peer_name: '买家', account_role: 'seller', buyer_user_id: 'buyer-1', seller_user_id: 'self-1', last_message: '', last_message_at: 1, unread_count: 0 };
 
 /** QuickReplyFixture 是延迟响应测试使用的最小快捷回复形状。 */
 type QuickReplyFixture = {
@@ -126,7 +126,7 @@ describe('useChatMetadata', /* 当前回调覆盖账号快捷回复与买家备�
       ({ accountID, session }: MetadataHookProps) => useChatMetadata(accountID, session),
       { initialProps: { accountID: 'account-1', session: sessionFixture } },
     );
-    hook.rerender({ accountID: 'account-2', session: { ...sessionFixture, account_id: 'account-2', buyer_id: 'buyer-2' } });
+    hook.rerender({ accountID: 'account-2', session: { ...sessionFixture, account_id: 'account-2', peer_user_id: 'buyer-2', buyer_user_id: 'buyer-2' } });
     await waitFor(
       // newAccountAssertion 等待新账号请求先写入列表。
       () => expect(hook.result.current.quickReplies[0]?.id).toBe(9),

@@ -65,12 +65,15 @@ type shipmentConsignResult struct {
 	callErr error
 }
 
-// shipmentDeliveryProof 保存本次自动发货已经成功投递的文本和图片凭证；它只在当前运行内存中流转，不进入任务快照、日志或通知。
+// shipmentDeliveryProof 保存订单已经确定的发货内容和确认发货凭证。
+// 它最终会加密持久化到自动化运行，供失败后原样重发；不得进入任务快照、日志或通知。
 type shipmentDeliveryProof struct {
 	// tradeText 是已成功发送给买家的文本凭证，多个发货单位按换行合并。
 	tradeText string
 	// picList 是已成功发送给买家的图片地址，顺序与发送顺序一致。
 	picList []string
+	// messages 按原始顺序保存文本和图片消息，重发时必须使用此顺序且不得再次读取卡密库存。
+	messages []db.AutomationDeliveryMessage
 }
 
 // actionExecutionResult 保存动作成功产生的数量和可供后续确认发货使用的短暂凭证。
@@ -105,7 +108,8 @@ func (e *automationActionExecutor) executeAction(ctx context.Context, task Task,
 	return result.sent, err
 }
 
-// executeActionWithProof 执行动作并把已发送的发货凭证传递给后续确认发货动作；凭证不跨运行持久化。
+// executeActionWithProof 执行动作并把已发送的发货凭证传递给后续确认发货动作；
+// 运行协调器会把成功内容加密持久化为订单重发快照。
 func (e *automationActionExecutor) executeActionWithProof(ctx context.Context, task Task, action db.AutomationAction, proof shipmentDeliveryProof) (actionExecutionResult, error) {
 	switch action.ActionType {
 	case ActionConfirmShipment:
@@ -130,9 +134,13 @@ func (e *automationActionExecutor) executeActionWithProof(ctx context.Context, t
 			if errors.Is(sendErr, ErrMessageNotSent) {
 				return actionExecutionResult{}, sendErr
 			}
-			return actionExecutionResult{}, uncertainAction(sendErr)
+			// reviewProof 保存传输结果未知时的原始文本，人工补发只能复用它，不能重新渲染可能含卡密的模板。
+			reviewProof := shipmentDeliveryProof{messages: []db.AutomationDeliveryMessage{{Kind: "text", Content: text}}}
+			return actionExecutionResult{reviewProof: reviewProof}, uncertainAction(sendErr)
 		}
-		return actionExecutionResult{sent: 1}, nil
+		// proof 保存这条已成功投递的普通文本，人工补发也必须复用同一内容而不能重新渲染动态卡密。
+		proof := shipmentDeliveryProof{messages: []db.AutomationDeliveryMessage{{Kind: "text", Content: text}}}
+		return actionExecutionResult{sent: 1, proof: proof}, nil
 	default:
 		return actionExecutionResult{}, fmt.Errorf("未知自动化动作: %s", action.ActionType)
 	}

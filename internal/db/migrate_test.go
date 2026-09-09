@@ -52,6 +52,11 @@ func TestMigrate_AppliesCleanSchema(t *testing.T) {
 		{"default_reply_records", "image_sent"},
 		{"users", "is_admin"},
 		{"sessions", "session_id"},
+		{"chat_sessions", "account_role"},
+		{"chat_sessions", "buyer_user_id"},
+		{"chat_sessions", "seller_user_id"},
+		{"chat_sessions", "role_item_id"},
+		{"chat_sessions", "role_source"},
 		{"notification_channels", "user_id"},
 		{"notification_channels", "event_types"},
 		{"message_notifications", "event_types"},
@@ -170,9 +175,9 @@ func TestMigrate_ExistingAutomationRunsReceiveEmptyDeliveryProof(t *testing.T) {
 	if varProof != "" {
 		t.Fatalf("历史运行凭证应为空: %q", varProof)
 	}
-	// finalVersion、versionErr 验证升级包含聊天删除截止线和认证代次迁移，不能仅证明旧 delivery_proof 列存在。
+	// finalVersion、versionErr 验证升级包含聊天删除截止线、认证代次和会话角色迁移，不能仅证明旧 delivery_proof 列存在。
 	finalVersion, versionErr := goose.GetDBVersion(rawDB)
-	if versionErr != nil || finalVersion != 46 {
+	if versionErr != nil || finalVersion != 47 {
 		t.Fatalf("final migration version=%d err=%v", finalVersion, versionErr)
 	}
 	if !tableExists(t, rawDB, "order_ownership_repairs") {
@@ -208,6 +213,24 @@ func TestMigrate_UpgradesDatabaseWithMainChatVersions(t *testing.T) {
 	if upErr != nil {
 		t.Fatalf("apply released main migrations: %v", upErr)
 	}
+	// legacyUserResult、legacyUserErr 创建升级前的管理用户，密码字段仅使用不可登录的测试占位值。
+	legacyUserResult, legacyUserErr := rawDB.Exec(`INSERT INTO users (username,email,password_hash) VALUES ('role-upgrade-user','role-upgrade@example.invalid','test-only')`)
+	if legacyUserErr != nil {
+		t.Fatalf("seed legacy user: %v", legacyUserErr)
+	}
+	// legacyUserID、legacyUserIDErr 是旧账号外键所需的本地测试用户主键。
+	legacyUserID, legacyUserIDErr := legacyUserResult.LastInsertId()
+	if legacyUserIDErr != nil {
+		t.Fatalf("read legacy user id: %v", legacyUserIDErr)
+	}
+	// legacyAccountErr 写入不含真实凭证的旧账号记录。
+	if _, legacyAccountErr := rawDB.Exec(`INSERT INTO cookies (id,value,user_id) VALUES ('role-upgrade-account','',?)`, legacyUserID); legacyAccountErr != nil {
+		t.Fatalf("seed legacy account: %v", legacyAccountErr)
+	}
+	// legacySessionErr 在 00047 之前写入旧会话，验证新增字段不会要求重建平台数据。
+	if _, legacySessionErr := rawDB.Exec(`INSERT INTO chat_sessions (cookie_id,chat_id,buyer_id,item_id) VALUES ('role-upgrade-account','role-upgrade-chat','role-upgrade-peer','role-upgrade-item')`); legacySessionErr != nil {
+		t.Fatalf("seed legacy chat session: %v", legacySessionErr)
+	}
 
 	// ctx 提供迁移 API 所需的调用上下文；升级本身不依赖请求生命周期。
 	ctx := context.Background()
@@ -221,6 +244,13 @@ func TestMigrate_UpgradesDatabaseWithMainChatVersions(t *testing.T) {
 	if !columnExists(t, rawDB, "chat_messages", "read_status") || !columnExists(t, rawDB, "chat_messages", "read_at") || !columnExists(t, rawDB, "chat_messages", "media_duration") || !columnExists(t, rawDB, "chat_sessions", "item_image_url") || !columnExists(t, rawDB, "chat_sessions", "is_visible") || !columnExists(t, rawDB, "chat_sessions", "user_hidden_at") || !columnExists(t, rawDB, "chat_sessions", "messages_cleared_at") {
 		t.Fatal("chat read tracking, media presentation, and user deletion columns should remain after dev schema baseline upgrade")
 	}
+	// legacyRole、legacyBuyerID 和 legacySellerID 是升级后旧会话的安全默认角色与双方标识。
+	var legacyRole, legacyBuyerID, legacySellerID string
+	// legacyRoleErr 验证旧会话升级后保持 unknown，不能把历史对端字段直接猜成买家。
+	legacyRoleErr := rawDB.QueryRow(`SELECT account_role,buyer_user_id,seller_user_id FROM chat_sessions WHERE cookie_id='role-upgrade-account' AND chat_id='role-upgrade-chat'`).Scan(&legacyRole, &legacyBuyerID, &legacySellerID)
+	if legacyRoleErr != nil || legacyRole != "unknown" || legacyBuyerID != "" || legacySellerID != "" {
+		t.Fatalf("legacy role=%q buyer=%q seller=%q err=%v", legacyRole, legacyBuyerID, legacySellerID, legacyRoleErr)
+	}
 	if !tableExists(t, rawDB, "chat_quick_replies") || !tableExists(t, rawDB, "chat_buyer_notes") {
 		t.Fatal("chat quick reply and buyer note tables should be created by the latest migration")
 	}
@@ -230,13 +260,13 @@ func TestMigrate_UpgradesDatabaseWithMainChatVersions(t *testing.T) {
 	if !columnExists(t, rawDB, "automation_rule_actions", "delivery_template_id") {
 		t.Fatal("automation_rule_actions should reference delivery templates")
 	}
-	// finalVersion、versionErr 验证迁移账本已推进到会话用户删除语义的 00044，或记录读取失败。
+	// finalVersion、versionErr 验证迁移账本已推进到会话角色语义的 00047，或记录读取失败。
 	finalVersion, versionErr := goose.GetDBVersion(rawDB)
 	if versionErr != nil {
 		t.Fatalf("read final migration version: %v", versionErr)
 	}
-	if finalVersion != 46 {
-		t.Fatalf("final migration version=%d, want 46", finalVersion)
+	if finalVersion != 47 {
+		t.Fatalf("final migration version=%d, want 47", finalVersion)
 	}
 	if !tableExists(t, rawDB, "order_ownership_repairs") {
 		t.Fatal("已发布 main 数据库升级后必须创建订单归属修正审计表")

@@ -9,7 +9,7 @@ afterEach(/* 当前回调隔离每条会话组件测试创建的 DOM。 */ () =>
 describe('ConversationListItem', /* 当前测试组验证会话选择与悬停删除保持独立。 */ () => {
   test('选择按钮和红色删除按钮分别触发自己的操作', /* 当前测试验证删除操作不会冒泡切换会话。 */ () => {
     // session 是同时包含时间、商品图和未读数的会话行夹具。
-    const session: ChatSession = { account_id: 'account-1', chat_id: 'chat-1', buyer_id: 'buyer-1', buyer_name: '测试买家', item_title: '测试商品', item_image_url: 'https://img.example/item.jpg', last_message: '你好', last_message_at: 1, unread_count: 2 };
+    const session: ChatSession = { account_id: 'account-1', chat_id: 'chat-1', peer_user_id: 'buyer-1', peer_name: '测试买家', item_title: '测试商品', item_image_url: 'https://img.example/item.jpg', last_message: '你好', last_message_at: 1, unread_count: 2 };
     // onSelect 记录会话选择动作。
     const onSelect = vi.fn();
     // onDelete 记录删除确认框打开动作。
@@ -29,7 +29,7 @@ describe('ConversationListItem', /* 当前测试组验证会话选择与悬停�
 
 	test('当前会话发送中禁用删除按钮', /* 当前测试验证前端不会在人工发送请求进行中启动删除。 */ () => {
 		// session 是发送中删除门禁使用的会话摘要。
-		const session: ChatSession = { account_id: 'account-1', chat_id: 'chat-1', buyer_id: 'buyer-1', buyer_name: '测试买家', item_title: '', item_image_url: '', last_message: '发送中', last_message_at: 1, unread_count: 0 };
+		const session: ChatSession = { account_id: 'account-1', chat_id: 'chat-1', peer_user_id: 'buyer-1', peer_name: '测试买家', item_title: '', item_image_url: '', last_message: '发送中', last_message_at: 1, unread_count: 0 };
 		// onDelete 记录禁用按钮是否仍错误触发删除流程。
 		const onDelete = vi.fn();
 		render(<ConversationListItem session={session} active formatClock={/* 当前回调提供稳定时间文本。 */ () => '15:04'} onSelect={/* 当前回调保持选择操作为空。 */ () => {}} onDelete={onDelete} deleteDisabled />);

@@ -227,3 +227,11 @@ export const accountLabel = (account?: AccountDetail) => account?.nickname || ac
 
 // boolFlag 兼容后端可能返回的布尔、数字和字符串标志值。
 export const boolFlag = (value: unknown): boolean => value === true || value === 1 || value === '1';
+
+/** withAllItemsConfirmation 将用户对全部商品发货的确认写入规则 JSON，保留其他配置；raw 为旧配置，confirmed 为明确勾选状态。 */
+export const withAllItemsConfirmation = (raw: string | undefined, confirmed: boolean): string =>
+  JSON.stringify({ ...parseJSONObject(raw), allow_all_items: confirmed });
+
+/** needsAllItemsConfirmation 判断 rule 是否为尚未确认的账号级付款发货规则，用于列表提示和避免误认已启用。 */
+export const needsAllItemsConfirmation = (rule: Partial<ShippingRule>): boolean =>
+  (rule.trigger_type || 'order_paid') === 'order_paid' && !rule.item_id && parseJSONObject(rule.config_json).allow_all_items !== true;

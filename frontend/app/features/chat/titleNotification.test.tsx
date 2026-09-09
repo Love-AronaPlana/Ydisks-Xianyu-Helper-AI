@@ -182,7 +182,7 @@ describe('chat title notification', /* 当前测试组验证后台实时消息�
 
   test('应用壳启动时会根据已有未读会话点亮聊天红点', /* 当前回调验证红点不只依赖当前浏览器会话期间的新 WebSocket 消息。 */ async () => {
     // unreadSession 保存服务端返回的一条历史未读会话。
-    const unreadSession = { account_id: 'account-1', chat_id: 'chat-1', buyer_id: 'buyer-1', buyer_name: '买家', last_message: '历史未读消息', last_message_at: 1, unread_count: 1 };
+    const unreadSession = { account_id: 'account-1', chat_id: 'chat-1', peer_user_id: 'buyer-1', peer_name: '买家', last_message: '历史未读消息', last_message_at: 1, unread_count: 1 };
     getAccountDetailsMock.mockResolvedValue([{ id: 'account-1', enabled: true }] as never);
     getChatSessionPageMock.mockResolvedValue({ sessions: [unreadSession], has_more: false });
     // websocketFactory 创建不会连接真实服务的全局通知连接替身。

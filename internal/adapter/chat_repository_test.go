@@ -202,7 +202,7 @@ func TestChatRepositoryMapsSessionMaintenance(t *testing.T) {
 	}
 	// listed 和 listErr 保存应用层会话列表及转换错误。
 	listed, listErr := port.ListSessions(ctx, owner.ID, "cid", 20)
-	if listErr != nil || len(listed) != 1 || listed[0].BuyerName != "买家" {
+	if listErr != nil || len(listed) != 1 || listed[0].PeerName != "买家" {
 		t.Fatalf("会话列表映射异常 listed=%+v err=%v", listed, listErr)
 	}
 	// owned 和 ownershipErr 保存账号归属查询结果。
@@ -216,7 +216,7 @@ func TestChatRepositoryMapsSessionMaintenance(t *testing.T) {
 	}
 	// refreshed 和 refreshedErr 保存身份缓存写入后的会话列表。
 	refreshed, refreshedErr := port.ListSessions(ctx, owner.ID, "cid", 20)
-	if refreshedErr != nil || refreshed[0].BuyerName != "新名称" || refreshed[0].BuyerAvatar != "avatar" {
+	if refreshedErr != nil || refreshed[0].PeerName != "新名称" || refreshed[0].PeerAvatar != "avatar" {
 		t.Fatalf("身份缓存未更新 refreshed=%+v err=%v", refreshed, refreshedErr)
 	}
 	// emptyErr 保存删除无消息会话壳的结果。
@@ -236,7 +236,7 @@ func TestChatIdentityResolverKeepsCredentialsInsideAdapter(t *testing.T) {
 	resolver := NewChatIdentityResolver(store, func() mtop.Client { return client })
 	// identity 和 resolveErr 保存适配器转换后的身份及查询错误。
 	identity, resolveErr := resolver.Resolve(context.Background(), "cid", "chat-1")
-	if resolveErr != nil || identity.BuyerName != "买家新名" || identity.BuyerAvatar == "" {
+	if resolveErr != nil || identity.PeerName != "买家新名" || identity.PeerAvatar == "" {
 		t.Fatalf("身份映射异常 identity=%+v err=%v", identity, resolveErr)
 	}
 }

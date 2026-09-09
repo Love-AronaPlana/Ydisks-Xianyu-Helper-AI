@@ -21,13 +21,14 @@ Zap,
 } from 'lucide-react';
 import React,{ useEffect,useMemo,useState } from 'react';
 import { createPortal } from 'react-dom';
+import AllItemsConfirmation from '../components/AllItemsConfirmation';
 import { AutomationIssuePanel } from '../components/AutomationIssuePanel';
 import TemplateVariantEditor from '../components/TemplateVariantEditor';
 import { useRulesData } from '../hooks';
 import { filterAutomationIssues } from '../issueState';
 import { useRuleActions } from '../ruleActions';
 import type { AutomationTriggerType,RulesProps,RulesTab } from '../types';
-import { accentClasses,accountLabel,actionSummary,adjustPriceTarget,buildReviewConfig,cardActionsForTrigger,isDeliveryCardReady,statusPill,triggerMeta,triggerOrder } from '../utils';
+import { accentClasses,accountLabel,actionSummary,adjustPriceTarget,buildReviewConfig,cardActionsForTrigger,isDeliveryCardReady,needsAllItemsConfirmation,statusPill,triggerMeta,triggerOrder,withAllItemsConfirmation } from '../utils';
 
 // Rules 是规则 feature 在旧页面目录下保留的兼容入口组件。
 const Rules: React.FC<RulesProps> = ({ initialDeliveryTarget, onDeliveryTargetHandled }) => {
@@ -247,14 +248,14 @@ const Rules: React.FC<RulesProps> = ({ initialDeliveryTarget, onDeliveryTargetHa
         })}
       </div>
 
-	  {activeTab === 'automation' && (visibleAutomationIssues.runs.length > 0 || visibleAutomationIssues.pending_tasks.length > 0) && (
+	  {activeTab === 'automation' && (visibleAutomationIssues.runs.length > 0 || visibleAutomationIssues.pending_tasks.length > 0) ? (
 	    <AutomationIssuePanel
 	      runs={visibleAutomationIssues.runs}
 	      pendingTasks={visibleAutomationIssues.pending_tasks}
 	      onResolveRun={/* 当前回调处理用户交互或异步状态变化。 */ (id, resolution) => void handleResolveRunIssue(id, resolution)}
 	      onResolveDeferredTask={/* 当前回调处理用户交互或异步状态变化。 */ (id, resolution) => void handleResolveDeferredIssue(id, resolution)}
 	    />
-	  )}
+	  ) : null}
 
       {activeTab === 'automation' && (
         <div className="grid min-w-0 grid-cols-1 gap-6 xl:grid-cols-[minmax(270px,0.72fr)_minmax(0,1.28fr)]">
@@ -412,6 +413,7 @@ const Rules: React.FC<RulesProps> = ({ initialDeliveryTarget, onDeliveryTargetHa
                           <div className="flex flex-wrap gap-2 text-xs font-bold">
                             <span className="px-2.5 py-1 rounded-lg bg-gray-100 text-gray-600">{meta.label}</span>
                             <span className="px-2.5 py-1 rounded-lg bg-gray-100 text-gray-600">{rule.item_title || rule.item_id || '账号级规则'}</span>
+                            {needsAllItemsConfirmation(rule) && <span className="px-2.5 py-1 rounded-lg bg-amber-50 text-amber-800">需确认适用于全部商品 · 暂不发货</span>}
                             <span className="px-2.5 py-1 rounded-lg bg-blue-50 text-blue-700">{actionSummary(rule)}</span>
                           </div>
                         </div>
@@ -695,6 +697,7 @@ const Rules: React.FC<RulesProps> = ({ initialDeliveryTarget, onDeliveryTargetHa
                           onChange={/* 当前回调处理用户交互或异步状态变化。 */ event => setEditingAutomationRule({
                             ...editingAutomationRule,
                             cookie_id: event.target.value,
+                            config_json: withAllItemsConfirmation(editingAutomationRule.config_json, false),
                             item_id: '',
                             item_title: '',
                             item_keyword: '',
@@ -737,6 +740,16 @@ const Rules: React.FC<RulesProps> = ({ initialDeliveryTarget, onDeliveryTargetHa
                       </div>
                     )}
                   </section>
+
+                  {currentTrigger === 'order_paid' && !editingAutomationRule.item_id ? (
+                    <AllItemsConfirmation
+                      confirmed={reviewConfig.allow_all_items === true}
+                      onChange={
+                        // confirmed 是用户对账号下全部商品适用范围的明确选择；更新时保留其他规则配置。
+                        confirmed => setEditingAutomationRule({ ...editingAutomationRule, config_json: withAllItemsConfirmation(editingAutomationRule.config_json, confirmed) })
+                      }
+                    />
+                  ) : null}
 
                   {currentTrigger === 'order_created' ? (
                     <section className="bg-white rounded-3xl border border-gray-100 p-5">

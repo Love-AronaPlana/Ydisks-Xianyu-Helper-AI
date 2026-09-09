@@ -1387,7 +1387,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** postApiV1OrdersImport */
+        /**
+         * 人工插入订单已永久移除
+         * @deprecated
+         */
         post: operations["postApiV1OrdersImport"];
         delete?: never;
         options?: never;
@@ -2058,6 +2061,7 @@ export interface components {
             trigger_type: string;
             enabled: boolean;
             priority: number;
+            /** @description 规则 JSON 配置；账号级 order_paid 仅在 allow_all_items 为布尔 true 时允许全商品兜底，省略或 false 均不授权。 */
             config_json: string;
             actions: components["schemas"]["AutomationActionRequest"][];
         };
@@ -2089,6 +2093,7 @@ export interface components {
             trigger_type: string;
             enabled: boolean;
             priority: number;
+            /** @description 规则 JSON 配置；账号级 order_paid 仅在 allow_all_items 为布尔 true 时允许全商品兜底，省略或 false 均不授权。 */
             config_json: string;
             /** @enum {string} */
             sku_migration_status: "pending" | "ready" | "needs_reconfiguration";
@@ -2758,9 +2763,15 @@ export interface components {
         ChatSession: {
             account_id: string;
             chat_id: string;
-            buyer_id: string;
-            buyer_name: string;
-            buyer_avatar_url?: string;
+            peer_user_id: string;
+            peer_name: string;
+            peer_avatar_url?: string;
+            /** @enum {string} */
+            account_role: "seller" | "buyer" | "unknown";
+            buyer_user_id: string;
+            seller_user_id: string;
+            role_item_id: string;
+            role_source: string;
             item_id?: string;
             item_title?: string;
             item_image_url?: string;
@@ -2829,8 +2840,8 @@ export interface components {
         ChatMessageRequest: {
             account_id: string;
             chat_id: string;
-            buyer_id: string;
-            buyer_name?: string;
+            peer_user_id: string;
+            peer_name?: string;
             item_id?: string;
             item_title?: string;
             text: string;
@@ -6922,9 +6933,9 @@ export interface operations {
                 "multipart/form-data": {
                     account_id: string;
                     chat_id: string;
-                    buyer_id: string;
-                    buyer_name?: string;
-                    buyer_avatar_url?: string;
+                    peer_user_id: string;
+                    peer_name?: string;
+                    peer_avatar_url?: string;
                     item_id?: string;
                     item_title?: string;
                     /** Format: binary */
@@ -10659,25 +10670,8 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody: {
-            content: {
-                "multipart/form-data": {
-                    /** Format: binary */
-                    file?: string;
-                };
-                "application/json": components["schemas"]["OrderUpdateRequest"][];
-            };
-        };
+        requestBody?: never;
         responses: {
-            /** @description 成功 */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["OrderBatchResponse"];
-                };
-            };
             /** @description 统一错误响应 */
             400: {
                 headers: {
@@ -10687,7 +10681,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description 统一错误响应 */
+            /** @description 未登录 */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -10696,26 +10690,8 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description 统一错误响应 */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description 统一错误响应 */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description 统一错误响应 */
-            500: {
+            /** @description 人工插入订单已移除，请使用订单同步 */
+            501: {
                 headers: {
                     [name: string]: unknown;
                 };

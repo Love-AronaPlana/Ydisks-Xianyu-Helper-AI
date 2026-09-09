@@ -56,8 +56,9 @@ func (r chatRepository) ListSessions(ctx context.Context, userID int64, accountI
 	// row 表示当前待转换的数据库聊天会话。
 	for _, row := range rows {
 		sessions = append(sessions, chatapp.Session{
-			AccountID: row.CookieID, ChatID: row.ChatID, BuyerID: row.BuyerID,
-			BuyerName: row.BuyerName, BuyerAvatar: row.BuyerAvatar, ItemID: row.ItemID,
+			AccountID: row.CookieID, ChatID: row.ChatID, PeerUserID: row.BuyerID,
+			PeerName: row.BuyerName, PeerAvatar: row.BuyerAvatar, AccountRole: row.AccountRole,
+			BuyerUserID: row.BuyerUserID, SellerUserID: row.SellerUserID, RoleItemID: row.RoleItemID, RoleSource: row.RoleSource, ItemID: row.ItemID,
 			ItemTitle: row.ItemTitle, ItemImageURL: row.ItemImageURL, LastMessage: row.LastMessage, LastMessageAt: row.LastMessageAt,
 			UnreadCount: row.UnreadCount,
 		})
@@ -75,8 +76,9 @@ func (r chatRepository) FindSession(ctx context.Context, userID int64, accountID
 		}
 		return chatapp.Session{}, err
 	}
-	return chatapp.Session{AccountID: row.CookieID, ChatID: row.ChatID, BuyerID: row.BuyerID, BuyerName: row.BuyerName,
-		BuyerAvatar: row.BuyerAvatar, ItemID: row.ItemID, ItemTitle: row.ItemTitle, ItemImageURL: row.ItemImageURL,
+	return chatapp.Session{AccountID: row.CookieID, ChatID: row.ChatID, PeerUserID: row.BuyerID, PeerName: row.BuyerName,
+		PeerAvatar: row.BuyerAvatar, AccountRole: row.AccountRole, BuyerUserID: row.BuyerUserID, SellerUserID: row.SellerUserID,
+		RoleItemID: row.RoleItemID, RoleSource: row.RoleSource, ItemID: row.ItemID, ItemTitle: row.ItemTitle, ItemImageURL: row.ItemImageURL,
 		LastMessage: row.LastMessage, LastMessageAt: row.LastMessageAt, UnreadCount: row.UnreadCount}, nil
 }
 
@@ -97,8 +99,9 @@ func (r chatRepository) ListSessionPage(ctx context.Context, userID int64, accou
 	// row 表示当前待转换的数据库聊天会话。
 	for _, row := range databasePage.Sessions {
 		sessions = append(sessions, chatapp.Session{
-			AccountID: row.CookieID, ChatID: row.ChatID, BuyerID: row.BuyerID,
-			BuyerName: row.BuyerName, BuyerAvatar: row.BuyerAvatar, ItemID: row.ItemID,
+			AccountID: row.CookieID, ChatID: row.ChatID, PeerUserID: row.BuyerID,
+			PeerName: row.BuyerName, PeerAvatar: row.BuyerAvatar, AccountRole: row.AccountRole,
+			BuyerUserID: row.BuyerUserID, SellerUserID: row.SellerUserID, RoleItemID: row.RoleItemID, RoleSource: row.RoleSource, ItemID: row.ItemID,
 			ItemTitle: row.ItemTitle, ItemImageURL: row.ItemImageURL, LastMessage: row.LastMessage, LastMessageAt: row.LastMessageAt,
 			UnreadCount: row.UnreadCount,
 		})
@@ -116,9 +119,9 @@ func (r chatRepository) DeleteEmptySessions(ctx context.Context, accountID strin
 	return r.store.Chats.DeleteEmptySessions(ctx, accountID)
 }
 
-// UpdateSessionIdentity 更新会话的买家身份缓存。
-func (r chatRepository) UpdateSessionIdentity(ctx context.Context, accountID, chatID, buyerID, buyerName, buyerAvatar string) error {
-	return r.store.Chats.UpdateSessionIdentity(ctx, accountID, chatID, buyerID, buyerName, buyerAvatar)
+// UpdateSessionIdentity 更新会话对端的展示身份缓存；底层历史列名不进入应用契约。
+func (r chatRepository) UpdateSessionIdentity(ctx context.Context, accountID, chatID, peerUserID, peerName, peerAvatar string) error {
+	return r.store.Chats.UpdateSessionIdentity(ctx, accountID, chatID, peerUserID, peerName, peerAvatar)
 }
 
 // ExistsOwned 判断账号是否归属于指定用户，只返回非敏感存在性。
@@ -214,7 +217,7 @@ func NewChatIdentityResolver(store *db.Store, clientProvider func() mtop.Client)
 	return chatIdentityResolver{store: store, clientProvider: clientProvider}
 }
 
-// Resolve 查询聊天买家展示身份；Cookie 和平台客户端均不会离开适配器。
+// Resolve 查询聊天对端展示身份；Cookie 和平台客户端均不会离开适配器。
 func (r chatIdentityResolver) Resolve(ctx context.Context, accountID, chatID string) (chatapp.Identity, error) {
 	// cookies 和 err 保存平台调用需要的短暂凭证及读取错误，不得写入日志或响应。
 	cookies, err := r.store.Cookies.GetValue(ctx, accountID)
@@ -238,7 +241,7 @@ func (r chatIdentityResolver) Resolve(ctx context.Context, accountID, chatID str
 	if info == nil {
 		return chatapp.Identity{}, nil
 	}
-	return chatapp.Identity{BuyerName: info.Nickname, BuyerAvatar: info.AvatarURL}, nil
+	return chatapp.Identity{PeerName: info.Nickname, PeerAvatar: info.AvatarURL}, nil
 }
 
 // 确保数据库聊天适配器覆盖应用层会话端口的全部能力。

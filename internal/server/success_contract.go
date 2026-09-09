@@ -64,12 +64,22 @@ type chatSessionDTO struct {
 	AccountID string `json:"account_id"`
 	// ChatID 是平台聊天会话标识。
 	ChatID string `json:"chat_id"`
-	// BuyerID 是买家平台标识。
-	BuyerID string `json:"buyer_id"`
-	// BuyerName 是买家昵称。
-	BuyerName string `json:"buyer_name"`
-	// BuyerAvatar 是买家头像地址。
-	BuyerAvatar string `json:"buyer_avatar_url"`
+	// PeerUserID 是当前账号之外的会话对端平台标识。
+	PeerUserID string `json:"peer_user_id"`
+	// PeerName 是会话对端昵称。
+	PeerName string `json:"peer_name"`
+	// PeerAvatar 是会话对端头像地址。
+	PeerAvatar string `json:"peer_avatar_url"`
+	// AccountRole 是当前账号在角色商品中的 seller、buyer 或 unknown。
+	AccountRole string `json:"account_role"`
+	// BuyerUserID 是已确认的买家平台标识。
+	BuyerUserID string `json:"buyer_user_id"`
+	// SellerUserID 是已确认的卖家平台标识。
+	SellerUserID string `json:"seller_user_id"`
+	// RoleItemID 是角色结论绑定的商品标识。
+	RoleItemID string `json:"role_item_id"`
+	// RoleSource 是角色结论的非敏感证据来源。
+	RoleSource string `json:"role_source"`
 	// ItemID 是会话关联商品标识。
 	ItemID string `json:"item_id"`
 	// ItemTitle 是会话关联商品标题。
@@ -86,9 +96,15 @@ type chatSessionDTO struct {
 
 // newChatSessionDTOFromApplication 将应用层聊天会话转换为 HTTP DTO。
 func newChatSessionDTOFromApplication(session chatapp.Session) chatSessionDTO {
+	// accountRole 将尚未识别的零值统一输出为契约允许的 unknown。
+	accountRole := session.AccountRole
+	if accountRole != "seller" && accountRole != "buyer" {
+		accountRole = "unknown"
+	}
 	return chatSessionDTO{
-		AccountID: session.AccountID, ChatID: session.ChatID, BuyerID: session.BuyerID,
-		BuyerName: session.BuyerName, BuyerAvatar: session.BuyerAvatar, ItemID: session.ItemID,
+		AccountID: session.AccountID, ChatID: session.ChatID, PeerUserID: session.PeerUserID,
+		PeerName: session.PeerName, PeerAvatar: session.PeerAvatar, AccountRole: accountRole,
+		BuyerUserID: session.BuyerUserID, SellerUserID: session.SellerUserID, RoleItemID: session.RoleItemID, RoleSource: session.RoleSource, ItemID: session.ItemID,
 		ItemTitle: session.ItemTitle, ItemImageURL: session.ItemImageURL, LastMessage: session.LastMessage,
 		LastMessageAt: session.LastMessageAt, UnreadCount: session.UnreadCount,
 	}
@@ -762,22 +778,6 @@ type orderMutationResultDTO struct {
 	ReconciliationID string `json:"reconciliation_id,omitempty"`
 	// ReconciliationWarning 是可选的补偿告警文本。
 	ReconciliationWarning string `json:"reconciliation_warning,omitempty"`
-}
-
-// importOrdersResponse 是订单导入接口的具名响应 DTO。
-type importOrdersResponse struct {
-	// PartialFailure 表示批量导入是否存在部分失败。
-	PartialFailure bool `json:"partial_failure"`
-	// Message 是导入结果说明。
-	Message string `json:"message"`
-	// Total 是本次导入订单总数。
-	Total int `json:"total"`
-	// SuccessCount 是成功导入数量。
-	SuccessCount int `json:"success_count"`
-	// FailedCount 是失败导入数量。
-	FailedCount int `json:"failed_count"`
-	// Results 是逐订单的兼容结果行。
-	Results []orderImportResultDTO `json:"results"`
 }
 
 // orderImportResultDTO 是订单导入逐订单结果的稳定响应 DTO。

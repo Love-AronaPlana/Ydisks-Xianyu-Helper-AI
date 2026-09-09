@@ -190,7 +190,7 @@ func (s *Service) SendText(ctx context.Context, input OutgoingInput) (*Message, 
 		return nil, fmt.Errorf("保存待发送消息失败: %w", err)
 	}
 	// sendErr 表示平台文字发送失败；失败分支会补写本地 failed 状态。
-	if sendErr := sender.SendText(ctx, session.ChatID, session.BuyerID, text, message.MessageKey); sendErr != nil {
+	if sendErr := sender.SendText(ctx, session.ChatID, session.PeerUserID, text, message.MessageKey); sendErr != nil {
 		if errors.Is(sendErr, ErrSendUncertain) {
 			// statusCtx 和 statusCancel 为未知结果状态收口提供独立五秒窗口。
 			statusCtx, statusCancel := outgoingStatusContext(ctx)
@@ -252,7 +252,7 @@ func (s *Service) SendImage(ctx context.Context, input ImageInput) (*Message, er
 		return nil, fmt.Errorf("保存待发送图片失败: %w", err)
 	}
 	// sendErr 表示平台图片发送失败；失败分支会补写本地 failed 状态。
-	if sendErr := sender.SendImage(ctx, session.ChatID, session.BuyerID, upload.URL, 0, upload.Width, upload.Height, message.MessageKey); sendErr != nil {
+	if sendErr := sender.SendImage(ctx, session.ChatID, session.PeerUserID, upload.URL, 0, upload.Width, upload.Height, message.MessageKey); sendErr != nil {
 		if errors.Is(sendErr, ErrSendUncertain) {
 			// statusCtx 和 statusCancel 为图片未知结果状态收口提供独立窗口。
 			statusCtx, statusCancel := outgoingStatusContext(ctx)
@@ -283,9 +283,9 @@ func (s *Service) SendImage(ctx context.Context, input ImageInput) (*Message, er
 func normalizeOutgoingInput(session Session, text string) (Session, string, error) {
 	session.AccountID = strings.TrimSpace(session.AccountID)
 	session.ChatID = strings.TrimSpace(session.ChatID)
-	session.BuyerID = strings.TrimSpace(session.BuyerID)
+	session.PeerUserID = strings.TrimSpace(session.PeerUserID)
 	text = strings.TrimSpace(text)
-	if session.AccountID == "" || session.ChatID == "" || session.BuyerID == "" || text == "" || len([]rune(text)) > 2000 {
+	if session.AccountID == "" || session.ChatID == "" || session.PeerUserID == "" || text == "" || len([]rune(text)) > 2000 {
 		return Session{}, "", ErrSendInvalidInput
 	}
 	return session, text, nil

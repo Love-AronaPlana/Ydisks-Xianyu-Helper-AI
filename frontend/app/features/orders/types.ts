@@ -61,30 +61,6 @@ export interface OrderQueryState {
   getItemNameById: (cookieId: string, itemId: string, orderItemTitle?: string) => string;
 }
 
-// OrderImportState 暴露订单导入弹窗的状态和事件处理函数。
-export interface OrderImportState {
-  // showImportModal 表示导入弹窗是否打开。
-  showImportModal: boolean;
-  // importFile 是当前待提交的订单文件。
-  importFile: File | null;
-  // setImportFile 更新当前待提交的订单文件。
-  setImportFile: Dispatch<SetStateAction<File | null>>;
-  // importResult 保存最近一次导入的逐行结果。
-  importResult: OrderImportResult | null;
-  // importing 表示订单导入请求是否正在执行。
-  importing: boolean;
-  // importError 保存最近一次导入请求的错误说明。
-  importError: string;
-  // openImportModal 打开弹窗并清理上一次导入状态。
-  openImportModal: () => void;
-  // closeImportModal 关闭弹窗并取消当前导入请求。
-  closeImportModal: () => void;
-  // handleImportOrders 提交当前文件并刷新订单列表。
-  handleImportOrders: () => Promise<void>;
-  // handleRetryImport 重试最近一次失败的导入请求。
-  handleRetryImport: () => Promise<void>;
-}
-
 // OrderStatusOption 描述订单状态筛选标签的显示配置。
 export interface OrderStatusOption {
   // key 是传给订单查询接口的状态值。

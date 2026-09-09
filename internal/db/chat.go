@@ -11,13 +11,26 @@ import (
 
 // ChatSession 用于本次流程后续判断的聊天会话
 type ChatSession struct {
-	CookieID    string `json:"account_id"`
-	ChatID      string `json:"chat_id"`
-	BuyerID     string `json:"buyer_id"`
-	BuyerName   string `json:"buyer_name"`
-	BuyerAvatar string `json:"buyer_avatar_url"`
-	ItemID      string `json:"item_id"`
-	ItemTitle   string `json:"item_title"`
+	CookieID string `json:"account_id"`
+	ChatID   string `json:"chat_id"`
+	// BuyerID 是历史数据库列承载的会话对端标识；对外契约必须使用 peer_user_id。
+	BuyerID string `json:"peer_user_id"`
+	// BuyerName 是历史数据库列承载的会话对端昵称；对外契约必须使用 peer_name。
+	BuyerName string `json:"peer_name"`
+	// BuyerAvatar 是历史数据库列承载的会话对端头像；对外契约必须使用 peer_avatar_url。
+	BuyerAvatar string `json:"peer_avatar_url"`
+	// AccountRole 是当前账号在 RoleItemID 商品会话中的角色，仅允许 seller、buyer 或 unknown。
+	AccountRole string `json:"account_role"`
+	// BuyerUserID 是经本地商品或平台发布者证据确认的买家平台标识。
+	BuyerUserID string `json:"buyer_user_id"`
+	// SellerUserID 是经本地商品或平台发布者证据确认的卖家平台标识。
+	SellerUserID string `json:"seller_user_id"`
+	// RoleItemID 是角色结论绑定的商品标识，商品变化时旧结论不得复用。
+	RoleItemID string `json:"role_item_id"`
+	// RoleSource 是角色证据来源，例如 local_item 或 platform_verified。
+	RoleSource string `json:"role_source"`
+	ItemID     string `json:"item_id"`
+	ItemTitle  string `json:"item_title"`
 	// ItemImageURL 是会话商品主图的公开地址，仅用于聊天列表展示。
 	ItemImageURL  string `json:"item_image_url"`
 	LastMessage   string `json:"last_message"`
@@ -101,6 +114,11 @@ func (s *ChatStore) UpsertSession(ctx context.Context, session ChatSession) erro
 		item_id=CASE WHEN ?<>'' THEN ? ELSE item_id END,
 		item_title=CASE WHEN ?<>'' THEN ? ELSE item_title END,
 		item_image_url=CASE WHEN ?<>'' THEN ? ELSE item_image_url END,
+		account_role=CASE WHEN ?<>'' AND role_item_id<>? THEN 'unknown' ELSE account_role END,
+		buyer_user_id=CASE WHEN ?<>'' AND role_item_id<>? THEN '' ELSE buyer_user_id END,
+		seller_user_id=CASE WHEN ?<>'' AND role_item_id<>? THEN '' ELSE seller_user_id END,
+		role_source=CASE WHEN ?<>'' AND role_item_id<>? THEN '' ELSE role_source END,
+		role_item_id=CASE WHEN ?<>'' AND role_item_id<>? THEN '' ELSE role_item_id END,
 		last_message=CASE WHEN ?>messages_cleared_at AND last_message_at<=? THEN ? ELSE last_message END,
 		last_message_at=CASE WHEN ?>messages_cleared_at AND last_message_at<=? THEN ? ELSE last_message_at END,
 		unread_count=CASE WHEN ?>messages_cleared_at AND ?>unread_count THEN ? ELSE unread_count END,
@@ -108,6 +126,7 @@ func (s *ChatStore) UpsertSession(ctx context.Context, session ChatSession) erro
 		is_visible=?,updated_at=?
 		WHERE cookie_id=? AND chat_id=?`, session.BuyerID, session.BuyerID, session.BuyerName, session.BuyerName,
 		session.BuyerAvatar, session.BuyerAvatar, session.ItemID, session.ItemID, session.ItemTitle, session.ItemTitle, session.ItemImageURL, session.ItemImageURL,
+		session.ItemID, session.ItemID, session.ItemID, session.ItemID, session.ItemID, session.ItemID, session.ItemID, session.ItemID, session.ItemID, session.ItemID,
 		session.LastMessageAt, session.LastMessageAt, session.LastMessage, session.LastMessageAt, session.LastMessageAt, session.LastMessageAt,
 		session.LastMessageAt, session.UnreadCount, session.UnreadCount, session.LastMessageAt, true, now, session.CookieID, session.ChatID)
 	return err
@@ -130,8 +149,10 @@ func (s *ChatStore) FindChatIDsByBuyerAndItem(ctx context.Context, cookieID, buy
 	// rows、err 保存当前账号下候选会话的查询结果及数据库错误。
 	rows, err := s.DB.QueryContext(ctx, `SELECT DISTINCT chat_id
 		FROM chat_sessions
-		WHERE cookie_id=? AND buyer_id IN (?,?) AND item_id=? AND TRIM(chat_id)<>''`,
-		accountID, buyerVariants[0], buyerVariants[1], productID)
+		WHERE cookie_id=? AND item_id=? AND TRIM(chat_id)<>'' AND (
+			(account_role='seller' AND buyer_user_id IN (?,?)) OR
+			(account_role='unknown' AND buyer_id IN (?,?))
+		)`, accountID, productID, buyerVariants[0], buyerVariants[1], buyerVariants[0], buyerVariants[1])
 	if err != nil {
 		return nil, err
 	}
@@ -482,12 +503,20 @@ func (s *ChatStore) SaveMessage(ctx context.Context, session ChatSession, messag
 		_, err := tx.ExecContext(ctx, `UPDATE chat_sessions SET buyer_id=CASE WHEN ?<>'' THEN ? ELSE buyer_id END,
 			buyer_name=CASE WHEN ?<>'' THEN ? ELSE buyer_name END,buyer_avatar_url=CASE WHEN ?<>'' THEN ? ELSE buyer_avatar_url END,
 			item_id=CASE WHEN ?<>'' THEN ? ELSE item_id END,item_title=CASE WHEN ?<>'' THEN ? ELSE item_title END,
-		item_image_url=CASE WHEN ?<>'' THEN ? ELSE item_image_url END,last_message=CASE WHEN last_message_at<=? THEN ? ELSE last_message END,
+		item_image_url=CASE WHEN ?<>'' THEN ? ELSE item_image_url END,
+		account_role=CASE WHEN ?<>'' AND role_item_id<>? THEN 'unknown' ELSE account_role END,
+		buyer_user_id=CASE WHEN ?<>'' AND role_item_id<>? THEN '' ELSE buyer_user_id END,
+		seller_user_id=CASE WHEN ?<>'' AND role_item_id<>? THEN '' ELSE seller_user_id END,
+		role_source=CASE WHEN ?<>'' AND role_item_id<>? THEN '' ELSE role_source END,
+		role_item_id=CASE WHEN ?<>'' AND role_item_id<>? THEN '' ELSE role_item_id END,
+		last_message=CASE WHEN last_message_at<=? THEN ? ELSE last_message END,
 		last_message_at=CASE WHEN last_message_at<=? THEN ? ELSE last_message_at END,
 		unread_count=unread_count+?,user_hidden_at=CASE WHEN user_hidden_at>0 THEN 0 ELSE user_hidden_at END,
 		is_visible=?,updated_at=?
 			WHERE cookie_id=? AND chat_id=?`, session.BuyerID, session.BuyerID, session.BuyerName, session.BuyerName, session.BuyerAvatar, session.BuyerAvatar,
-			session.ItemID, session.ItemID, session.ItemTitle, session.ItemTitle, session.ItemImageURL, session.ItemImageURL, message.SentAt, message.Content, message.SentAt, message.SentAt, unreadDelta,
+			session.ItemID, session.ItemID, session.ItemTitle, session.ItemTitle, session.ItemImageURL, session.ItemImageURL,
+			session.ItemID, session.ItemID, session.ItemID, session.ItemID, session.ItemID, session.ItemID, session.ItemID, session.ItemID, session.ItemID, session.ItemID,
+			message.SentAt, message.Content, message.SentAt, message.SentAt, unreadDelta,
 			true, now, session.CookieID, session.ChatID); err != nil {
 			return nil, false, fmt.Errorf("更新聊天会话: %w", err)
 		}
@@ -541,7 +570,8 @@ func (s *ChatStore) ListSessions(ctx context.Context, userID int64, cookieID str
 	}
 	// rows、err 用于本次流程后续判断的rows、err
 	rows, err := s.DB.QueryContext(ctx, `SELECT cs.cookie_id,cs.chat_id,cs.buyer_id,cs.buyer_name,cs.buyer_avatar_url,
-		cs.item_id,cs.item_title,cs.item_image_url,cs.last_message,cs.last_message_at,cs.unread_count
+		cs.item_id,cs.item_title,cs.item_image_url,cs.last_message,cs.last_message_at,cs.unread_count,
+		cs.account_role,cs.buyer_user_id,cs.seller_user_id,cs.role_item_id,cs.role_source
 		FROM chat_sessions cs JOIN cookies c ON c.id=cs.cookie_id
 		WHERE c.user_id=? AND cs.cookie_id=? AND cs.is_visible=? AND cs.user_hidden_at=0 ORDER BY cs.last_message_at DESC,cs.chat_id DESC LIMIT ?`, userID, cookieID, true, limit)
 	if err != nil {
@@ -555,7 +585,8 @@ func (s *ChatStore) ListSessions(ctx context.Context, userID int64, cookieID str
 		var row ChatSession
 		if // err 用于本次流程后续判断的err
 		err := rows.Scan(&row.CookieID, &row.ChatID, &row.BuyerID, &row.BuyerName, &row.BuyerAvatar,
-			&row.ItemID, &row.ItemTitle, &row.ItemImageURL, &row.LastMessage, &row.LastMessageAt, &row.UnreadCount); err != nil {
+			&row.ItemID, &row.ItemTitle, &row.ItemImageURL, &row.LastMessage, &row.LastMessageAt, &row.UnreadCount,
+			&row.AccountRole, &row.BuyerUserID, &row.SellerUserID, &row.RoleItemID, &row.RoleSource); err != nil {
 			return nil, err
 		}
 		result = append(result, row)
@@ -570,11 +601,13 @@ func (s *ChatStore) FindSession(ctx context.Context, userID int64, cookieID, cha
 	var session ChatSession
 	// err 是带账号归属条件的单行查询结果。
 	err := s.DB.QueryRowContext(ctx, `SELECT cs.cookie_id,cs.chat_id,cs.buyer_id,cs.buyer_name,cs.buyer_avatar_url,
-		cs.item_id,cs.item_title,cs.item_image_url,cs.last_message,cs.last_message_at,cs.unread_count
+		cs.item_id,cs.item_title,cs.item_image_url,cs.last_message,cs.last_message_at,cs.unread_count,
+		cs.account_role,cs.buyer_user_id,cs.seller_user_id,cs.role_item_id,cs.role_source
 		FROM chat_sessions cs JOIN cookies c ON c.id=cs.cookie_id
 		WHERE c.user_id=? AND cs.cookie_id=? AND cs.chat_id=? AND cs.is_visible=? AND cs.user_hidden_at=0`, userID, cookieID, chatID, true).
 		Scan(&session.CookieID, &session.ChatID, &session.BuyerID, &session.BuyerName, &session.BuyerAvatar,
-			&session.ItemID, &session.ItemTitle, &session.ItemImageURL, &session.LastMessage, &session.LastMessageAt, &session.UnreadCount)
+			&session.ItemID, &session.ItemTitle, &session.ItemImageURL, &session.LastMessage, &session.LastMessageAt, &session.UnreadCount,
+			&session.AccountRole, &session.BuyerUserID, &session.SellerUserID, &session.RoleItemID, &session.RoleSource)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -592,7 +625,8 @@ func (s *ChatStore) ListSessionPage(ctx context.Context, userID int64, cookieID 
 	}
 	// query 保存归属过滤、可选键集条件和稳定排序共同构成的会话分页 SQL。
 	query := `SELECT cs.cookie_id,cs.chat_id,cs.buyer_id,cs.buyer_name,cs.buyer_avatar_url,
-		cs.item_id,cs.item_title,cs.item_image_url,cs.last_message,cs.last_message_at,cs.unread_count
+		cs.item_id,cs.item_title,cs.item_image_url,cs.last_message,cs.last_message_at,cs.unread_count,
+		cs.account_role,cs.buyer_user_id,cs.seller_user_id,cs.role_item_id,cs.role_source
 		FROM chat_sessions cs JOIN cookies c ON c.id=cs.cookie_id
 		WHERE c.user_id=? AND cs.cookie_id=? AND cs.is_visible=? AND cs.user_hidden_at=0`
 	// args 保存与会话分页 SQL 占位符严格对应的非敏感查询参数。
@@ -616,7 +650,8 @@ func (s *ChatStore) ListSessionPage(ctx context.Context, userID int64, cookieID 
 		var session ChatSession
 		// scanErr 保存当前数据库行映射到会话摘要时的错误。
 		if scanErr := rows.Scan(&session.CookieID, &session.ChatID, &session.BuyerID, &session.BuyerName, &session.BuyerAvatar,
-			&session.ItemID, &session.ItemTitle, &session.ItemImageURL, &session.LastMessage, &session.LastMessageAt, &session.UnreadCount); scanErr != nil {
+			&session.ItemID, &session.ItemTitle, &session.ItemImageURL, &session.LastMessage, &session.LastMessageAt, &session.UnreadCount,
+			&session.AccountRole, &session.BuyerUserID, &session.SellerUserID, &session.RoleItemID, &session.RoleSource); scanErr != nil {
 			return ChatSessionPage{}, scanErr
 		}
 		sessions = append(sessions, session)

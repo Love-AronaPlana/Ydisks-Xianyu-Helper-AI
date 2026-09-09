@@ -152,8 +152,8 @@ const Chat: React.FC = () => {
               <>
                 <div className="flex h-20 shrink-0 items-start border-b border-slate-200 bg-white px-5 pt-4">
                   <div className="min-w-0">
-                    <div className="truncate text-sm font-black text-slate-950">{selectedSession.buyer_name || selectedSession.buyer_id}</div>
-                    <div className="mt-0.5 flex flex-col text-xs text-slate-500"><span>用户 ID：</span><span className="truncate">{selectedSession.buyer_id}</span></div>
+                    <div className="truncate text-sm font-black text-slate-950">{selectedSession.peer_name || selectedSession.peer_user_id}</div>
+                    <div className="mt-0.5 flex flex-col text-xs text-slate-500"><span>用户 ID：</span><span className="truncate">{selectedSession.peer_user_id}</span></div>
                   </div>
                   <span className={`ml-auto rounded-full px-2.5 py-1 text-[10px] font-bold ${activeAccount?.runtime_state === 'online' ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
                     {activeAccount?.runtime_state === 'online' ? '账号在线' : '账号离线'}
@@ -185,10 +185,10 @@ const Chat: React.FC = () => {
                     return (
                       <div key={message.message_key} className={`flex items-end gap-2.5 ${outgoing ? 'justify-end' : 'justify-start'}`}>
                         {!outgoing && <div className="h-9 w-9 shrink-0 overflow-hidden rounded-full bg-slate-200 ring-2 ring-white">
-                          {selectedSession.buyer_avatar_url ? <img src={selectedSession.buyer_avatar_url} alt={selectedSession.buyer_name || '用户'} className="h-full w-full object-cover" /> : <UserRound className="m-2 h-5 w-5 text-slate-500" />}
+                          {selectedSession.peer_avatar_url ? <img src={selectedSession.peer_avatar_url} alt={selectedSession.peer_name || '用户'} className="h-full w-full object-cover" /> : <UserRound className="m-2 h-5 w-5 text-slate-500" />}
                         </div>}
                         <div className={`max-w-[72%] ${outgoing ? 'items-end' : 'items-start'} flex flex-col`}>
-                          <div className="mb-1 px-1 text-[10px] font-semibold text-slate-400">{outgoing ? (activeAccount?.nickname || activeAccount?.remark || '我') : (selectedSession.buyer_name || message.sender_name || selectedSession.buyer_id)}</div>
+                          <div className="mb-1 px-1 text-[10px] font-semibold text-slate-400">{outgoing ? (activeAccount?.nickname || activeAccount?.remark || '我') : (selectedSession.peer_name || message.sender_name || selectedSession.peer_user_id)}</div>
                           {message.message_type === 'item' ? (
                             <ItemMessageCard content={message.content} outgoing={outgoing} />
                           ) : message.message_type === 'image' ? (
@@ -287,7 +287,7 @@ const Chat: React.FC = () => {
 
       {itemPickerOpen && <ChatItemPickerDialog open accountID={activeAccountID} chatID={activeChatID} onSent={acceptOutgoingMessage} onClose={/* 当前回调关闭当前会话的商品选择弹窗。 */ () => setItemPickerOpen(false)} />}
 
-		{deleteTarget && <DeleteConversationDialog buyerName={deleteTarget.buyer_name || `用户 ${deleteTarget.buyer_id}`} deleting={deletingChatID === deleteTarget.chat_id} error={deleteError} onCancel={/* 当前回调在未提交时关闭会话删除确认框。 */ () => setDeleteTarget(null)} onConfirm={/* 当前回调提交当前确认框中的会话删除。 */ () => void confirmDeleteConversation()} />}
+		{deleteTarget && <DeleteConversationDialog buyerName={deleteTarget.peer_name || `用户 ${deleteTarget.peer_user_id}`} deleting={deletingChatID === deleteTarget.chat_id} error={deleteError} onCancel={/* 当前回调在未提交时关闭会话删除确认框。 */ () => setDeleteTarget(null)} onConfirm={/* 当前回调提交当前确认框中的会话删除。 */ () => void confirmDeleteConversation()} />}
 
       <Lightbox open={lightboxIndex >= 0} index={Math.max(lightboxIndex, 0)} close={/* 当前回调关闭图片灯箱。 */ () => setLightboxIndex(-1)} slides={imageSlides} />
     </section>

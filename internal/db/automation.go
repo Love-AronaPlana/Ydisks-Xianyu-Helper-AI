@@ -29,12 +29,24 @@ type AutomationRules struct {
 	codec *secretCodec
 }
 
-// AutomationDeliveryProof 保存确认发货需要的已投递文本和图片凭证。
+// AutomationDeliveryMessage 保存订单发货快照中的一条原始消息。内容只存在于加密的运行凭证中，
+// 不得写入日志、通知或 HTTP 响应；Kind 目前只能是 text 或 image。
+type AutomationDeliveryMessage struct {
+	// Kind 描述买家消息的传输类型，决定重发时调用文本还是图片通道。
+	Kind string `json:"kind"`
+	// Content 保存已经为该订单确定的文本正文或图片地址，重发必须原样复用而不能重新领取卡密。
+	Content string `json:"content"`
+}
+
+// AutomationDeliveryProof 保存确认发货和失败重发需要的订单发货快照。
+// 每个内容字段只在数据库仓储和自动化执行器之间以加密形式流转，禁止序列化到 HTTP 或日志。
 type AutomationDeliveryProof struct {
 	// TradeText 是已发送给买家的文本凭证，多个动作按顺序合并。
 	TradeText string `json:"trade_text"`
 	// PicList 是已发送给买家的图片地址，顺序与消息发送顺序一致。
 	PicList []string `json:"pic_list"`
+	// Messages 按原始发送顺序保存文本和图片，人工补发时使用它避免重新获取、消费或扣除卡密。
+	Messages []AutomationDeliveryMessage `json:"messages"`
 }
 
 // AutomationRunActionAdvance 描述动作成功后的原子检查点更新。
@@ -122,7 +134,8 @@ type AutomationRun struct {
 	NextRetryAt    int64
 	ActionCursor   int
 	ActionStarted  bool
-	// DeliveryProof 是恢复确认发货所需的短期敏感凭证，仅在数据库仓储和自动化执行器之间流转。
+	// DeliveryProof 是订单已确定发货内容的加密快照，供确认发货、失败原样重发和人工核对使用。
+	// 它仅在数据库仓储和自动化执行器之间流转，绝不暴露给 HTTP 或日志。
 	DeliveryProof AutomationDeliveryProof
 }
 
@@ -265,16 +278,16 @@ SELECT r.trigger_type, COUNT(*)
 }
 
 // Match 查询某事件可触发的规则。商品级规则存在时只返回商品级规则；
-// 没有商品级规则时才回退到账号级规则，避免两层规则叠加导致重复发货。
-// Match 封装Match业务协调。
+// 没有商品级规则时才回退到账号级规则；付款发货还要求账号级规则显式确认适用于全部商品。
+// ctx 控制查询取消，cookieID、itemID 和 triggerType 限定范围；返回最高优先级的安全候选和数据库错误。
 func (a *AutomationRules) Match(ctx context.Context, cookieID, itemID, triggerType string) ([]AutomationRule, error) {
-	// out、err 用于本次流程后续判断的out、err
+	// out、err 保存按账号和商品隔离的候选及查询错误。
 	out, err := a.matchScope(ctx, cookieID, itemID, triggerType)
 	if err != nil || len(out) > 0 || itemID == "" {
-		return highestPriorityRule(out), err
+		return highestPriorityRule(confirmedDeliveryRules(out, triggerType)), err
 	}
 	out, err = a.matchScope(ctx, cookieID, "", triggerType)
-	return highestPriorityRule(out), err
+	return highestPriorityRule(confirmedDeliveryRules(out, triggerType)), err
 }
 
 // highestPriorityRule 封装highest优先级规则业务协调。
@@ -707,8 +720,9 @@ func (a *AutomationRules) FinishRun(ctx context.Context, id int64, attempt int, 
 	if status == "failed" && (strings.HasPrefix(errMsg, SafeRetryErrorPrefix) || sentCount == 0 && !strings.HasPrefix(errMsg, NoRetryErrorPrefix)) {
 		nextRetryAt = time.Now().UTC().Add(time.Minute).Unix()
 	}
-	// clearProof 表示本次终态不会再自动恢复，因此应立即清理敏感发货凭证。
-	clearProof := nextRetryAt == 0
+	// clearProof 固定为 false：终态运行仍须保留加密发货快照，供订单失败后的原样补发使用。
+	// 已取消的订单会通过专用取消路径清除快照，避免把内容保留为可重放状态。
+	clearProof := false
 	// res、err 用于本次流程后续判断的res、err
 	query := `
 UPDATE automation_runs

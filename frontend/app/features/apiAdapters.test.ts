@@ -30,7 +30,7 @@ import { getChatMessagePage,getChatMessages,getChatSessionPage,getChatSessions,m
 import { getDashboardStats,getOrderAnalytics,getValidOrders } from './dashboard/api';
 import { cancelItemPublishBatch,createItem,deleteItem,deleteItemPublishBatch,getItemDetail,getItemPublishBatch,getItemPublishBatches,getItems,previewItemPublishBatch,publishItem,recommendPublishCategory,retryFailedItemPublishBatch,startItemPublishBatch,syncItemsFromAccount,updateItem } from './items/api';
 import { createNotificationChannel,deleteAccountNotifications,deleteMessageNotification,deleteNotificationChannel,getAccountBindings,getMessageNotifications,getNotificationChannel,getNotificationChannels,setAccountBindings,setMessageNotification,testNotificationChannel,updateNotificationChannel,updateSystemSettings as updateNotificationSystemSettings } from './notifications/api';
-import { cancelOrderRefreshJob,deleteOrder,getAdminStats,getOrderDetail,getOrders,importOrders,manualShipOrder,syncOrders,syncSingleOrder,updateOrder } from './orders/api';
+import { cancelOrderRefreshJob,deleteOrder,getAdminStats,getOrderDetail,getOrders,manualShipOrder,syncOrders,syncSingleOrder,updateOrder } from './orders/api';
 import { clearDefaultReplyRecords,deleteDefaultReply,deleteReplyRule,deleteShippingRule,getAutomationIssues,getDefaultReplies,getDefaultReply,getReplyRules,getShippingRules,getShippingRulesPage,resolveAutomationRun,resolveDeferredAutomationTask,updateDefaultReply,updateReplyRule,updateShippingRule } from './rules/api';
 import { initializeAdmin,login,logout,verifySession } from './session/api';
 import { changePassword,fetchAIModels,getSystemSettings,updateLoginCredentials,updateSystemSettings } from './settings/api';
@@ -146,11 +146,11 @@ test('chat APIs preserve account and conversation scope', async () => {
 	stubContractFetch(fetchMock);
 	await getChatSessions('a1');
 	await getChatMessages('a1', 'c1', 9);
-	await sendChatMessage({ account_id: 'a1', chat_id: 'c1', buyer_id: 'b1', text: 'hi' });
+	await sendChatMessage({ account_id: 'a1', chat_id: 'c1', peer_user_id: 'b1', text: 'hi' });
 	await markChatRead('a1', 'c1', [{ messageId: 'm1', sessionId: 'c1', cid: 'c1@goofish', conversationType: 1 }]);
 	expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/chat/sessions?account_id=a1');
 	expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/chat/messages?account_id=a1&chat_id=c1&before_id=9');
-	expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toMatchObject({ account_id: 'a1', chat_id: 'c1', buyer_id: 'b1' });
+	expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toMatchObject({ account_id: 'a1', chat_id: 'c1', peer_user_id: 'b1' });
 	expect(JSON.parse(fetchMock.mock.calls[3][1].body)).toEqual({ account_id: 'a1', chat_id: 'c1', message_ids: [{ messageId: 'm1', sessionId: 'c1', cid: 'c1@goofish', conversationType: 1 }] });
 } /* 测试回调验证：chat APIs preserve account and conversation scope。 */);
 
@@ -167,8 +167,8 @@ test('Chat 会话、消息和发送 API 转发外部取消信号', async () => {
   const controller = new AbortController();
   await getChatSessionPage('a1', undefined, { signal: controller.signal });
   await getChatMessagePage('a1', 'c1', undefined, undefined, { signal: controller.signal });
-  await sendChatMessage({ account_id: 'a1', chat_id: 'c1', buyer_id: 'b1', text: 'hi' }, { signal: controller.signal });
-  await sendChatImage({ account_id: 'a1', chat_id: 'c1', buyer_id: 'b1', image: new File(['image'], 'chat.png', { type: 'image/png' }) }, { signal: controller.signal });
+  await sendChatMessage({ account_id: 'a1', chat_id: 'c1', peer_user_id: 'b1', text: 'hi' }, { signal: controller.signal });
+  await sendChatImage({ account_id: 'a1', chat_id: 'c1', peer_user_id: 'b1', image: new File(['image'], 'chat.png', { type: 'image/png' }) }, { signal: controller.signal });
   await markChatRead('a1', 'c1', [], { signal: controller.signal });
   expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/v1/chat/sessions?account_id=a1', expect.objectContaining({ signal: expect.any(AbortSignal) }));
   expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/v1/chat/messages?account_id=a1&chat_id=c1', expect.objectContaining({ signal: expect.any(AbortSignal) }));
@@ -229,18 +229,17 @@ test('automation issue APIs expose and resolve quarantined work', async () => {
 	expect(fetchMock.mock.calls[2][0]).toBe('/api/v1/automation-pending-tasks/2/resolve');
 } /* 测试回调验证：automation issue APIs expose and resolve quarantined work。 */);
 
-test('order refresh uses JSON while file import keeps the shared authenticated multipart path', async () => {
+test('order refresh uses authenticated JSON and never uploads orders', async () => {
 	const fetchMock = vi.fn()
 		.mockResolvedValueOnce(jsonResponse({ success: true, job_id: 'job-1', status: 'running' }))
 		.mockResolvedValueOnce(jsonResponse({ success: true, job_id: 'job-1', status: 'succeeded', result: { partial_failure: false, message: '同步完成', summary: { discovered: 0, list_updated: 0, soft_deleted: 0, detail_total: 0, total: 0, updated: 0, no_change: 0, failed: 0 }, results: [] } }))
 		.mockResolvedValueOnce(jsonResponse({ success: true })); /* fetchMock 表示fetchMock。 */
 	stubContractFetch(fetchMock);
 	await syncOrders('acc1', 'pending_ship');
-	await importOrders(new FormData());
 	expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/v1/orders/refresh', expect.objectContaining({ method: 'POST', credentials: 'include', body: JSON.stringify({ cookie_id: 'acc1', status: 'pending_ship' }) }));
 	expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/v1/orders/refresh/job-1', expect.objectContaining({ method: 'GET', credentials: 'include' }));
-	expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/v1/orders/import', expect.objectContaining({ method: 'POST', credentials: 'include', body: expect.any(FormData) }));
-} /* 测试回调验证：新版订单刷新使用 JSON，而订单文件导入保持共享 multipart 路径。 */);
+	expect(fetchMock).toHaveBeenCalledTimes(2);
+} /* 测试回调验证：新版订单刷新仅提交认证 JSON 查询，人工导入请求已移除。 */);
 
 test('syncOrders surfaces failed persisted job status', async () => {
 	const fetchMock = vi.fn()
@@ -333,8 +332,8 @@ test('getOrders maps unsupported backend statuses to unknown', async () => {
   expect(result.data[0].status).toBe('unknown');
 } /* 测试回调验证：getOrders maps unsupported backend statuses to unknown。 */);
 
-test('订单查询和导入 API 转发外部取消信号', async () => {
-  // fetchMock 是同时验证订单查询和文件上传请求控制参数的替身。
+test('订单查询 API 转发外部取消信号', async () => {
+  // fetchMock 是验证订单查询请求控制参数的替身。
   const fetchMock = vi.fn()
     .mockResolvedValueOnce(jsonResponse({ data: [], total_pages: 1 }))
     .mockResolvedValueOnce(jsonResponse({ success_count: 1, failed_count: 0, results: [] }));
@@ -342,10 +341,8 @@ test('订单查询和导入 API 转发外部取消信号', async () => {
   // controller 是 feature Hook 传入 API 的取消控制器。
   const controller = new AbortController();
   await getOrders(undefined, 'all', 1, 20, '', { signal: controller.signal });
-  await importOrders(new FormData(), { signal: controller.signal });
   expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/v1/orders?page=1&page_size=20', expect.objectContaining({ signal: expect.any(AbortSignal) }));
-  expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/v1/orders/import', expect.objectContaining({ signal: expect.any(AbortSignal) }));
-} /* 测试回调验证：订单查询和导入 API 转发外部取消信号。 */);
+} /* 测试回调验证：订单查询 API 转发外部取消信号。 */);
 
 test('Dashboard 统计 API 转发外部取消信号', async () => {
   // fetchMock 验证 Dashboard 的概览、趋势和订单明细共用同一个取消信号。
@@ -1565,8 +1562,8 @@ const runVersionedChatTaskAPITest = async () => {
   await getChatMessagePage('acc1', 'chat-1', 4, 9);
   await getChatSessions('acc1');
   await getChatMessages('acc1', 'chat-1', 9);
-  await sendChatMessage({ account_id: 'acc1', chat_id: 'chat-1', buyer_id: 'buyer-1', text: '你好' });
-  await sendChatImage({ account_id: 'acc1', chat_id: 'chat-1', buyer_id: 'buyer-1', image: new File(['image'], 'chat.png', { type: 'image/png' }) });
+  await sendChatMessage({ account_id: 'acc1', chat_id: 'chat-1', peer_user_id: 'buyer-1', text: '你好' });
+  await sendChatImage({ account_id: 'acc1', chat_id: 'chat-1', peer_user_id: 'buyer-1', image: new File(['image'], 'chat.png', { type: 'image/png' }) });
   await markChatRead('acc1', 'chat-1', []);
   await getAccountTaskSettings('acc1');
   await updateAccountTaskSettings('acc1', { account_id: 'acc1', auto_rate_enabled: true, rate_content: '交易愉快', auto_polish_enabled: false, polish_time: '03:00' });

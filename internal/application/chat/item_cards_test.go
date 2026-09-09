@@ -98,7 +98,7 @@ func (catalog *itemCatalog) ListChatItems(_ context.Context, accountID, chatID, 
 // TestListChatItemsChecksOwnershipAndExactSession 验证查询在平台调用前完成账号归属和精确会话校验。
 func TestListChatItemsChecksOwnershipAndExactSession(t *testing.T) {
 	// session 是当前用户拥有账号下的目标个人会话。
-	session := Session{AccountID: "account-1", ChatID: "chat-1", BuyerID: "buyer-from-store"}
+	session := Session{AccountID: "account-1", ChatID: "chat-1", PeerUserID: "buyer-from-store"}
 	// repository 是允许当前用户访问目标会话的测试仓储。
 	repository := &itemRepository{fakeRepository: &fakeRepository{owned: true}, session: session}
 	// catalog 是返回固定对方商品页的平台目录替身。
@@ -132,7 +132,7 @@ func TestSendItemCardUsesStoredPeerAndCanonicalContent(t *testing.T) {
 	// sender 是记录商品目标和字段的平台发送器。
 	sender := &sendSender{}
 	// sessionRepository 是当前用户拥有账号下的精确会话仓储。
-	sessionRepository := &itemRepository{fakeRepository: &fakeRepository{owned: true}, session: Session{AccountID: "account-1", ChatID: "chat-1", BuyerID: "stored-buyer"}}
+	sessionRepository := &itemRepository{fakeRepository: &fakeRepository{owned: true}, session: Session{AccountID: "account-1", ChatID: "chat-1", PeerUserID: "stored-buyer"}}
 	// service 是支持商品卡片发送的聊天应用服务。
 	service := NewWithSending(sessionRepository, repository, sendProvider{sender: sender}, nil)
 	// message 和 sendErr 是商品卡片发送及本地状态收口结果。
@@ -140,7 +140,7 @@ func TestSendItemCardUsesStoredPeerAndCanonicalContent(t *testing.T) {
 	if sendErr != nil || message == nil || message.Status != "sent" || message.MessageType != "item" {
 		t.Fatalf("message=%+v err=%v", message, sendErr)
 	}
-	if sender.itemBuyerID != "stored-buyer" || sender.itemChatID != "chat-1" || sender.itemKey != "local-image" || sender.item.ImageURL != "https://img.example/item.png" || sender.item.Price != "19.90" {
+	if sender.itemPeerUserID != "stored-buyer" || sender.itemChatID != "chat-1" || sender.itemKey != "local-image" || sender.item.ImageURL != "https://img.example/item.png" || sender.item.Price != "19.90" {
 		t.Fatalf("sender=%+v", sender)
 	}
 	// wantContent 是本地消息必须保存的固定字段顺序商品 JSON。
@@ -155,7 +155,7 @@ func TestDeleteConversationWaitsForInFlightItemSend(t *testing.T) {
 	// started、release、ownershipChecked 和 deleteCalled 控制发送与删除的确定性执行顺序。
 	started, release, ownershipChecked, deleteCalled := make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{})
 	// repository 同时提供商品发送会话查询和删除观察能力。
-	repository := &blockingDeletionRepository{itemRepository: &itemRepository{fakeRepository: &fakeRepository{owned: true}, session: Session{AccountID: "account-1", ChatID: "chat-1", BuyerID: "buyer-1"}}, ownershipChecked: ownershipChecked, deleteCalled: deleteCalled}
+	repository := &blockingDeletionRepository{itemRepository: &itemRepository{fakeRepository: &fakeRepository{owned: true}, session: Session{AccountID: "account-1", ChatID: "chat-1", PeerUserID: "buyer-1"}}, ownershipChecked: ownershipChecked, deleteCalled: deleteCalled}
 	// sender 是会在平台投递阶段暂停的商品发送器。
 	sender := &blockingItemSender{sendSender: &sendSender{}, started: started, release: release}
 	// service 是发送和删除共享同一会话操作门的应用服务。
@@ -206,7 +206,7 @@ func TestDeleteConversationWaitsForInFlightItemSend(t *testing.T) {
 // TestSendItemCardCoversOfflinePlatformAndStatusFailures 验证离线、平台失败和状态收口失败语义。
 func TestSendItemCardCoversOfflinePlatformAndStatusFailures(t *testing.T) {
 	// sessionRepository 是所有发送分支共享的已归属会话仓储。
-	sessionRepository := &itemRepository{fakeRepository: &fakeRepository{owned: true}, session: Session{AccountID: "account-1", ChatID: "chat-1", BuyerID: "buyer-1"}}
+	sessionRepository := &itemRepository{fakeRepository: &fakeRepository{owned: true}, session: Session{AccountID: "account-1", ChatID: "chat-1", PeerUserID: "buyer-1"}}
 	// input 是所有发送分支共享的合法商品快照。
 	input := ItemCardInput{UserID: 7, AccountID: "account-1", ChatID: "chat-1", Item: ChatItem{ItemID: "item-1", Title: "测试商品", ImageURL: "https://img.example/item.png", Price: "10"}}
 	// offlineService 是无法解析在线账号发送器的应用服务。

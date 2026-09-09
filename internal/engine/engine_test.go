@@ -90,6 +90,10 @@ func newAccountForTest(t *testing.T) (*Account, *recordingHandler, *db.Store, fu
 	// 通用账号测试默认不启用 loginuser.get；需要验证登录态恢复的用例会
 	// 显式注入 statusMtop，避免单元测试访问真实网络。
 	acc.mtop = &fakeRunMtop{token: "test-token"}
+	// 商品发布人同样使用本地身份夹具，防抖测试不得通过构造时的默认客户端访问真实平台。
+	acc.itemPublisher = publisherFixture{fetch: func(context.Context, string, string) (string, error) {
+		return "123", nil
+	}}
 	return acc, h, store, func() { d.Close() }
 }
 

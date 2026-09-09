@@ -36,7 +36,7 @@ func (a *Adapter) HandleChatMessage(ctx context.Context, message engine.ChatMess
 	}
 	// stored、inserted、err 保存落库消息、是否首次插入及持久化错误。
 	stored, inserted, err := a.chat.RecordIncoming(ctx, chat.Incoming{
-		AccountID: message.AccountID, ChatID: message.ChatID, BuyerID: message.SenderUserID,
+		AccountID: message.AccountID, AccountUserID: protocol.TransCookies(message.CookieStr)["unb"], ChatID: message.ChatID, BuyerID: message.SenderUserID,
 		BuyerName: message.SenderName, Text: message.Text, MessageID: message.MessageID, ItemID: message.ItemID, ObservedAt: message.ObservedAt, Raw: message.Raw,
 	})
 	if stored != nil {
@@ -44,6 +44,22 @@ func (a *Adapter) HandleChatMessage(ctx context.Context, message engine.ChatMess
 			"message_key", stored.MessageKey, "message_type", stored.MessageType, "inserted", inserted)
 	}
 	return err
+}
+
+// ChatSessionRole 返回消息所属会话和商品的本地角色结论，不读取账号凭证明文。
+func (a *Adapter) ChatSessionRole(ctx context.Context, accountID, chatID, itemID string) (db.ChatSession, error) {
+	if a == nil || a.chat == nil {
+		return db.ChatSession{CookieID: accountID, ChatID: chatID, ItemID: itemID, AccountRole: "unknown"}, nil
+	}
+	return a.chat.SessionRole(ctx, accountID, chatID, itemID)
+}
+
+// SaveChatSessionRole 保存一次平台发布者核验得到的会话角色，不修改 Cookie 或 Token。
+func (a *Adapter) SaveChatSessionRole(ctx context.Context, accountID, chatID, itemID, accountRole, buyerUserID, sellerUserID, roleSource string) error {
+	if a == nil || a.chat == nil {
+		return errors.New("聊天服务未初始化")
+	}
+	return a.chat.UpdateSessionRole(ctx, accountID, chatID, itemID, accountRole, buyerUserID, sellerUserID, roleSource)
 }
 
 // HandleMessageRead 接收平台出站消息已读回执，并把非敏感已读状态更新委托给聊天服务。

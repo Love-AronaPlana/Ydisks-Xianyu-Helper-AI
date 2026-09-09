@@ -261,7 +261,7 @@ func TestChatSendTextHandlerCoversAvailabilityValidationAndErrors(t *testing.T) 
 	// cookie 是通过真实登录流程取得的管理员会话。
 	cookie := loginHelper(t, handler)
 	// successRecorder 保存文字发送成功响应。
-	successRecorder := serveChatCoverageRequest(handler, cookie, http.MethodPost, "/api/v1/chat/messages", `{"account_id":"acc1","chat_id":"chat1","buyer_id":"buyer1","text":"你好"}`)
+	successRecorder := serveChatCoverageRequest(handler, cookie, http.MethodPost, "/api/v1/chat/messages", `{"account_id":"acc1","chat_id":"chat1","peer_user_id":"buyer1","text":"你好"}`)
 	if successRecorder.Code != http.StatusCreated {
 		t.Fatalf("success status=%d body=%s", successRecorder.Code, successRecorder.Body.String())
 	}
@@ -281,7 +281,7 @@ func TestChatSendTextHandlerCoversAvailabilityValidationAndErrors(t *testing.T) 
 	for _, errorCase := range errorCases {
 		port.sendTextErr = errorCase.err
 		// recorder 保存当前文字发送错误响应。
-		recorder := serveChatCoverageRequest(handler, cookie, http.MethodPost, "/api/v1/chat/messages", `{"account_id":"acc1","chat_id":"chat1","buyer_id":"buyer1","text":"你好"}`)
+		recorder := serveChatCoverageRequest(handler, cookie, http.MethodPost, "/api/v1/chat/messages", `{"account_id":"acc1","chat_id":"chat1","peer_user_id":"buyer1","text":"你好"}`)
 		if recorder.Code != errorCase.status {
 			t.Errorf("%s status=%d want=%d body=%s", errorCase.name, recorder.Code, errorCase.status, recorder.Body.String())
 		}
@@ -295,8 +295,8 @@ func TestChatSendTextHandlerCoversAvailabilityValidationAndErrors(t *testing.T) 
 		status int
 	}{
 		{"malformed json", "{", http.StatusBadRequest},
-		{"missing fields", `{"account_id":"acc1","chat_id":"","buyer_id":"buyer1","text":"x"}`, http.StatusBadRequest},
-		{"too long", `{"account_id":"acc1","chat_id":"chat1","buyer_id":"buyer1","text":"` + strings.Repeat("中", 2001) + `"}`, http.StatusBadRequest},
+		{"missing fields", `{"account_id":"acc1","chat_id":"","peer_user_id":"buyer1","text":"x"}`, http.StatusBadRequest},
+		{"too long", `{"account_id":"acc1","chat_id":"chat1","peer_user_id":"buyer1","text":"` + strings.Repeat("中", 2001) + `"}`, http.StatusBadRequest},
 	}
 	// validationCase 表示当前文字发送输入校验场景。
 	for _, validationCase := range validationCases {
@@ -308,7 +308,7 @@ func TestChatSendTextHandlerCoversAvailabilityValidationAndErrors(t *testing.T) 
 	}
 	port.ownsAccountResult = false
 	// forbiddenRecorder 保存账号归属失败响应。
-	forbiddenRecorder := serveChatCoverageRequest(handler, cookie, http.MethodPost, "/api/v1/chat/messages", `{"account_id":"acc1","chat_id":"chat1","buyer_id":"buyer1","text":"你好"}`)
+	forbiddenRecorder := serveChatCoverageRequest(handler, cookie, http.MethodPost, "/api/v1/chat/messages", `{"account_id":"acc1","chat_id":"chat1","peer_user_id":"buyer1","text":"你好"}`)
 	if forbiddenRecorder.Code != http.StatusForbidden {
 		t.Fatalf("forbidden status=%d", forbiddenRecorder.Code)
 	}
@@ -329,7 +329,7 @@ func newChatImageCoverageRequest(t *testing.T, cookie *http.Cookie, fileContentT
 	writer := multipart.NewWriter(&body)
 	if includeFields {
 		// fields 保存图片发送所需的聊天标识字段。
-		fields := map[string]string{"account_id": "acc1", "chat_id": "chat1", "buyer_id": "buyer1"}
+		fields := map[string]string{"account_id": "acc1", "chat_id": "chat1", "peer_user_id": "buyer1"}
 		// fieldName、fieldValue 表示当前待写入的表单字段。
 		for fieldName, fieldValue := range fields {
 			// fieldErr 表示当前表单字段写入失败原因。
@@ -491,12 +491,12 @@ func TestChatSessionAndMessageHandlersCoverRefreshFallbacks(t *testing.T) {
 	// port 是当前测试注入的会话与消息应用端口。
 	port := &chatHandlerCoveragePort{
 		ownsAccountResult:        true,
-		listSessionsResult:       []chatapp.Session{{AccountID: "acc1", ChatID: "chat1", BuyerID: "buyer1", BuyerName: "买家"}},
-		refreshIdentitiesResult:  []chatapp.Session{{AccountID: "acc1", ChatID: "chat1", BuyerID: "buyer1", BuyerName: "补全买家"}},
+		listSessionsResult:       []chatapp.Session{{AccountID: "acc1", ChatID: "chat1", PeerUserID: "buyer1", PeerName: "买家"}},
+		refreshIdentitiesResult:  []chatapp.Session{{AccountID: "acc1", ChatID: "chat1", PeerUserID: "buyer1", PeerName: "补全买家"}},
 		refreshConversationsPage: chatapp.ConversationPage{HasMore: true, NextCursor: 9},
-		refreshHistoryPage:       chatapp.HistoryPage{Session: chatapp.Session{AccountID: "acc1", ChatID: "chat1", BuyerID: "buyer1"}, HasMore: true, NextCursor: 10},
-		listStoredPage:           chatapp.Page{Session: chatapp.Session{AccountID: "acc1", ChatID: "chat1", BuyerID: "buyer1"}},
-		resolveIdentityResult:    chatapp.Session{AccountID: "acc1", ChatID: "chat1", BuyerID: "buyer1", BuyerName: "本地补全"},
+		refreshHistoryPage:       chatapp.HistoryPage{Session: chatapp.Session{AccountID: "acc1", ChatID: "chat1", PeerUserID: "buyer1"}, HasMore: true, NextCursor: 10},
+		listStoredPage:           chatapp.Page{Session: chatapp.Session{AccountID: "acc1", ChatID: "chat1", PeerUserID: "buyer1"}},
+		resolveIdentityResult:    chatapp.Session{AccountID: "acc1", ChatID: "chat1", PeerUserID: "buyer1", PeerName: "本地补全"},
 	}
 	srv.applications.chat = port
 	// handler 是注入可控聊天端口后的真实路由。
