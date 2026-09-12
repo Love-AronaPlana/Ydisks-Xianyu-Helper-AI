@@ -85,6 +85,10 @@ func (r automationRunCoordinator) executeRule(ctx context.Context, task Task, ru
 		if r.hasNotifier() {
 			r.notifyResult(finishCtx, task, run.ID, status, sent, errMsg)
 		}
+		if status == "success" {
+			r.logger.Info("自动化规则执行成功", "run_id", run.ID, "account", task.AccountID,
+				"order_id", task.OrderID, "trigger", task.TriggerType, "sent_count", sent)
+		}
 	}()
 	// actions 是当前规则生成的完整动作计划。
 	actions := task.ActionPlan
@@ -216,6 +220,13 @@ func (r automationRunCoordinator) prepareRuleRun(ctx context.Context, task Task,
 
 // executeRunActions 按动作游标执行计划，并在每个外部动作前后保存检查点。
 func (r automationRunCoordinator) executeRunActions(ctx context.Context, task Task, ruleID int64, run *db.AutomationRun, actions []db.AutomationAction, skipDelays bool) (int, bool, error) {
+	if run.DeliveryProof.RefillPending {
+		// reason 说明即使普通恢复队列重新领取运行，也不能绕过未可靠收口的人工补取占用。
+		reason := "补取卡密结果未可靠保存，已禁止再次取卡，请人工核对"
+		// quarantineErr 保存隔离当前恢复代次的错误，失败时仍不得执行任何外部动作。
+		quarantineErr := r.store.Automation.QuarantineRunResult(ctx, run.ID, run.AttemptCount, run.SentCount, reason)
+		return run.SentCount, false, errors.Join(errAutomationNeedsReview, errors.New(reason), quarantineErr)
+	}
 	// sent 保存本次运行已经确认完成的动作数量。
 	sent := run.SentCount
 	// persistDeliveryProof 在订单付款发货和评价赠品链路保存可重放内容；两者都可能消费库存或调用卡密接口，
@@ -223,9 +234,14 @@ func (r automationRunCoordinator) executeRunActions(ctx context.Context, task Ta
 	persistDeliveryProof := task.TriggerType == TriggerOrderPaid || task.TriggerType == TriggerBuyerReviewed
 	// deliveryProof 保存本次运行已经成功投递的卡密文本和图片，并从数据库检查点恢复。
 	deliveryProof := shipmentDeliveryProof{
-		tradeText: run.DeliveryProof.TradeText,
-		picList:   append([]string(nil), run.DeliveryProof.PicList...),
-		messages:  append([]db.AutomationDeliveryMessage(nil), run.DeliveryProof.Messages...),
+		tradeText:               run.DeliveryProof.TradeText,
+		picList:                 append([]string(nil), run.DeliveryProof.PicList...),
+		messages:                append([]db.AutomationDeliveryMessage(nil), run.DeliveryProof.Messages...),
+		expectedUnits:           run.DeliveryProof.ExpectedUnits,
+		preparedUnits:           run.DeliveryProof.PreparedUnits,
+		unknownUnits:            run.DeliveryProof.UnknownUnits,
+		refillPending:           run.DeliveryProof.RefillPending,
+		skippedTemplateMessages: append([]db.AutomationDeliverySkip(nil), run.DeliveryProof.SkippedTemplateMessages...),
 	}
 	// cursor 表示当前动作在计划中的位置。
 	for cursor := run.ActionCursor; cursor < len(actions); cursor++ {
@@ -266,7 +282,10 @@ func (r automationRunCoordinator) executeRunActions(ctx context.Context, task Ta
 			return sent, false, err
 		}
 		// n 保存外部动作明确成功产生的结果数量。
-		actionResult, actionErr := r.executeActionNow(ctx, task, action, deliveryProof)
+		actionResult, actionErr := r.executeLeasedAction(ctx, task, action, deliveryProof, run)
+		// actionResult 中的模板跳过位置只在当前动作内有意义，此处补全冻结计划下标后再持久化。
+		actionResult.proof = tagTemplateDeliverySkips(actionResult.proof, cursor)
+		actionResult.reviewProof = tagTemplateDeliverySkips(actionResult.reviewProof, cursor)
 		// n 表示本动作已明确完成的外部结果数量。
 		n := actionResult.sent
 		if actionErr != nil {
@@ -281,11 +300,16 @@ func (r automationRunCoordinator) executeRunActions(ctx context.Context, task Ta
 				quarantineProof = mergeShipmentDeliveryProof(quarantineProof, actionResult.reviewProof)
 				// proofInput 保存需要加密写入人工核对记录的凭证。
 				var proofInput *db.AutomationDeliveryProof
-				if persistDeliveryProof && (quarantineProof.tradeText != "" || len(quarantineProof.picList) > 0 || len(quarantineProof.messages) > 0) {
+				if persistDeliveryProof && (quarantineProof.refillPending || quarantineProof.tradeText != "" || len(quarantineProof.picList) > 0 || len(quarantineProof.messages) > 0 || len(quarantineProof.skippedTemplateMessages) > 0) {
 					proofInput = &db.AutomationDeliveryProof{
-						TradeText: quarantineProof.tradeText,
-						PicList:   append([]string(nil), quarantineProof.picList...),
-						Messages:  append([]db.AutomationDeliveryMessage(nil), quarantineProof.messages...),
+						TradeText:               quarantineProof.tradeText,
+						PicList:                 append([]string(nil), quarantineProof.picList...),
+						Messages:                append([]db.AutomationDeliveryMessage(nil), quarantineProof.messages...),
+						ExpectedUnits:           quarantineProof.expectedUnits,
+						PreparedUnits:           quarantineProof.preparedUnits,
+						UnknownUnits:            quarantineProof.unknownUnits,
+						RefillPending:           quarantineProof.refillPending,
+						SkippedTemplateMessages: append([]db.AutomationDeliverySkip(nil), quarantineProof.skippedTemplateMessages...),
 					}
 				}
 				// quarantineErr 保存人工核对状态写入错误。
@@ -310,7 +334,7 @@ func (r automationRunCoordinator) executeRunActions(ctx context.Context, task Ta
 		// nextProof 是本动作成功后应持久化的完整凭证，避免延迟或重启后丢失已发送内容。
 		nextProof := deliveryProof
 		// proofChanged 表示本动作产生了需要持久化的新凭证。
-		proofChanged := persistDeliveryProof && (actionResult.proof.tradeText != "" || len(actionResult.proof.picList) > 0 || len(actionResult.proof.messages) > 0)
+		proofChanged := persistDeliveryProof && (actionResult.proof.tradeText != "" || len(actionResult.proof.picList) > 0 || len(actionResult.proof.messages) > 0 || len(actionResult.proof.skippedTemplateMessages) > 0)
 		if proofChanged {
 			nextProof = mergeShipmentDeliveryProof(deliveryProof, actionResult.proof)
 		}
@@ -319,9 +343,14 @@ func (r automationRunCoordinator) executeRunActions(ctx context.Context, task Ta
 		if proofChanged {
 			// persistedProof 是数据库仓储使用的导出凭证模型。
 			persistedProof := db.AutomationDeliveryProof{
-				TradeText: nextProof.tradeText,
-				PicList:   append([]string(nil), nextProof.picList...),
-				Messages:  append([]db.AutomationDeliveryMessage(nil), nextProof.messages...),
+				TradeText:               nextProof.tradeText,
+				PicList:                 append([]string(nil), nextProof.picList...),
+				Messages:                append([]db.AutomationDeliveryMessage(nil), nextProof.messages...),
+				ExpectedUnits:           nextProof.expectedUnits,
+				PreparedUnits:           nextProof.preparedUnits,
+				UnknownUnits:            nextProof.unknownUnits,
+				RefillPending:           nextProof.refillPending,
+				SkippedTemplateMessages: append([]db.AutomationDeliverySkip(nil), nextProof.skippedTemplateMessages...),
 			}
 			advance.DeliveryProof = &persistedProof
 		}
@@ -366,7 +395,22 @@ func mergeShipmentDeliveryProof(current, next shipmentDeliveryProof) shipmentDel
 	current.tradeText = appendTradeText(current.tradeText, next.tradeText)
 	current.picList = append(current.picList, next.picList...)
 	current.messages = append(current.messages, next.messages...)
+	if next.expectedUnits > 0 {
+		current.expectedUnits += next.expectedUnits
+	}
+	current.preparedUnits += next.preparedUnits
+	current.unknownUnits += next.unknownUnits
+	current.refillPending = current.refillPending || next.refillPending
+	current.skippedTemplateMessages = append(current.skippedTemplateMessages, next.skippedTemplateMessages...)
 	return current
+}
+
+// tagTemplateDeliverySkips 将当前模板动作内的跳过消息下标绑定到运行计划动作下标，防止多模板动作之间产生歧义。
+func tagTemplateDeliverySkips(proof shipmentDeliveryProof, actionIndex int) shipmentDeliveryProof {
+	for index := range proof.skippedTemplateMessages { // index 表示当前模板跳过凭证在动作结果中的位置。
+		proof.skippedTemplateMessages[index].ActionIndex = actionIndex
+	}
+	return proof
 }
 
 // actionNeedsOnlineSender 判断动作是否会向买家发送消息；这类动作必须先确认账号 WebSocket 已就绪，避免 API 卡密已领取但无法投递。

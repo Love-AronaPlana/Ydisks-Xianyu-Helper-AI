@@ -3,6 +3,7 @@ package mtop
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -159,6 +160,8 @@ func (c *ClientImpl) accountTaskRequest(ctx context.Context, cookiesStr, endpoin
 	}
 	// lastFailure 保存最后一次可诊断的 MTOP 失败，供 Token 重试耗尽时返回完整原因。
 	var lastFailure error
+	// tokenRefreshed 标记本次业务请求是否已经完成签名 Cookie 轮换，供成功重试日志区分首次请求。
+	tokenRefreshed := false
 	for // attempt 用于本次流程后续判断的尝试次数
 	attempt := 0; attempt < 3; attempt++ {
 		// previousCookies 记录本次请求前的 Cookie，用于判断响应是否已完成 Token 轮换。
@@ -169,6 +172,9 @@ func (c *ClientImpl) accountTaskRequest(ctx context.Context, cookiesStr, endpoin
 		failure := err
 		if err == nil {
 			if hasMTopSuccess(decoded.Ret) {
+				if tokenRefreshed {
+					c.logInfo("MTOP Token 刷新后业务接口重试成功", "api", api, "attempt", attempt+1)
+				}
 				return decoded, updated, nil
 			}
 			failure = c.mtopResponseFailure(api, http.StatusOK, decoded.Ret, "")
@@ -180,13 +186,23 @@ func (c *ClientImpl) accountTaskRequest(ctx context.Context, cookiesStr, endpoin
 		if updated != "" {
 			current = updated
 		}
-		if current == previousCookies {
+		if mtopTokenCookieChanged(previousCookies, current) {
+			tokenRefreshed = true
+			c.logInfo("MTOP Token 刷新成功", "api", api, "source", "业务接口响应 Cookie")
+		} else {
 			// refreshed、refreshErr 用于本次流程后续判断的refreshed、refreshErr
 			refreshed, refreshErr := c.RefreshTokenContext(ctx, current)
 			if refreshErr != nil {
 				return nil, current, fmt.Errorf("刷新 mtop token: %w", refreshErr)
 			}
+			if refreshed == nil || !mtopTokenCookieChanged(current, refreshed.UpdatedCookies) {
+				// tokenRefreshErr 保留原始 Token 过期分类，让上层进入账号级恢复而不是重复发送同一旧签名。
+				tokenRefreshErr := fmt.Errorf("%s token 刷新成功但签名 Cookie 未轮换", api)
+				return nil, current, errors.Join(failure, tokenRefreshErr)
+			}
 			current = refreshed.UpdatedCookies
+			tokenRefreshed = true
+			c.logInfo("MTOP Token 刷新成功", "api", api, "source", "Token 接口")
 		}
 		if // err 用于本次流程后续判断的err
 		err := sleepCtx(ctx, MTopRetryGap); err != nil {

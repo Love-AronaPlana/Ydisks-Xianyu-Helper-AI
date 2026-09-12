@@ -96,6 +96,10 @@ npm run dev
 
 Vite proxies backend routes to `localhost:59188`. Production builds are written to `internal/webui/static/` and embedded by the Go server.
 
+## 闲鱼商品列表协议约束
+
+闲鱼商品列表接口在账号没有在售商品时，成功响应可能省略 `cardList` 字段；**缺少 `cardList` 不是异常，也不是不完整响应**，必须按空商品列表处理并允许全量同步正常完成。本协议事实不得在代码审查、测试或后续重构中被改写为“缺少 `cardList` 即报错”。只有平台明确返回 `cardList` 且其值类型不符合接口协议，或其他字段明确表明响应失败时，才按异常处理。涉及该字段的测试必须覆盖成功且省略 `cardList` 的空列表场景。
+
 ## Mandatory refactoring governance — DO NOT SKIP
 
 The repository is following the authoritative long-term plan in
