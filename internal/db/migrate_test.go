@@ -36,6 +36,7 @@ func TestMigrate_AppliesCleanSchema(t *testing.T) {
 		{"orders", "receiver_city"},
 		{"orders", "version"},
 		{"orders", "deleted_at"},
+		{"cookies", "auto_consign"},
 		{"cards", "image_url"},
 		{"cards", "delay_seconds"},
 		{"keywords", "item_id"},
@@ -144,9 +145,13 @@ func TestMigrate_ExistingAutomationRunsReceiveEmptyDeliveryProof(t *testing.T) {
 	if idErr != nil {
 		t.Fatal(idErr)
 	}
-	// cookieErr 保存历史账号写入错误。
-	if _, cookieErr := rawDB.Exec(`INSERT INTO cookies (id,value,user_id) VALUES ('migration-cookie','cv',?)`, userID); cookieErr != nil {
+	// cookieErr 保存历史账号写入错误；显式保留旧开关开启状态以验证迁移回填。
+	if _, cookieErr := rawDB.Exec(`INSERT INTO cookies (id,value,user_id,auto_confirm) VALUES ('migration-cookie','cv',?,1)`, userID); cookieErr != nil {
 		t.Fatal(cookieErr)
+	}
+	// disabledCookieErr 保存旧自动发货总开关关闭账号的写入错误，用于验证关闭状态也能准确回填。
+	if _, disabledCookieErr := rawDB.Exec(`INSERT INTO cookies (id,value,user_id,auto_confirm) VALUES ('migration-cookie-disabled','cv',?,0)`, userID); disabledCookieErr != nil {
+		t.Fatal(disabledCookieErr)
 	}
 	// ruleResult、ruleErr 保存历史自动化规则写入结果。
 	ruleResult, ruleErr := rawDB.Exec(`INSERT INTO automation_rules (user_id,cookie_id,item_id,name,trigger_type,enabled,priority,config_json) VALUES (?,?,?,?,?,1,100,'{}')`, userID, "migration-cookie", "migration-item", "migration-rule", "paid")
@@ -174,6 +179,19 @@ func TestMigrate_ExistingAutomationRunsReceiveEmptyDeliveryProof(t *testing.T) {
 	}
 	if varProof != "" {
 		t.Fatalf("历史运行凭证应为空: %q", varProof)
+	}
+	// enabledAutoConsign、disabledAutoConsign 验证迁移分别继承旧 auto_confirm 的开关状态。
+	var enabledAutoConsign, disabledAutoConsign int
+	// scanErr 表示读取迁移回填后的开启账号自动确认发货值时的数据库错误。
+	if scanErr := rawDB.QueryRow(`SELECT auto_consign FROM cookies WHERE id='migration-cookie'`).Scan(&enabledAutoConsign); scanErr != nil {
+		t.Fatal(scanErr)
+	}
+	// scanErr 表示读取迁移回填后的关闭账号自动确认发货值时的数据库错误。
+	if scanErr := rawDB.QueryRow(`SELECT auto_consign FROM cookies WHERE id='migration-cookie-disabled'`).Scan(&disabledAutoConsign); scanErr != nil {
+		t.Fatal(scanErr)
+	}
+	if enabledAutoConsign != 1 || disabledAutoConsign != 0 {
+		t.Fatalf("迁移回填 auto_consign 错误: enabled=%d disabled=%d", enabledAutoConsign, disabledAutoConsign)
 	}
 	// finalVersion、versionErr 验证升级已包含账号自动确认发货迁移，不能仅证明旧 delivery_proof 列存在。
 	finalVersion, versionErr := goose.GetDBVersion(rawDB)
