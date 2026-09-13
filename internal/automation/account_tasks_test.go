@@ -141,6 +141,50 @@ func TestAccountTaskRateIsOrderIdempotent(t *testing.T) {
 	}
 }
 
+// TestAccountTaskRatePermanentPlatformFailureStopsFutureRequests 验证平台明确返回超期不可评价后只请求一次并永久跳过该订单。
+func TestAccountTaskRatePermanentPlatformFailureStopsFutureRequests(t *testing.T) {
+	// store、cleanup 保存本测试使用的 SQLite 自动化存储及关闭责任。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	// ctx 是自动评价永久失败测试共用的数据库上下文。
+	ctx := context.Background()
+	// expiredErr 保存平台明确拒绝超过 30 天订单的业务错误。
+	expiredErr := &mtop.MTopResponseError{API: "mtop.taobao.idle.rate.create", Kind: mtop.MTopErrorBusiness,
+		Ret: []string{"FAIL_BIZ_BAD_REQUEST::超出30天的订单不允许评价||rate failed"}}
+	// client 模拟待评价列表持续返回同一超期订单，并统计评价请求次数。
+	client := &fakeAccountTaskClient{pending: []mtop.PendingRateOrder{{TradeID: "expired-order"}}, rateErr: expiredErr}
+	// center 是注入平台错误替身后的自动化中心。
+	center := NewWithDependencies(store, testSenderProvider{sender: &testSender{}}, nil, CenterDependencies{AccountTaskClient: client})
+	// settingsErr 保存自动评价设置写入错误。
+	if settingsErr := store.AccountTasks.Upsert(ctx, db.AccountTaskSettings{CookieID: "cid", AutoRateEnabled: true,
+		RateContent: "交易愉快", PolishTime: "03:00"}); settingsErr != nil {
+		t.Fatal(settingsErr)
+	}
+	// firstSummary、firstErr 保存首次识别永久失败后的执行结果。
+	firstSummary, firstErr := center.RunAccountTask(ctx, "cid", TaskAutoRate)
+	if firstErr != nil || firstSummary.Failed != 1 || client.rateCalls != 1 {
+		t.Fatalf("首次超期评价结果错误: summary=%+v calls=%d err=%v", firstSummary, client.rateCalls, firstErr)
+	}
+	// status、message、nextRetryAt 保存永久失败运行记录的状态、原因和下一次重试时间。
+	var status, message string
+	// nextRetryAt 保存永久失败运行记录的下一次自动执行时间，永久失败必须保持为零。
+	var nextRetryAt int64
+	// queryErr 保存读取永久失败运行记录的数据库错误。
+	queryErr := store.DB.QueryRowContext(ctx, `SELECT status,error_message,next_retry_at FROM account_task_runs WHERE run_key=?`,
+		"rate:cid:expired-order").Scan(&status, &message, &nextRetryAt)
+	if queryErr != nil {
+		t.Fatal(queryErr)
+	}
+	if status != "failed" || !strings.HasPrefix(message, db.NoRetryErrorPrefix) || !strings.Contains(message, "超出30天的订单不允许评价") || nextRetryAt != 0 {
+		t.Fatalf("永久失败运行记录错误: status=%q message=%q next_retry_at=%d", status, message, nextRetryAt)
+	}
+	// secondSummary、secondErr 保存后续扫描跳过永久失败订单的结果。
+	secondSummary, secondErr := center.RunAccountTask(ctx, "cid", TaskAutoRate)
+	if secondErr != nil || secondSummary.Skipped != 1 || client.rateCalls != 1 {
+		t.Fatalf("超期订单后续不应再次请求评价: summary=%+v calls=%d err=%v", secondSummary, client.rateCalls, secondErr)
+	}
+}
+
 // TestScanAccountTasksRunsEnabledRateConfiguration 验证账号任务扫描器发现启用配置后执行自动评价。
 func TestScanAccountTasksRunsEnabledRateConfiguration(t *testing.T) {
 	// store、cleanup 保存本测试使用的 SQLite 自动化存储及关闭责任。

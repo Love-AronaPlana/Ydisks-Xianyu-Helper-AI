@@ -149,13 +149,13 @@ func (s *AccountTaskStore) ClaimRunImmediately(ctx context.Context, run AccountT
 
 // claimRun 封装claim运行业务协调。
 func (s *AccountTaskStore) claimRun(ctx context.Context, run AccountTaskRun, now int64, immediate bool) (bool, error) {
-	// retryCondition 用于本次流程后续判断的重试条件，并同时限制累计执行次数。
-	retryCondition := "attempt_count<? AND next_retry_at<=?"
-	// args 用于本次流程后续判断的数据库参数。
-	args := []any{now, run.RunKey, accountTaskMaxAttempts, now}
+	// retryCondition 限制累计执行次数、冷却时间，并排除已明确标记为永久失败的运行记录。
+	retryCondition := "attempt_count<? AND next_retry_at<=? AND error_message NOT LIKE ?"
+	// args 保存更新时间、运行键、最大执行次数、当前时间和永久失败前缀参数。
+	args := []any{now, run.RunKey, accountTaskMaxAttempts, now, NoRetryErrorPrefix + "%"}
 	if immediate {
-		retryCondition = "attempt_count<?"
-		args = []any{now, run.RunKey, accountTaskMaxAttempts}
+		retryCondition = "attempt_count<? AND error_message NOT LIKE ?"
+		args = []any{now, run.RunKey, accountTaskMaxAttempts, NoRetryErrorPrefix + "%"}
 	}
 	// res、err 用于本次流程后续判断的res、err
 	res, err := s.DB.ExecContext(ctx, `UPDATE account_task_runs SET status='running',attempt_count=attempt_count+1,started_at=?,finished_at=0,error_message=''

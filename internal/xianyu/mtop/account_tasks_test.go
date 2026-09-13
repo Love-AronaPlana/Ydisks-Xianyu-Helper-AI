@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -58,6 +59,22 @@ func TestAccountTaskEndpointsAndParsing(t *testing.T) {
 	polish, err := client.PolishItem(context.Background(), cookies, "item-1")
 	if err != nil || !polish.Success || received["itemId"] != "item-1" {
 		t.Fatalf("polish=%+v received=%+v err=%v", polish, received, err)
+	}
+}
+
+// TestIsRateOrderExpiredErrRecognizesPermanentPlatformFailure 验证超过评价期限的结构化及包装错误会被识别为永久失败，其他业务错误不会误判。
+func TestIsRateOrderExpiredErrRecognizesPermanentPlatformFailure(t *testing.T) {
+	// expiredErr 保存平台明确拒绝超期订单的 MTOP 错误。
+	expiredErr := &MTopResponseError{API: "mtop.taobao.idle.rate.create", Kind: MTopErrorBusiness, Ret: []string{"FAIL_BIZ_BAD_REQUEST::超出30天的订单不允许评价||rate failed"}}
+	// wrappedErr 保存经过上层包装的同一平台错误，验证 errors.As 链路仍可识别。
+	wrappedErr := fmt.Errorf("评价动作失败: %w", expiredErr)
+	if !IsRateOrderExpiredErr(expiredErr) || !IsRateOrderExpiredErr(wrappedErr) {
+		t.Fatalf("超期评价错误未识别: direct=%v wrapped=%v", IsRateOrderExpiredErr(expiredErr), IsRateOrderExpiredErr(wrappedErr))
+	}
+	// otherErr 保存错误码或原因缺失的普通业务失败，必须继续走普通失败重试语义。
+	otherErr := &MTopResponseError{API: "mtop.taobao.idle.rate.create", Kind: MTopErrorBusiness, Ret: []string{"FAIL_BIZ_BAD_REQUEST::订单状态不允许评价"}}
+	if IsRateOrderExpiredErr(otherErr) || IsRateOrderExpiredErr(fmt.Errorf("FAIL_BIZ_BAD_REQUEST::订单状态不允许评价")) {
+		t.Fatal("普通评价业务错误不应被识别为超期永久失败")
 	}
 }
 

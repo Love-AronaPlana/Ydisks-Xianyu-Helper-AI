@@ -123,3 +123,42 @@ func TestAccountTaskStoreSQLiteLifecycle(t *testing.T) {
 		t.Fatalf("达到上限后人工重试应返回限制错误: claimed=%v err=%v", finalClaim, finalClaimErr)
 	}
 }
+
+// TestAccountTaskStoreNoRetryRunIsNotReclaimed 验证账号任务永久失败记录不会被自动或人工入口再次抢占。
+func TestAccountTaskStoreNoRetryRunIsNotReclaimed(t *testing.T) {
+	// store、cleanup 保存本地迁移数据库及其释放函数。
+	store, cleanup := newTestDB(t)
+	defer cleanup()
+	// ctx 是账号任务永久失败状态测试使用的数据库上下文。
+	ctx := context.Background()
+	// user、userErr 保存测试用户初始化结果。
+	user, userErr := store.Users.Create(ctx, "no-retry-user", "no-retry-user@example.com", "pw")
+	if userErr != nil || !user {
+		t.Fatalf("创建测试用户失败: created=%v err=%v", user, userErr)
+	}
+	// cookieErr 保存测试账号初始化错误。
+	if cookieErr := store.Cookies.Save(ctx, "no-retry-cookie", "sid=test", 1); cookieErr != nil {
+		t.Fatal(cookieErr)
+	}
+	// run 描述一条评价任务运行记录。
+	run := AccountTaskRun{RunKey: "rate:no-retry-cookie:old-order", CookieID: "no-retry-cookie", TaskType: "auto_rate", TargetID: "old-order"}
+	// claimed、claimErr 保存永久失败运行的首次抢占结果。
+	claimed, claimErr := store.AccountTasks.ClaimRun(ctx, run, 100)
+	if claimErr != nil || !claimed {
+		t.Fatalf("首次抢占失败: claimed=%v err=%v", claimed, claimErr)
+	}
+	// finishErr 保存永久失败终态及不可重试标记的写入错误。
+	if finishErr := store.AccountTasks.FinishRun(ctx, run.RunKey, "failed", 0, 1, NoRetryErrorPrefix+": 超出30天的订单不允许评价", 0); finishErr != nil {
+		t.Fatal(finishErr)
+	}
+	// scheduledClaim、scheduledErr 保存自动扫描再次抢占的结果。
+	scheduledClaim, scheduledErr := store.AccountTasks.ClaimRun(ctx, run, 101)
+	if scheduledErr != nil || scheduledClaim {
+		t.Fatalf("永久失败记录不应自动重试: claimed=%v err=%v", scheduledClaim, scheduledErr)
+	}
+	// manualClaim、manualErr 保存人工立即入口再次抢占的结果。
+	manualClaim, manualErr := store.AccountTasks.ClaimRunImmediately(ctx, run, 101)
+	if manualErr != nil || manualClaim {
+		t.Fatalf("永久失败记录不应被人工入口重新抢占: claimed=%v err=%v", manualClaim, manualErr)
+	}
+}

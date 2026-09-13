@@ -460,8 +460,14 @@ func (c *accountTaskCoordinator) runAutoRate(ctx context.Context, settings db.Ac
 			if result != nil && result.Message != "" {
 				message = result.Message
 			}
+			// retryAt 保存失败运行记录的下一次自动执行时间；超过评价期限的订单属于永久失败，必须保持为零并排除后续抢占。
+			retryAt := time.Now().UTC().Add(10 * time.Minute).Unix()
+			if mtop.IsRateOrderExpiredErr(rateErr) {
+				message = db.NoRetryErrorPrefix + ": " + message
+				retryAt = 0
+			}
 			// finishErr 保存失败结果的落库错误；失败时隔离运行记录，避免错误状态不明导致重放。
-			finishErr := c.finishAccountTaskRun(ctx, runKey, "failed", 0, 1, message, time.Now().UTC().Add(10*time.Minute).Unix())
+			finishErr := c.finishAccountTaskRun(ctx, runKey, "failed", 0, 1, message, retryAt)
 			if finishErr != nil {
 				return summary, errors.Join(rateErr, persistErr, finishErr)
 			}
