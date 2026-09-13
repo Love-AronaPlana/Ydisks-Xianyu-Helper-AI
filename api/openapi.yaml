@@ -8119,6 +8119,8 @@ components:
           type: string
         auto_confirm:
           type: boolean
+        auto_consign:
+          type: boolean
         pause_duration:
           type: integer
           minimum: 0
@@ -8166,11 +8168,16 @@ components:
       properties:
         auto_confirm:
           type: boolean
+        auto_consign:
+          type: boolean
+          description: 自动发货后是否自动确认发货（转已发货）；省略时保持不变
     AutoConfirmResponse:
       type: object
       required: [auto_confirm]
       properties:
         auto_confirm:
+          type: boolean
+        auto_consign:
           type: boolean
     AccountRemarkRequest:
       type: object
