@@ -342,7 +342,7 @@ func (s *Server) getCookieDetails(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, cookieDetailResponse{
 		ID: summary.ID, Enabled: statusErr == nil && enabled, AutoConfirm: summary.AutoConfirm,
 		AutoConsign: summary.AutoConsign,
-		Remark: summary.Remark, PauseDuration: summary.PauseDuration, PausedUntil: summary.PausedUntil,
+		Remark:      summary.Remark, PauseDuration: summary.PauseDuration, PausedUntil: summary.PausedUntil,
 		Paused: summary.PausedUntil > time.Now().UTC().Unix(), ShowBrowser: summary.ShowBrowser,
 		Username: summary.Username, Nickname: cachedCookieSummaryNickname(summary), AvatarURL: summary.AvatarURL,
 		LoginMethod: summary.LoginMethod, LastLoginAt: summary.LastLoginAt, ProfileError: "", HasCookie: true,
@@ -606,7 +606,7 @@ func (s *Server) deleteCookie(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, operationResponse{Success: true})
 }
 
-// setCookieAutoConfirm 设置自动确认发货。
+// setCookieAutoConfirm 原子更新自动发货总开关和自动确认发货开关。
 func (s *Server) setCookieAutoConfirm(w http.ResponseWriter, r *http.Request) {
 	// cid 用于本次流程后续判断的cid
 	cid := chi.URLParam(r, "cid")
@@ -622,19 +622,12 @@ func (s *Server) setCookieAutoConfirm(w http.ResponseWriter, r *http.Request) {
 	}
 	// sess 是当前请求的认证会话，用于让应用服务再次确认账号归属。
 	sess := authSess(r)
-	// autoConsign 表示可选的自动确认发货（转已发货）开关更新；nil 表示保持不变。
-	if req.AutoConsign != nil {
-		if _, err := s.accountSettingsApplication().SetAutoConsign(r.Context(), sess.UserID, cid, *req.AutoConsign); err != nil {
-			if errors.Is(err, accountapp.ErrForbidden) || errors.Is(err, accountapp.ErrNotFound) {
-				writeErr(w, http.StatusForbidden, "无权操作该账号")
-				return
-			}
-			writeErr(w, http.StatusInternalServerError, "保存自动确认设置失败")
-			return
-		}
-	}
-	if // err 保存应用层自动确认设置错误。
-	_, err := s.accountSettingsApplication().SetAutoConfirm(r.Context(), sess.UserID, cid, req.AutoConfirm); err != nil {
+	// autoConfirm 表示本次请求提交的自动发货总开关；使用指针以便与可选的自动确认开关共同进入同一事务。
+	autoConfirm := req.AutoConfirm
+	// err 保存一个应用服务调用同时更新两个开关时产生的错误。
+	if _, err := s.accountSettingsApplication().UpdateSettings(r.Context(), accountapp.SettingsUpdateInput{
+		UserID: sess.UserID, AccountID: cid, AutoConfirm: &autoConfirm, AutoConsign: req.AutoConsign,
+	}); err != nil {
 		if errors.Is(err, accountapp.ErrForbidden) || errors.Is(err, accountapp.ErrNotFound) {
 			writeErr(w, http.StatusForbidden, "无权操作该账号")
 			return
