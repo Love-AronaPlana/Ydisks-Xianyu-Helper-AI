@@ -393,6 +393,19 @@ func taskAutomationRunID(task Task) int64 {
 	return id
 }
 
+// paidDeliveryAutoConfirmEnabled 返回账号是否开启「自动确认发货」。
+// 兜底扫描必须在重开运行或领取冷却窗口之前检查它：开关关闭时 HandleTask 会直接返回而不收口运行，
+// 被它重开的运行会留在 running 并继续持有租约；租约到期后失败运行恢复链路直接执行 executeRule，
+// 从而绕过账号开关与自动确认设置。
+func (c *Center) paidDeliveryAutoConfirmEnabled(ctx context.Context, accountID string) (bool, error) {
+	// autoConfirm、err 保存账号自动确认发货开关与读取错误。
+	autoConfirm, err := c.store.Cookies.GetAutoConfirm(ctx, accountID)
+	if err != nil {
+		return false, fmt.Errorf("读取自动确认发货设置: %w", err)
+	}
+	return autoConfirm, nil
+}
+
 // taskDelayCursor 封装任务延迟游标业务协调。
 func taskDelayCursor(task Task) int {
 	if task.Raw == nil {

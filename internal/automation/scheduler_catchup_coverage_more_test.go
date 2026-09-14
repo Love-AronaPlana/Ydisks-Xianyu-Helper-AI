@@ -303,8 +303,9 @@ func TestScanPendingShipResumesContinuesIdempotentTails(t *testing.T) {
 	ruleID := catchupRule(t, store, admin.ID, "resume-acc", "item-resume",
 		[]db.AutomationActionInput{catchupCardAction(catchupCard(t, store, admin.ID)), {ActionType: ActionConfirmShipment, Enabled: true}})
 	catchupOrder(t, store, "resume-acc", "o-resume", "item-resume", "chat-resume")
-	// rawTask 是运行携带的任务快照，续跑恢复路径依赖它还原账号与订单事实。
-	rawTask := `{"Source":"scheduler","AccountID":"resume-acc","TriggerType":"order_paid","ChatID":"chat-resume","OrderID":"o-resume","ItemID":"item-resume","BuyerID":"buyer-o-resume","Text":"待发货运行未完成，按检查点续跑"}`
+	// rawTask 是运行携带的冻结快照：续跑链路必须从它恢复动作计划，而不是读取可被编辑的现行规则。
+	rawTask := `{"Source":"scheduler","AccountID":"resume-acc","TriggerType":"order_paid","ChatID":"chat-resume","OrderID":"o-resume","ItemID":"item-resume","BuyerID":"buyer-o-resume","Text":"待发货运行未完成，按检查点续跑",` +
+		`"ActionPlan":[{"ActionType":"send_card","Enabled":true},{"ActionType":"confirm_shipment","Enabled":true}]}`
 	// runID 保存被隔离的运行主键。
 	runID := catchupRun(t, store, ruleID, "resume-acc", "o-resume", rawTask)
 	// 运行已进入人工核对且游标越过发卡动作，属于可安全续跑候选。
@@ -376,4 +377,151 @@ func TestScanPendingShipResumesReportsStorageFailures(t *testing.T) {
 	// scheduler 是带失效存储的调度器；扫描必须安全返回。
 	scheduler := &Scheduler{center: center, pendingShipCooldown: map[string]time.Time{}}
 	scheduler.scanPendingShipResumes(context.Background())
+}
+
+// TestPendingShipResumeFrozenPlanBoundaries 验证续跑的放行判据只依据运行快照里的冻结动作计划。
+// 判据一旦退回「读现行规则」，管理员编辑规则就会改变历史订单的发货义务（例如删掉发卡动作后
+// 直接补一次确认发货），因此必须逐分支锁死。
+func TestPendingShipResumeFrozenPlanBoundaries(t *testing.T) {
+	// ownerOrder 保存归属校验通过的订单事实。
+	ownerOrder := db.Order{OrderID: "o-frozen", CookieID: "frozen-acc"}
+	// snapshot 按 Task 的字段名拼出快照，便于逐用例替换动作计划。
+	snapshot := func(cookieID, orderID, planJSON string) string {
+		return `{"AccountID":"` + cookieID + `","OrderID":"` + orderID + `","ActionPlan":` + planJSON + `}`
+	}
+	// tailPlan 是「发卡 + 确认发货」的冻结计划。
+	tailPlan := `[{"ActionType":"send_card","Enabled":true},{"ActionType":"confirm_shipment","Enabled":true}]`
+	// cases 覆盖放行、剩余动作仍会联系买家、快照缺失或损坏、归属不符与游标越界五类边界。
+	cases := []struct {
+		name    string
+		raw     string
+		cursor  int
+		order   db.Order
+		want    bool
+		wantErr bool
+	}{
+		{name: "游标已越过发卡动作", raw: snapshot("frozen-acc", "o-frozen", tailPlan), cursor: 1, order: ownerOrder, want: true},
+		{name: "仅确认发货计划", raw: snapshot("frozen-acc", "o-frozen", `[{"ActionType":"confirm_shipment","Enabled":true}]`), cursor: 0, order: ownerOrder, want: true},
+		{name: "剩余动作仍含发卡", raw: snapshot("frozen-acc", "o-frozen", tailPlan), cursor: 0, order: ownerOrder, want: false},
+		{name: "剩余动作仍含文本", raw: snapshot("frozen-acc", "o-frozen", `[{"ActionType":"send_text","Enabled":true},{"ActionType":"confirm_shipment","Enabled":true}]`), cursor: 0, order: ownerOrder, want: false},
+		{name: "游标已在计划末尾", raw: snapshot("frozen-acc", "o-frozen", `[{"ActionType":"confirm_shipment","Enabled":true}]`), cursor: 1, order: ownerOrder, want: false},
+		{name: "快照无法解析", raw: `{`, cursor: 0, order: ownerOrder, wantErr: true},
+		{name: "快照缺少计划", raw: `{"AccountID":"frozen-acc","OrderID":"o-frozen"}`, cursor: 0, order: ownerOrder, wantErr: true},
+		{name: "快照归属不符", raw: snapshot("other-acc", "o-frozen", tailPlan), cursor: 1, order: ownerOrder, wantErr: true},
+		{name: "游标越界", raw: snapshot("frozen-acc", "o-frozen", tailPlan), cursor: 9, order: ownerOrder, wantErr: true},
+	}
+	// tc 是当前待验证的用例。
+	for _, tc := range cases {
+		// candidate 保存本用例的候选运行。
+		candidate := db.PendingShipResume{Order: tc.order, RawEventJSON: tc.raw, ActionCursor: tc.cursor}
+		// plan、eligible、err 保存恢复出的冻结计划、是否放行与不可续跑原因。
+		plan, eligible, err := pendingShipResumeFrozenPlan(candidate)
+		if tc.wantErr {
+			if err == nil {
+				t.Fatalf("%s: 期望返回错误，实际 eligible=%v", tc.name, eligible)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("%s: 非预期错误: %v", tc.name, err)
+		}
+		if eligible != tc.want {
+			t.Fatalf("%s: eligible=%v want %v", tc.name, eligible, tc.want)
+		}
+		if tc.want && len(plan) == 0 {
+			t.Fatalf("%s: 放行时必须把冻结计划交回调用方", tc.name)
+		}
+	}
+}
+
+// TestScanPendingShipResumesSkipsWhenAutoConfirmDisabled 验证续跑前必须过账号级「自动确认发货」闸门。
+// 闸门关闭时 HandleTask 会直接返回而不收口运行；若先重开运行，它会留在 running 并继续持有租约，
+// 租约到期后失败运行恢复链路直接执行 executeRule，从而绕过账号开关。
+func TestScanPendingShipResumesSkipsWhenAutoConfirmDisabled(t *testing.T) {
+	// store、cleanup 保存测试数据库及关闭责任。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	// ctx 保存本测试共用的数据库上下文。
+	ctx := context.Background()
+	// admin 保存规则所属管理员账号。
+	admin, adminErr := store.Users.GetByUsername(ctx, "admin")
+	if adminErr != nil {
+		t.Fatal(adminErr)
+	}
+	// catchupAccount 写入账号夹具。
+	catchupAccount(t, store, admin.ID, "gate-acc")
+	// 显式关闭账号的自动确认发货开关，构造闸门关闭场景。
+	if _, updateErr := store.DB.ExecContext(ctx, `UPDATE cookies SET auto_confirm=0 WHERE id='gate-acc'`); updateErr != nil {
+		t.Fatal(updateErr)
+	}
+	// autoConfirm、confirmErr 保存闸门开关读数，确保本用例的前提成立。
+	autoConfirm, confirmErr := store.Cookies.GetAutoConfirm(ctx, "gate-acc")
+	if confirmErr != nil {
+		t.Fatal(confirmErr)
+	}
+	if autoConfirm {
+		t.Fatal("用例前提失败：自动确认发货应为关闭")
+	}
+	// ruleID 保存仅含确认发货动作的发货规则主键。
+	ruleID := catchupRule(t, store, admin.ID, "gate-acc", "item-gate",
+		[]db.AutomationActionInput{{ActionType: ActionConfirmShipment, Enabled: true}})
+	catchupOrder(t, store, "gate-acc", "o-gate", "item-gate", "chat-gate")
+	// rawTask 是冻结快照：游标 0 的剩余动作已全部是幂等状态动作，具备自动续跑条件。
+	rawTask := `{"AccountID":"gate-acc","OrderID":"o-gate","ActionPlan":[{"ActionType":"confirm_shipment","Enabled":true}]}`
+	// runID 保存被隔离且可续跑的运行主键。
+	runID := catchupRun(t, store, ruleID, "gate-acc", "o-gate", rawTask)
+	setRunState(t, store, runID, "needs_review", 1, 0)
+	// provider 报告发送器就绪，确保拦截来自账号开关而不是连接状态。
+	provider := selectiveSenderProvider{senders: map[string]*readinessTestSender{}, ready: map[string]bool{"gate-acc": true}}
+	// scheduler 是使用选择性发送器的调度器。
+	scheduler := &Scheduler{center: New(store, provider, nil), pendingShipCooldown: map[string]time.Time{}}
+	scheduler.scanPendingShipResumes(ctx)
+	// run 保存扫描后的运行记录，必须保持人工核对且代次不变。
+	run, getErr := store.Automation.GetRun(ctx, runID)
+	if getErr != nil {
+		t.Fatal(getErr)
+	}
+	if run.AttemptCount != 1 || run.Status != "needs_review" {
+		t.Fatalf("自动确认发货关闭时不得重开运行: %+v", run)
+	}
+}
+
+// TestScanPendingShipDeliveriesDoesNotClaimCooldownWhenGatesBlock 验证闸门拦下时不占用冷却窗口。
+// 冷却窗口代表「已经尝试过一次兜底」；若在发送器未就绪时提前领取，订单会被白白压制十分钟，
+// 与日志里「等待下次扫描」的语义矛盾。
+func TestScanPendingShipDeliveriesDoesNotClaimCooldownWhenGatesBlock(t *testing.T) {
+	// store、cleanup 保存测试数据库及关闭责任。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	// ctx 保存本测试共用的数据库上下文。
+	ctx := context.Background()
+	// admin 保存规则所属管理员账号。
+	admin, adminErr := store.Users.GetByUsername(ctx, "admin")
+	if adminErr != nil {
+		t.Fatal(adminErr)
+	}
+	// cardID 是发卡动作绑定的数据卡密组。
+	cardID := catchupCard(t, store, admin.ID)
+	catchupAccount(t, store, admin.ID, "blocked-acc")
+	catchupRule(t, store, admin.ID, "blocked-acc", "item-blocked", []db.AutomationActionInput{catchupCardAction(cardID)})
+	catchupOrder(t, store, "blocked-acc", "o-blocked", "item-blocked", "chat-blocked")
+	// 首轮扫描：发送器未就绪，任务不触发，冷却窗口不得被占用。
+	blocked := &Scheduler{center: New(store, selectiveSenderProvider{senders: map[string]*readinessTestSender{}, ready: map[string]bool{}}, nil), pendingShipCooldown: map[string]time.Time{}}
+	blocked.scanPendingShipDeliveries(ctx)
+	if len(blocked.pendingShipCooldown) != 0 {
+		t.Fatalf("闸门拦下时不得占用冷却窗口: %+v", blocked.pendingShipCooldown)
+	}
+	// 发送器就绪后的下一轮扫描必须立刻补触发，不需要再等冷却。
+	ready := &Scheduler{center: New(store, selectiveSenderProvider{senders: map[string]*readinessTestSender{}, ready: map[string]bool{"blocked-acc": true}}, nil), pendingShipCooldown: map[string]time.Time{}}
+	ready.scanPendingShipDeliveries(ctx)
+	// runs 保存补触发产生的运行数量，用于确认任务确实被触发。
+	var runs int
+	// countErr 保存统计补触发运行条数的查询错误。
+	if countErr := store.DB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM automation_runs WHERE order_id='o-blocked' AND trigger_type='order_paid'`).Scan(&runs); countErr != nil {
+		t.Fatal(countErr)
+	}
+	if runs != 1 {
+		t.Fatalf("发送器就绪后应立刻补触发: runs=%d", runs)
+	}
 }

@@ -246,9 +246,6 @@ func (s *Scheduler) scanPendingShipDeliveries(ctx context.Context) {
 		// order 表示当前遍历过程中的订单
 		for _, order := range orders {
 			afterOrderID = order.OrderID
-			if !s.claimPendingShipAttempt(order.OrderID) {
-				continue
-			}
 			// allowed、allowErr 用于本次流程后续判断的allowed、allowErr
 			allowed, allowErr := s.center.accountAutomationAllowed(ctx, order.CookieID)
 			if allowErr != nil {
@@ -258,8 +255,22 @@ func (s *Scheduler) scanPendingShipDeliveries(ctx context.Context) {
 			if !allowed {
 				continue
 			}
+			// paid、paidErr 保存付款自动发货的账号级开关检查结果；关闭时本轮不触发任何任务。
+			paid, paidErr := s.center.paidDeliveryAutoConfirmEnabled(ctx, order.CookieID)
+			if paidErr != nil {
+				s.center.logger.Warn("检查待发货兜底自动确认发货开关失败", "account", order.CookieID, "order_id", order.OrderID, "err", paidErr)
+				continue
+			}
+			if !paid {
+				continue
+			}
 			if !s.center.accountSenderReady(order.CookieID) {
 				s.center.logger.Info("账号 WebSocket 尚未就绪，待发货兜底任务等待下次扫描", "account", order.CookieID, "order_id", order.OrderID)
+				continue
+			}
+			// 冷却窗口只在真正要触发任务时领取：上面任一闸门拦下时本轮并没有触发任何任务，
+			// 提前领取会把该订单白白压制十分钟，与「等待下次扫描」的日志语义矛盾。
+			if !s.claimPendingShipAttempt(order.OrderID) {
 				continue
 			}
 			s.center.logger.Info("付款系统消息缺失，按订单状态补触发自动发货",
@@ -315,9 +326,6 @@ func (s *Scheduler) scanPendingShipResumes(ctx context.Context) {
 		// candidate 表示当前遍历过程中的可续跑运行。
 		for _, candidate := range candidates {
 			afterOrderID = candidate.Order.OrderID
-			if !s.claimPendingShipAttempt(candidate.Order.OrderID) {
-				continue
-			}
 			// allowed、allowErr 保存账号可用性检查结果。
 			allowed, allowErr := s.center.accountAutomationAllowed(ctx, candidate.Order.CookieID)
 			if allowErr != nil {
@@ -325,6 +333,29 @@ func (s *Scheduler) scanPendingShipResumes(ctx context.Context) {
 				continue
 			}
 			if !allowed {
+				continue
+			}
+			// paid、paidErr 保存付款自动发货的账号级开关检查结果，必须在重开运行之前检查：
+			// 开关关闭时 HandleTask 会直接返回而不收口运行，被重开的运行会留在 running 并继续持有租约，
+			// 租约到期后失败运行恢复链路直接执行 executeRule，从而绕过账号开关与自动确认设置。
+			paid, paidErr := s.center.paidDeliveryAutoConfirmEnabled(ctx, candidate.Order.CookieID)
+			if paidErr != nil {
+				s.center.logger.Warn("检查待发货续跑自动确认发货开关失败", "account", candidate.Order.CookieID, "order_id", candidate.Order.OrderID, "err", paidErr)
+				continue
+			}
+			if !paid {
+				continue
+			}
+			// frozenPlan、eligible、planErr 保存运行快照里冻结的动作计划、是否可自动续跑及不可续跑原因。
+			frozenPlan, eligible, planErr := pendingShipResumeFrozenPlan(candidate)
+			if planErr != nil || !eligible {
+				s.center.logger.Info("待发货运行不满足自动续跑条件，保留人工核对",
+					"account", candidate.Order.CookieID, "order_id", candidate.Order.OrderID,
+					"run_id", candidate.RunID, "action_cursor", candidate.ActionCursor, "err", planErr)
+				continue
+			}
+			// 冷却窗口在通过全部闸门与计划校验后领取，避免闸门阻断时白白压制该订单十分钟。
+			if !s.claimPendingShipAttempt(candidate.Order.OrderID) {
 				continue
 			}
 			// reopened、reopenErr 保存重开运行结果；失败说明状态或代次已变化，放弃本次续跑。
@@ -340,11 +371,13 @@ func (s *Scheduler) scanPendingShipResumes(ctx context.Context) {
 				"run_id", candidate.RunID, "action_cursor", candidate.ActionCursor, "previous_status", candidate.Status)
 			// taskCtx 限制单次执行预算，上游接口挂起时不能让分钟级扫描被永久拖住。
 			taskCtx, cancel := context.WithTimeout(ctx, pendingShipTaskTimeout)
-			// task 携带运行与规则快照标识，使 Center 走既有恢复路径而非重新匹配规则。
+			// task 携带运行快照里冻结的动作计划与运行标识：执行链必须沿用运行创建时的计划，
+			// 不能把数字游标套用到管理员后来修改过的规则上。
 			task := Task{Source: "scheduler", AccountID: candidate.Order.CookieID, TriggerType: TriggerOrderPaid,
 				ChatID: candidate.Order.ChatID, OrderID: candidate.Order.OrderID,
 				ItemID: candidate.Order.ItemID, BuyerID: candidate.Order.BuyerID,
-				Text: "待发货运行未完成，按检查点续跑",
+				ActionPlan: frozenPlan,
+				Text:       "待发货运行未完成，按检查点续跑",
 				Raw: map[string]any{"source": "scheduler", "order_id": candidate.Order.OrderID,
 					"automation_run_id": candidate.RunID, "automation_rule_id": candidate.RuleID}}
 			// err 保存本次续跑任务的处理错误；只告警，不阻断其余候选运行的续跑。
@@ -358,6 +391,46 @@ func (s *Scheduler) scanPendingShipResumes(ctx context.Context) {
 			return
 		}
 	}
+}
+
+// pendingShipResumeFrozenPlan 从运行的原始事件快照恢复冻结的动作计划，并判定该运行能否自动续跑。
+// 口径与 deliveryReplayPlan 一致：绝不读取现行规则，避免管理员编辑规则改变历史订单的发货义务。
+// eligible 为 false 表示不可自动续跑（剩余动作里还有会再次联系买家的动作），调用方必须保留人工核对；
+// 返回错误表示快照缺失、归属不符或游标越界，同样不得猜测缺失的动作。
+func pendingShipResumeFrozenPlan(candidate db.PendingShipResume) ([]db.AutomationAction, bool, error) {
+	// original 保存运行创建时冻结的任务事实与完整动作计划。
+	var original Task
+	// err 保存快照解析错误；历史快照损坏时不能猜测缺失的动作。
+	if err := json.Unmarshal([]byte(candidate.RawEventJSON), &original); err != nil {
+		return nil, false, fmt.Errorf("待发货续跑运行的原始计划无法解析: %w", err)
+	}
+	if original.AccountID != candidate.Order.CookieID || original.OrderID != candidate.Order.OrderID || len(original.ActionPlan) == 0 {
+		return nil, false, fmt.Errorf("待发货续跑运行的原始计划缺失或归属不符")
+	}
+	if candidate.ActionCursor < 0 || candidate.ActionCursor > len(original.ActionPlan) {
+		return nil, false, fmt.Errorf("待发货续跑运行的游标越界: %d", candidate.ActionCursor)
+	}
+	// 冻结计划里尚未执行的动作必须全部是幂等状态动作，否则续跑可能重复向买家发货。
+	if !pendingShipOnlyIdempotentTail(original.ActionPlan[candidate.ActionCursor:]) {
+		return nil, false, nil
+	}
+	return original.ActionPlan, true, nil
+}
+
+// pendingShipOnlyIdempotentTail 判断剩余动作是否只包含不会再次联系买家、且平台侧幂等的状态动作。
+// 只有这类动作才允许在消息动作结果不确定后继续执行：重复调用只会收到平台「已发货」的幂等响应；
+// 只要还剩发卡/模板/文本动作就一律不放行。
+func pendingShipOnlyIdempotentTail(remaining []db.AutomationAction) bool {
+	if len(remaining) == 0 {
+		return false
+	}
+	// action 是剩余动作中的一个，需要逐个确认它是否为平台侧幂等的发货状态动作。
+	for _, action := range remaining {
+		if action.ActionType != ActionConfirmShipment {
+			return false
+		}
+	}
+	return true
 }
 
 // claimPendingShipAttempt 领取一次兜底尝试；处于冷却窗口内的订单返回 false。

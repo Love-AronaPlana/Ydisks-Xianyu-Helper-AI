@@ -99,8 +99,11 @@ type PendingShipResume struct {
 	Order Order
 	// RunID 是尚未完成全部动作的自动化运行主键。
 	RunID int64
-	// RuleID 是该运行所属规则，续跑时必须用它恢复规则快照。
+	// RuleID 是该运行所属规则，用于校验归属规则是否仍处于启用状态。
 	RuleID int64
+	// RawEventJSON 是运行创建时冻结的任务快照，内含不可变的动作计划；
+	// 调用方必须用它判定「剩余动作是否只含幂等状态动作」，不得改用现行规则的动作。
+	RawEventJSON string
 	// Attempt 是运行当前代次；重开运行必须带上它做 CAS。
 	Attempt int
 	// ActionCursor 是尚未执行的下一个动作下标。
@@ -116,8 +119,11 @@ type PendingShipResume struct {
 //   - 前者覆盖「完全没有运行记录」的订单（付款事件在准备阶段就被卡死）；
 //   - 本方法覆盖「有运行但没做完」的订单（例如消息动作结果不确定后运行被隔离）。
 //
-// **安全边界**：只续跑「游标已越过全部发卡/模板动作」的运行。只要还有会再次联系买家的动作
-// 未完成，续跑就可能重复发货，因此一律不在此处自动恢复，交由人工核对。
+// **安全边界**：本方法只做「运行自身」可判定的过滤——状态、代次上限、订单仍在待发货、
+// **归属规则仍处于启用状态**。真正的放行判据（剩余动作是否只含幂等状态动作）必须由调用方
+// 依据运行快照里冻结的动作计划判定：`automation_rule_actions` 是会被管理员编辑的现行配置，
+// 用它判定会把数字游标套用到改过的规则上，从而改变历史订单的发货义务。
+// 因此本方法额外返回 RawEventJSON，供调用方恢复冻结计划。
 func (a *AutomationRules) PendingShipResumableRunsAfter(ctx context.Context, afterOrderID string, maxAttempts, limit int) ([]PendingShipResume, error) {
 	if limit <= 0 {
 		limit = 200
@@ -141,7 +147,7 @@ SELECT o.order_id,o.item_id,o.buyer_id,o.spec_name,o.spec_value,o.quantity,o.amo
        COALESCE(o.paid_at,''),COALESCE(o.shipped_at,''),COALESCE(o.completed_at,''),
        COALESCE(o.buyer_reviewed_at,''),COALESCE(o.last_review_request_at,''),o.review_request_count,
        o.created_at,o.updated_at,
-       r.id,r.rule_id,r.attempt_count,r.action_cursor,r.status
+       r.id,r.rule_id,COALESCE(r.raw_event_json,''),r.attempt_count,r.action_cursor,r.status
   FROM orders o
   JOIN automation_runs r ON r.order_id=o.order_id AND r.trigger_type='order_paid'
 WHERE o.order_status='pending_ship'
@@ -149,15 +155,10 @@ WHERE o.order_status='pending_ship'
    AND COALESCE(o.chat_id,'')<>''
    AND r.status IN ('needs_review','failed')
    AND r.attempt_count<?
-   AND r.action_cursor<(SELECT COUNT(*) FROM automation_rule_actions a
-                        WHERE a.rule_id=r.rule_id AND a.enabled=1)
-   AND r.action_cursor>=(SELECT COUNT(*) FROM automation_rule_actions a
-                          WHERE a.rule_id=r.rule_id AND a.enabled=1
-                            AND a.action_type IN ('send_card','send_template'))
-   AND EXISTS (SELECT 1 FROM automation_rules r2
-                WHERE r2.cookie_id=o.cookie_id AND r2.trigger_type='order_paid'
-                  AND r2.deleted_at IS NULL AND r2.enabled=1
-                  AND (r2.item_id=o.item_id OR r2.item_id=''))`+cursorSQL+`
+   AND EXISTS (SELECT 1 FROM automation_rules owner
+                WHERE owner.id=r.rule_id AND owner.cookie_id=o.cookie_id
+                  AND owner.trigger_type='order_paid'
+                  AND owner.deleted_at IS NULL AND owner.enabled=1)`+cursorSQL+`
  ORDER BY o.order_id ASC
  LIMIT ?`, args...)
 	if err != nil {
@@ -181,7 +182,7 @@ WHERE o.order_status='pending_ship'
 			&candidate.Order.ShippedAt, &candidate.Order.CompletedAt, &candidate.Order.BuyerReviewedAt,
 			&candidate.Order.LastReviewRequestAt, &candidate.Order.ReviewRequestCount,
 			&candidate.Order.CreatedAt, &candidate.Order.UpdatedAt,
-			&candidate.RunID, &candidate.RuleID, &candidate.Attempt, &candidate.ActionCursor, &candidate.Status); err != nil {
+			&candidate.RunID, &candidate.RuleID, &candidate.RawEventJSON, &candidate.Attempt, &candidate.ActionCursor, &candidate.Status); err != nil {
 			return nil, err
 		}
 		candidate.Order.ItemID = itemID.String
