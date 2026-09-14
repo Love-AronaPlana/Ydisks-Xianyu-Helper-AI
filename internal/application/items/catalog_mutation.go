@@ -45,10 +45,12 @@ type CatalogPatchInput struct {
 
 // CatalogMutationRepository 定义本地商品写入和开关变更所需的最小持久化能力。
 type CatalogMutationRepository interface {
-	// Get 读取更新操作需要的现有商品记录。
+	// Get 确认更新目标存在；返回快照不得用于覆盖未提交字段。
 	Get(context.Context, string, string) (CatalogItem, error)
 	// Upsert 创建或完整保存本地商品记录。
 	Upsert(context.Context, string, CatalogWriteInput) error
+	// Patch 按账号和商品标识原子更新显式字段；缺失或已删除时返回 ErrCatalogNotFound。
+	Patch(context.Context, string, string, CatalogPatchInput) error
 	// Delete 逻辑删除商品及其商品级自动化规则。
 	Delete(context.Context, string, string) error
 	// SetMultiSpec 设置商品多规格开关。
@@ -79,44 +81,16 @@ func (service *CatalogMutationService) Create(ctx context.Context, cookieID stri
 	return service.repository.Upsert(ctx, cookieID, input)
 }
 
-// Update 读取现有商品、合并局部字段并保存完整记录。
+// Update 在 ctx 约束内确认 cookieID/itemID 存在，再原子应用 patch；省略字段保留数据库当前值，删除或仓储错误向上传递。
 func (service *CatalogMutationService) Update(ctx context.Context, cookieID, itemID string, patch CatalogPatchInput) error {
 	if service == nil || service.repository == nil {
 		return errors.New("商品写入服务未初始化")
 	}
-	// existing、err 保存更新前的商品记录及查询错误。
-	existing, err := service.repository.Get(ctx, cookieID, itemID)
-	if err != nil {
+	// err 保存存在性查询错误；此处的商品快照不参与写入，避免覆盖并发编辑。
+	if _, err := service.repository.Get(ctx, cookieID, itemID); err != nil {
 		return err
 	}
-	// input 保存合并后的完整商品写入模型。
-	input := CatalogWriteInput{
-		ItemID: itemID, ItemTitle: existing.ItemTitle, ItemDescription: existing.ItemDescription,
-		ItemCategory: existing.ItemCategory, ItemPrice: existing.ItemPrice, ItemDetail: existing.ItemDetail,
-		IsMultiSpec: existing.IsMultiSpec, MultiQuantityDelivery: existing.MultiQuantityDelivery,
-	}
-	if patch.ItemTitle != nil {
-		input.ItemTitle = *patch.ItemTitle
-	}
-	if patch.ItemDescription != nil {
-		input.ItemDescription = *patch.ItemDescription
-	}
-	if patch.ItemCategory != nil {
-		input.ItemCategory = *patch.ItemCategory
-	}
-	if patch.ItemPrice != nil {
-		input.ItemPrice = *patch.ItemPrice
-	}
-	if patch.ItemDetail != nil {
-		input.ItemDetail = *patch.ItemDetail
-	}
-	if patch.IsMultiSpec != nil {
-		input.IsMultiSpec = *patch.IsMultiSpec
-	}
-	if patch.MultiQuantityDelivery != nil {
-		input.MultiQuantityDelivery = *patch.MultiQuantityDelivery
-	}
-	return service.repository.Upsert(ctx, cookieID, input)
+	return service.repository.Patch(ctx, cookieID, itemID, patch)
 }
 
 // Delete 逻辑删除指定账号下的本地商品。

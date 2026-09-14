@@ -120,7 +120,7 @@ type SettingsService struct {
 	runtime SettingsRuntime
 	// transitionMu 保护 transitionLocks 映射；每把锁串行化一个账号的启用、停用和重启状态转换。
 	transitionMu sync.Mutex
-	// transitionLocks 保存按账号分配的状态转换锁；锁不跨账号共享，也不在持锁时持有凭证锁。
+	// transitionLocks 保存按账号分配的状态转换锁；锁不跨账号共享，嵌套时始终先转换锁、后短凭证锁，凭证锁不得跨运行时 I/O。
 	transitionLocks map[string]*sync.Mutex
 }
 
@@ -171,20 +171,20 @@ func (s *SettingsService) UpdateSettings(ctx context.Context, input SettingsUpda
 	// Cookie、metadata 与旧 Token 都已完成转换后才释放锁；后续运行时 I/O 不得占用该锁。
 	unlock()
 	if input.Cookie != nil && s.runtime != nil {
-		// enabled 表示写入成功后账号的最新启用状态；状态读取失败不覆盖已成功的设置写入。
+		// lock 串行化状态复核与重启；顺序为转换锁在先，运行时内部短凭证锁在后。
+		lock := s.transitionLock(input.AccountID)
+		lock.Lock()
+		defer lock.Unlock()
+		// enabled、statusErr 是转换锁内的最新启用状态及查询错误，防止旧快照越过已完成的停用。
 		enabled, statusErr := s.repository.StatusOwned(ctx, input.UserID, input.AccountID)
 		if statusErr == nil && enabled {
-			// lock 串行化 Cookie 重启与同账号启停，避免已更新 Cookie 的实例被并发停用或替换。
-			lock := s.transitionLock(input.AccountID)
-			lock.Lock()
-			// restartErr 保存锁外运行时重启错误；Cookie 主写入仍保留，但数据库必须补偿为停用避免状态失真。
+			// restartErr 保存凭证锁外、转换锁内的运行时重启错误；Cookie 主写入仍保留，但数据库必须补偿为停用避免状态失真。
 			restartErr := s.runtime.Restart(ctx, input.AccountID)
 			if restartErr != nil {
 				// compensationErr 保存重启失败后写回停用状态的错误；两个错误共同决定调用方是否需要人工恢复。
 				compensationErr := s.setStatusLocked(ctx, input.UserID, input.AccountID, false, "runtime_restart_failed")
 				result.RuntimeError = fmt.Errorf("%w: %v", ErrRuntimeStartUnavailable, errors.Join(restartErr, compensationErr))
 			}
-			lock.Unlock()
 		}
 	}
 	return result, nil

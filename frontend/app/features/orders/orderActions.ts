@@ -24,6 +24,8 @@ export interface OrderActionsOptions {
   accountFilter: string;
   // filter 保存当前订单状态筛选条件。
   filter: string;
+  // searchText 是当前搜索条件，用于隔离搜索切换前的删除结果。
+  searchText?: string;
   // setPage 更新订单列表页码。
   setPage: Dispatch<SetStateAction<number>>;
   // loadOrders 刷新当前筛选条件下的订单列表。
@@ -82,7 +84,7 @@ export interface OrderActionsState {
 const orderErrorMessage = (error: unknown, fallback: string): string => error instanceof Error ? error.message : fallback;
 
 // useOrderActions 集中管理订单同步、发货、编辑、删除和弹窗生命周期。
-export const useOrderActions = ({ orders, page, accountFilter, filter, setPage, loadOrders }: OrderActionsOptions): OrderActionsState => {
+export const useOrderActions = ({ orders, page, accountFilter, filter, searchText = '', setPage, loadOrders }: OrderActionsOptions): OrderActionsState => {
   // showDetailModal 表示订单详情弹窗是否打开。
   const [showDetailModal, setShowDetailModal] = useState(false);
   // selectedOrder 保存当前查看详情的订单。
@@ -105,6 +107,28 @@ export const useOrderActions = ({ orders, page, accountFilter, filter, setPage, 
   const [deletingOrderId, setDeletingOrderId] = useState<string | null>(null);
   // syncGeneration 区分连续发起的批量刷新，旧任务完成后不得覆盖最新一次用户操作的列表和提示。
   const syncGeneration = useRef(0);
+
+  // shipGeneration 绑定当前发货弹窗；关闭、换单或卸载会使旧结果失效，平台动作本身继续完成。
+  const shipGeneration = useRef(0);
+  // shipBusy 防止同一 Hook 在发货未收束前重复提交；弹窗切换不会取消外部发货。
+  const shipBusy = useRef(false);
+  // mounted 防止外部发货完成后写入已卸载页面。
+  const mounted = useRef(true);
+  // deleteGeneration 隔离不同页面和连续删除请求的迟到结果。
+  const deleteGeneration = useRef(0);
+
+  useEffect(/* 挂载周期只控制本地展示，清理时不假装撤销已提交的发货。 */ () => {
+    mounted.current = true;
+    return /* 卸载使弹窗结果失效；在途动作仍由服务端负责完成。 */ () => {
+      mounted.current = false;
+      shipGeneration.current += 1;
+    };
+  }, []);
+
+  useEffect(/* 当前查询条件拥有删除后的分页变化，切换时清除旧页面忙碌状态。 */ () => {
+    setDeletingOrderId(null);
+    return /* 离开本页使旧删除无法递减新页码、刷新旧列表或清理新请求。 */ () => { deleteGeneration.current += 1; };
+  }, [accountFilter, filter, page, searchText]);
 
   // 筛选切换或卸载时使旧同步代次失效；后台任务继续执行，其晚到结果不能刷新旧列表或提示用户。
   useEffect(/* 同步结果归属于当前账号与状态筛选，cleanup 结束该筛选上下文的所有旧代次。 */ () => {
@@ -133,6 +157,7 @@ export const useOrderActions = ({ orders, page, accountFilter, filter, setPage, 
 
   // handleShip 打开发货弹窗并选择待发货订单。
   const handleShip = useCallback(/* shipAction 打开发货弹窗并保存订单号。 */ (orderId: string) => {
+    shipGeneration.current += 1;
     setShipOrderId(orderId);
     setShipResult(null);
     setShowShipModal(true);
@@ -140,11 +165,16 @@ export const useOrderActions = ({ orders, page, accountFilter, filter, setPage, 
 
   // executeShip 执行指定模式的订单发货并更新结果。
   const executeShip = useCallback(/* executeShipAction 执行指定模式的订单发货。 */ async (mode: OrderShipMode) => {
+    if (shipBusy.current) return;
+    shipBusy.current = true;
+    // generation 是提交时弹窗代次，只有同一弹窗可展示结果。
+    const generation = shipGeneration.current;
     setShipLoading(true);
     setShipResult(null);
     try {
       // response 保存订单批量发货接口响应。
       const response = await manualShipOrder([shipOrderId], mode);
+      if (generation !== shipGeneration.current) return;
       // result 保存当前订单的发货结果行。
       const result = response.results?.[0];
       if (result?.success) {
@@ -154,9 +184,11 @@ export const useOrderActions = ({ orders, page, accountFilter, filter, setPage, 
         setShipResult({ success: false, message: result?.message || '发货失败' });
       }
     } catch (/* error 表示订单发货请求异常。 */ error: unknown) {
+      if (generation !== shipGeneration.current) return;
       setShipResult({ success: false, message: orderErrorMessage(error, '请求失败') });
     } finally {
-      setShipLoading(false);
+      shipBusy.current = false;
+      if (mounted.current) setShipLoading(false);
     }
   }, [loadOrders, shipOrderId]);
 
@@ -225,20 +257,24 @@ export const useOrderActions = ({ orders, page, accountFilter, filter, setPage, 
   // handleDelete 删除指定订单并在当前页为空时回退页码。
   const handleDelete = useCallback(/* deleteAction 删除订单并处理分页回退。 */ async (orderId: string) => {
     if (!confirm('确认删除该订单吗？删除后无法恢复。')) return;
+    // generation 是当前页面本次删除的唯一代次，旧结果不能作用于新页面。
+    const generation = ++deleteGeneration.current;
     setDeletingOrderId(orderId);
     try {
       await deleteOrder(orderId);
+      if (generation !== deleteGeneration.current) return;
       if (orders.length === 1 && page > 1) {
-        setPage(/* currentPage 当前订单页码。 */ current => current - 1);
+        setPage(/* currentPage 当前订单页码。 */ current => Math.max(1, current - 1));
       } else {
         await loadOrders();
       }
     } catch (/* error 表示订单删除请求异常。 */ error: unknown) {
+      if (generation !== deleteGeneration.current) return;
       console.error('删除订单失败:', error);
       alert(orderErrorMessage(error, '删除失败，请重试'));
       await loadOrders();
     } finally {
-      setDeletingOrderId(null);
+      if (generation === deleteGeneration.current) setDeletingOrderId(null);
     }
   }, [loadOrders, orders.length, page, setPage]);
 
@@ -248,6 +284,7 @@ export const useOrderActions = ({ orders, page, accountFilter, filter, setPage, 
   const closeEditModal = useCallback(/* closeEditAction 关闭订单编辑弹窗。 */ () => setShowEditModal(false), []);
   // closeShipModal 关闭订单发货弹窗并清理结果。
   const closeShipModal = useCallback(/* closeShipAction 关闭订单发货弹窗。 */ () => {
+    shipGeneration.current += 1;
     setShowShipModal(false);
     setShipResult(null);
   }, []);

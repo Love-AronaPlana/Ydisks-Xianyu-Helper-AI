@@ -3,6 +3,7 @@ package items
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 )
 
@@ -16,6 +17,8 @@ type catalogMutationRepositoryStub struct {
 	upsertErr error
 	// upsertInput 保存最后一次收到的完整写入模型。
 	upsertInput CatalogWriteInput
+	// patchInput 保存原样透传的局部字段，nil 必须仍表示省略。
+	patchInput CatalogPatchInput
 	// deleteErr 保存逻辑删除时的预设错误。
 	deleteErr error
 	// multiSpecErr 保存多规格开关更新时的预设错误。
@@ -35,6 +38,12 @@ func (repository *catalogMutationRepositoryStub) Upsert(_ context.Context, _ str
 	return repository.upsertErr
 }
 
+// Patch 记录原样提交的局部补丁；ctx、账号与商品参数不影响此测试替身，返回预置写入错误。
+func (repository *catalogMutationRepositoryStub) Patch(_ context.Context, _, _ string, patch CatalogPatchInput) error {
+	repository.patchInput = patch
+	return repository.upsertErr
+}
+
 // Delete 返回测试预设的逻辑删除错误。
 func (repository *catalogMutationRepositoryStub) Delete(context.Context, string, string) error {
 	return repository.deleteErr
@@ -50,7 +59,7 @@ func (repository *catalogMutationRepositoryStub) SetMultiQuantity(context.Contex
 	return repository.multiQuantityErr
 }
 
-// TestCatalogMutationServiceUpdateMergesExplicitAndOmittedFields 验证局部更新保留未提交字段并允许显式清空或关闭。
+// TestCatalogMutationServiceUpdateMergesExplicitAndOmittedFields 验证局部更新不补齐省略字段，显式清空或关闭原样交给原子仓储。
 func TestCatalogMutationServiceUpdateMergesExplicitAndOmittedFields(t *testing.T) {
 	// repository 保存待验证的现有商品及写入记录。
 	repository := &catalogMutationRepositoryStub{item: CatalogItem{
@@ -71,10 +80,10 @@ func TestCatalogMutationServiceUpdateMergesExplicitAndOmittedFields(t *testing.T
 	if updateErr != nil {
 		t.Fatalf("Update error: %v", updateErr)
 	}
-	// got 保存应用服务合并后的完整写入模型。
-	got := repository.upsertInput
-	if got.ItemID != "item-1" || got.ItemTitle != "旧标题" || got.ItemDescription != "" || got.ItemCategory != "旧类目" || got.ItemPrice != "1.00" || got.ItemDetail != "旧详情" || got.IsMultiSpec || !got.MultiQuantityDelivery {
-		t.Fatalf("Update merge result=%+v", got)
+	// got 是应用服务提交给原子仓储的补丁，省略字段不得用旧快照补齐。
+	got := repository.patchInput
+	if !reflect.DeepEqual(got, CatalogPatchInput{ItemDescription: &emptyDescription, IsMultiSpec: &disabledMultiSpec}) {
+		t.Fatalf("局部补丁被旧快照扩展：%+v", got)
 	}
 }
 
@@ -96,12 +105,12 @@ func TestCatalogMutationServiceUpdateAppliesEveryPatchField(t *testing.T) {
 	if updateErr != nil {
 		t.Fatalf("Update error: %v", updateErr)
 	}
-	// got 保存应用服务合并后的完整商品模型。
-	got := repository.upsertInput
-	if got.ItemID != "item-1" || got.ItemTitle != title || got.ItemDescription != description || got.ItemCategory != category || got.ItemPrice != price || got.ItemDetail != detail || !got.IsMultiSpec || !got.MultiQuantityDelivery {
-		t.Fatalf("全部字段未合并：%+v", got)
+	// got 是完整显式补丁，空值与开关指针均需保持原始语义。
+	got := repository.patchInput
+	if !reflect.DeepEqual(got, CatalogPatchInput{ItemTitle: &title, ItemDescription: &description, ItemCategory: &category, ItemPrice: &price, ItemDetail: &detail, IsMultiSpec: &multiSpec, MultiQuantityDelivery: &multiQuantity}) {
+		t.Fatalf("显式补丁未完整透传：%+v", got)
 	}
-	// writeErr 保存更新阶段完整写入端口返回的错误。
+	// writeErr 保存更新阶段原子补丁端口返回的错误。
 	writeErr := errors.New("更新写入失败")
 	// failingRepository 是更新完整商品时返回错误的测试仓储。
 	failingRepository := &catalogMutationRepositoryStub{item: repository.item, upsertErr: writeErr}

@@ -23,6 +23,33 @@ func TestTaskRegistryTracksCompletion(t *testing.T) {
 	}
 }
 
+// TestTaskRegistryPrunesCompletedHistoryAroundRunningTask 证明运行中的旧任务不会阻塞已完成历史清理。
+func TestTaskRegistryPrunesCompletedHistoryAroundRunningTask(t *testing.T) {
+	// registry 是容量缩小后的任务注册表，便于稳定触发清理。
+	registry := newTaskRegistry()
+	registry.maxHistory = 2
+	// runningID 保留一个长期运行任务，验证它前面的完成记录仍可被清理。
+	runningID, _ := registry.start("长期任务", context.Background())
+	// completeFirst 是第一条已完成任务的终态回调。
+	_, completeFirst := registry.start("已完成任务一", context.Background())
+	completeFirst(nil)
+	// completeSecond 是第二条已完成任务的终态回调。
+	_, completeSecond := registry.start("已完成任务二", context.Background())
+	completeSecond(nil)
+	// snapshots 是清理后的有限任务历史。
+	snapshots := registry.list()
+	if len(snapshots) != 2 {
+		t.Fatalf("任务历史未按容量清理: len=%d snapshots=%+v", len(snapshots), snapshots)
+	}
+	// snapshot 是当前检查的任务状态快照。
+	for _, snapshot := range snapshots {
+		if snapshot.ID == runningID {
+			return
+		}
+	}
+	t.Fatalf("运行中任务不应被已完成历史清理: snapshots=%+v", snapshots)
+}
+
 // TestTaskRegistryTracksCancellationAndTimeout 证明取消与超时不会被误报为成功。
 func TestTaskRegistryTracksCancellationAndTimeout(t *testing.T) {
 	// canceledContext、cancelCanceled 是主动取消任务的上下文及其取消函数。

@@ -73,6 +73,22 @@ func (repository *ItemCatalogRepository) Upsert(ctx context.Context, cookieID st
 	})
 }
 
+// Patch 将 ctx 下 cookieID/itemID 的显式 patch 字段转换为数据库补丁；不存在错误归一为应用错误，不恢复已删除商品。
+func (repository *ItemCatalogRepository) Patch(ctx context.Context, cookieID, itemID string, patch itemapp.CatalogPatchInput) error {
+	if repository == nil || repository.store == nil || repository.store.Items == nil {
+		return errors.New("商品写入存储未初始化")
+	}
+	// err 保存原子局部更新结果，nil 指针透传以保留其他请求已写入的字段。
+	err := repository.store.Items.Patch(ctx, cookieID, itemID, db.ItemPatch{
+		ItemTitle: patch.ItemTitle, ItemDescription: patch.ItemDescription, ItemCategory: patch.ItemCategory,
+		ItemPrice: patch.ItemPrice, ItemDetail: patch.ItemDetail, IsMultiSpec: patch.IsMultiSpec, MultiQuantityDelivery: patch.MultiQuantityDelivery,
+	})
+	if errors.Is(err, db.ErrNotFound) {
+		return itemapp.ErrCatalogNotFound
+	}
+	return err
+}
+
 // UpsertPublishedItem 保存批量发布成功后的商品目录记录。
 func (repository *ItemCatalogRepository) UpsertPublishedItem(ctx context.Context, input itemapp.BatchPublishedItem) error {
 	if repository == nil || repository.store == nil || repository.store.Items == nil {

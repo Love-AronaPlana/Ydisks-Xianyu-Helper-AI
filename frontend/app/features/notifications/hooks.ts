@@ -144,10 +144,12 @@ export const useNotifications = (isAdmin: boolean): NotificationState => {
   );
 
   useEffect(
-    // 提示清理副作用负责页面卸载时释放自动消失定时器。
+    // 卸载清理负责终止渠道动作的展示生命周期并释放提示定时器。
     () => (
-      // toastCleanup 在页面卸载时释放定时器。
+      // toastCleanup 在页面卸载时取消渠道动作、使旧结果失效并释放定时器。
       () => {
+        actionGeneration.current += 1;
+        actionAbort.current?.abort();
         if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
       }
     ),
@@ -204,6 +206,7 @@ export const useNotifications = (isAdmin: boolean): NotificationState => {
     // 关闭回调使保存请求失效并隐藏弹窗。
     () => {
     actionGeneration.current += 1;
+    setTestingId('');
     actionAbort.current?.abort();
     editorGeneration.current += 1;
     editorAbort.current?.abort();
@@ -225,6 +228,8 @@ export const useNotifications = (isAdmin: boolean): NotificationState => {
     }
     // generation 标记当前渠道保存动作的代次。
     const generation = ++actionGeneration.current;
+    // 替换动作时主动清理被取消测试的忙碌状态；旧 finally 已没有当前代次。
+    setTestingId('');
     actionAbort.current?.abort();
     // controller 允许关闭弹窗时取消保存请求。
     const controller = new AbortController();
@@ -261,6 +266,8 @@ export const useNotifications = (isAdmin: boolean): NotificationState => {
     if (!confirm(`确认删除渠道「${channel.name}」吗？已绑定该渠道的账号会自动解绑。`)) return;
     // generation 标记当前删除动作的代次。
     const generation = ++actionGeneration.current;
+    // 替换动作时主动清理被取消测试的忙碌状态；旧 finally 已没有当前代次。
+    setTestingId('');
     actionAbort.current?.abort();
     // controller 允许刷新页面时取消删除请求。
     const controller = new AbortController();
@@ -286,6 +293,8 @@ export const useNotifications = (isAdmin: boolean): NotificationState => {
     async (channel: NotificationChannel) => {
     // generation 标记当前启用状态动作的代次。
     const generation = ++actionGeneration.current;
+    // 替换动作时主动清理被取消测试的忙碌状态；旧 finally 已没有当前代次。
+    setTestingId('');
     actionAbort.current?.abort();
     // controller 允许新的渠道动作取消旧请求。
     const controller = new AbortController();

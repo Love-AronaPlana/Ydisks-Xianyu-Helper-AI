@@ -45,7 +45,7 @@ const OrderList: React.FC = () => {
   // { 解构得到当前 Hook 返回的状态和操作函数。
   const { orders, accounts, filter, setFilter, accountFilter, setAccountFilter, searchText, setSearchText, page, setPage, totalPages, loading, loadOrders, accountName, accountNickname, getItemNameById } = orderQuery;
   // orderActions 集中管理订单动作、弹窗状态和异步结果。
-  const orderActions = useOrderActions({ orders, page, accountFilter, filter, setPage, loadOrders });
+  const orderActions = useOrderActions({ orders, page, accountFilter, filter, searchText, setPage, loadOrders });
   // actionState 解构得到页面动作协调器的状态和操作函数。
   const {
     showDetailModal,

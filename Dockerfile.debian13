@@ -43,6 +43,9 @@ ENV PLAYWRIGHT_NODEJS_PATH=/usr/local/bin/node
 COPY --from=browser-install-builder /out/browser-install-host /usr/local/bin/browser-install
 COPY .docker/playwright-runtime /prebuilt-playwright-runtime
 RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates; \
+    update-ca-certificates; \
     mkdir -p /ms-playwright-go /ms-playwright; \
     case "$TARGETARCH" in \
       amd64) runtime_arch=amd64 ;; \

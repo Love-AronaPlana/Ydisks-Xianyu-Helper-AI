@@ -175,17 +175,24 @@ func (r *taskRegistry) list() []taskStatusSnapshot {
 // pruneLocked 删除最早的已完成历史，调用方必须持有 r.mu 写锁。
 func (r *taskRegistry) pruneLocked() {
 	for len(r.order) > r.maxHistory {
-		// oldestID 是按启动顺序最早的任务标识。
-		oldestID := r.order[0]
-		r.order = r.order[1:]
-		// oldestTask 是待删除的历史记录。
-		oldestTask, exists := r.tasks[oldestID]
-		if !exists || oldestTask.snapshot.State != taskStateRunning {
-			delete(r.tasks, oldestID)
-			continue
+		// candidateIndex 优先指向最早已完成记录，避免正常任务被运行中的旧任务阻塞清理。
+		candidateIndex := -1
+		// index、taskID 分别表示历史顺序位置和对应任务标识。
+		for index, taskID := range r.order {
+			// task、exists 表示当前标识对应的任务及其是否仍在注册表中。
+			task, exists := r.tasks[taskID]
+			if !exists || task.snapshot.State != taskStateRunning {
+				candidateIndex = index
+				break
+			}
 		}
-		// 运行中的任务不能被历史容量清理，放回队尾等待完成后再清理。
-		r.order = append(r.order, oldestID)
-		return
+		// 全部记录仍在运行时暂不删除，避免管理端丢失活动任务；完成后下一次登记会继续清理。
+		if candidateIndex < 0 {
+			return
+		}
+		// oldestID 是本轮选中的最早可清理任务标识。
+		oldestID := r.order[candidateIndex]
+		r.order = append(r.order[:candidateIndex], r.order[candidateIndex+1:]...)
+		delete(r.tasks, oldestID)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -198,20 +199,30 @@ func extractMessageID(decrypted map[string]any) string {
 
 // findPNMMessageID 递归寻找闲鱼消息模型使用的 PNM 标识。
 func findPNMMessageID(value any) string {
+	// current 是当前递归层待检查的协议值。
 	switch current := value.(type) {
 	case map[string]any:
-		for _, child := range current {
+		// keys 按协议语义优先级和字典序排列，避免 map 随机遍历决定消息归属。
+		keys := orderedMessageKeys(current)
+		// key 是按协议优先级选出的当前字段名。
+		for _, key := range keys {
+			// child 是当前字段对应的嵌套值。
+			child := current[key]
+			// id 是子值递归解析得到的消息模型标识。
 			if id := findPNMMessageID(child); id != "" {
 				return id
 			}
 		}
 	case []any:
+		// child 是当前数组元素的嵌套协议值。
 		for _, child := range current {
+			// id 是数组元素递归解析得到的消息模型标识。
 			if id := findPNMMessageID(child); id != "" {
 				return id
 			}
 		}
 	case string:
+		// id 是当前字符串去除空白后的候选消息模型标识。
 		id := strings.TrimSpace(current)
 		if strings.HasSuffix(id, ".PNM") {
 			return id
@@ -223,6 +234,37 @@ func findPNMMessageID(value any) string {
 		}
 	}
 	return ""
+}
+
+// orderedMessageKeys 返回稳定的消息模型字段顺序；未知字段按字典序作为兼容兜底。
+func orderedMessageKeys(values map[string]any) []string {
+	// priority 是平台消息模型中应优先递归的字段顺序。
+	const priority = "1,message,messageModel,data,body,content,payload,model,10,extJson,bizTag,reminderUrl"
+	// priorityKeys 保存拆分后的优先字段名。
+	priorityKeys := strings.Split(priority, ",")
+	// seen 记录已加入优先顺序的字段，避免未知字段重复加入。
+	seen := make(map[string]struct{}, len(values))
+	// keys 保存最终稳定的字段遍历顺序。
+	keys := make([]string, 0, len(values))
+	// key 是当前优先字段名。
+	for _, key := range priorityKeys {
+		// ok 表示当前字段是否存在于输入消息中。
+		if _, ok := values[key]; ok {
+			keys = append(keys, key)
+			seen[key] = struct{}{}
+		}
+	}
+	// remaining 保存未命中协议优先级、需要按字典序补充的字段名。
+	remaining := make([]string, 0, len(values)-len(keys))
+	// key 是输入消息中的任意字段名。
+	for key := range values {
+		// ok 表示当前字段是否已经被优先顺序收录。
+		if _, ok := seen[key]; !ok {
+			remaining = append(remaining, key)
+		}
+	}
+	sort.Strings(remaining)
+	return append(keys, remaining...)
 }
 
 // findMessageID 递归解析兼容消息信封中可能存在的关联消息 ID。
