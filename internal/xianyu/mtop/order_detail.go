@@ -25,7 +25,8 @@ type OrderDetailResult struct {
 	UpdatedCookies string
 }
 
-// FetchOrderDetail 获取订单真实成交价、数量、状态和规格；token 过期时自动重签重试。
+// FetchOrderDetail 获取订单真实成交价、数量、状态和规格。
+// 凭证或 Token 风控错误必须立即交给上层统一续期和账号级限流，不在此处以一秒间隔连续重打详情端点。
 func (c *ClientImpl) FetchOrderDetail(ctx context.Context, cookiesStr, orderID string) (*OrderDetailResult, error) {
 	// currentCookies 用于本次流程后续判断的currentCookies
 	currentCookies := cookiesStr
@@ -33,54 +34,19 @@ func (c *ClientImpl) FetchOrderDetail(ctx context.Context, cookiesStr, orderID s
 	session := cookieSessionFromContext(ctx); session != nil {
 		currentCookies, _, _ = session.State()
 	}
-	// lastRet 用于本次流程后续判断的lastRet
-	var lastRet []string
-	for // attempt 用于本次流程后续判断的尝试次数
-	attempt := 0; attempt < 4; attempt++ {
-		// previousCookies 用于本次流程后续判断的previousCookies
-		previousCookies := currentCookies
-		// result、ret、updated、err 用于本次流程后续判断的result、ret、updated、err
-		result, ret, updated, err := c.fetchOrderDetailOnce(ctx, currentCookies, orderID)
-		if err != nil {
-			if !IsMTopTokenExpiredErr(err) {
-				return nil, err
-			}
-			lastRet = mtopErrorRet(err)
-		} else {
-			lastRet = ret
-			if updated != "" {
-				currentCookies = updated
-			}
-			if result != nil {
-				result.UpdatedCookies = currentCookies
-				return result, nil
-			}
-			// failure 保存平台非成功响应的统一失败分类。
-			failure := c.mtopResponseFailure("订单详情接口", http.StatusOK, ret, "")
-			if !IsMTopTokenExpiredErr(failure) {
-				return nil, failure
-			}
-		}
-		if updated != "" {
-			currentCookies = updated
-		}
-		if attempt == 3 {
-			break
-		}
-		if !mtopTokenCookieChanged(previousCookies, currentCookies) {
-			// refreshed、refreshErr 用于本次流程后续判断的refreshed、refreshErr
-			refreshed, refreshErr := c.RefreshTokenContext(ctx, currentCookies)
-			if refreshErr != nil {
-				return nil, fmt.Errorf("订单详情 token 刷新失败: %w", refreshErr)
-			}
-			currentCookies = refreshed.UpdatedCookies
-		}
-		if // err 用于本次流程后续判断的err
-		err := sleepCtx(ctx, MTopRetryGap); err != nil {
-			return nil, err
-		}
+	// result、ret、updated、err 保存唯一一次详情请求的业务结果、平台返回码、Cookie 更新和传输错误。
+	result, ret, updated, err := c.fetchOrderDetailOnce(ctx, currentCookies, orderID)
+	if updated != "" {
+		currentCookies = updated
 	}
-	return nil, fmt.Errorf("订单详情 token 重试失败: %w", c.mtopResponseFailure("订单详情接口", http.StatusOK, lastRet, "重试次数已耗尽"))
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		return nil, c.mtopResponseFailure("订单详情接口", http.StatusOK, ret, "")
+	}
+	result.UpdatedCookies = currentCookies
+	return result, nil
 }
 
 // fetchOrderDetailOnce 封装fetch订单DetailOnce业务协调。

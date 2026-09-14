@@ -160,6 +160,8 @@ type Dependencies struct {
 	Manager *account.Manager
 	// Automation 提供订单手动发货应用端口。
 	Automation *automation.Center
+	// OrderDetails 统一自动发货与订单刷新对订单详情接口的限流和同订单去重。
+	OrderDetails *adapter.OrderDetailCoordinator
 	// Notifier 提供订单通知应用端口。
 	Notifier *notify.Notifier
 	// Chat 提供聊天领域事件服务。
@@ -534,7 +536,8 @@ func buildOrderServices(dependencies Dependencies) (*orderapp.ServiceSet, *order
 	// chatRefreshCallback 保存订单同步未匹配会话时按需刷新联系人缓存的组合回调。
 	chatRefreshCallback := adapter.NewChatConversationRefreshCallback(adapter.NewChatRefreshProvider(dependencies.Chat, dependencies.Manager))
 	// orderRuntime 保存订单服务共享的运行时能力适配器。
-	orderRuntime := adapter.NewOrderRuntimeAdapter(dependencies.OrderDependencies, dependencies.Manager, dependencies.Automation, dependencies.Notifier, dependencies.MTopClient, dependencies.UpdateRunningCookie, dependencies.SessionRecovery, dependencies.Logger, orderReconciliation, chatRefreshCallback)
+	// 订单详情协调器由 RuntimeBundle 在自动发货与订单刷新启动前共同固定，避免两条路径绕过彼此的限流。
+	orderRuntime := adapter.NewOrderRuntimeAdapterWithOrderDetails(dependencies.OrderDependencies, dependencies.Manager, dependencies.Automation, dependencies.Notifier, dependencies.MTopClient, dependencies.UpdateRunningCookie, dependencies.SessionRecovery, dependencies.Logger, orderReconciliation, dependencies.OrderDetails, chatRefreshCallback)
 	// orderServices 保存应用层统一构造的订单业务服务集合。
 	orderServices := orderapp.NewServiceSet(orderRepository, orderRepository, orderRuntime, orderRuntime, dependencies.OrderDependencies.NewOrderRefreshJobRepository(), refreshOrderChunkSize)
 	// orderRefreshRunner 是订单刷新后台 worker 与恢复扫描的生命周期拥有者。

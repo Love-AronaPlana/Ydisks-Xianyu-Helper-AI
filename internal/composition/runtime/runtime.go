@@ -173,7 +173,7 @@ func BuildRuntime(options RuntimeOptions, infrastructure RuntimeInfrastructure) 
 	services, buildErr := composition.New(composition.Dependencies{
 		OrderDependencies: orderDependencies, AccountDependencies: accountDependencies, ItemDependencies: itemDependencies,
 		ChatDependencies: chatDependencies, AutomationDependencies: automationDependencies, TransportApplications: transportApplications,
-		OrderReconciliationRecovery: orderReconciliationRecovery, Manager: runtimeBundle.Manager, Automation: runtimeBundle.Automation,
+		OrderReconciliationRecovery: orderReconciliationRecovery, Manager: runtimeBundle.Manager, Automation: runtimeBundle.Automation, OrderDetails: runtimeBundle.OrderDetails,
 		Notifier: runtimeBundle.Notifier, Chat: runtimeBundle.Chat, Logger: infrastructure.Logger,
 		MTopClient: platformDependencies.MTOPClient, LongLoginClient: platformDependencies.LongLoginClient, QRLogin: platformDependencies.QRLoginService(),
 		UpdateRunningCookie: updateRunningCookie, SessionRecovery: sessionRecovery, LifecycleContext: lifecycleCoordinator.Context,

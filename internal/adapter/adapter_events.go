@@ -322,7 +322,7 @@ func (a *Adapter) HandleSystemEvent(ctx context.Context, task automation.Task) e
 }
 
 // FetchOrderDetail 实现 automation.OrderDetailFetcher。只在本地订单缺少关键字段时
-// 调用纯 Go MTOP 客户端，并将详情请求串行化、至少间隔 3 秒，避免短时间高频访问闲鱼。
+// 调用共享协调器；协调器按账号限流并合并同订单并发访问，避免成交事件触发短时间高频访问闲鱼。
 // FetchOrderDetail 封装Fetch订单Detail业务协调。
 func (a *Adapter) FetchOrderDetail(ctx context.Context, cookieID, orderID, itemID, buyerID, _ string) (*automation.OrderDetail, error) {
 	if // detail、ok 用于本次流程后续判断的detail、ok
@@ -347,25 +347,10 @@ func (a *Adapter) FetchOrderDetail(ctx context.Context, cookieID, orderID, itemI
 
 // fetchOrderDetailAttempt 封装fetch订单Detail尝试次数业务协调。
 func (a *Adapter) fetchOrderDetailAttempt(ctx context.Context, cookieID, orderID string) (*automation.OrderDetail, error) {
-
-	a.orderFetchMu.Lock()
-	defer a.orderFetchMu.Unlock()
-	// 等锁期间其他流程可能已经补齐订单，再检查一次。
+	// 等待其他同订单调用期间本地事实可能已经补齐，再检查一次避免无意义平台请求。
 	if detail, ok := a.localOrderDetail(ctx, orderID); ok {
 		return detail, nil
 	}
-	if // remain 用于本次流程后续判断的remain
-	remain := 3*time.Second - time.Since(a.lastOrderFetch); !a.lastOrderFetch.IsZero() && remain > 0 {
-		// timer 用于本次流程后续判断的定时器
-		timer := time.NewTimer(remain)
-		defer timer.Stop()
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-timer.C:
-		}
-	}
-	a.lastOrderFetch = time.Now()
 	// credentialUnlock 用于本次流程后续判断的credentialUnlock
 	credentialUnlock := a.store.LockAccountCredentials(cookieID)
 	// credentialLocked 标识当前调用是否持有账号凭证锁。
@@ -397,8 +382,8 @@ func (a *Adapter) fetchOrderDetailAttempt(ctx context.Context, cookieID, orderID
 	// 账号凭证快照已读取完成；慢速 MTOP 请求不得继续持有共享凭证锁。
 	credentialUnlock()
 	credentialLocked = false
-	// detail、fetchErr 用于本次流程后续判断的detail、fetchErr
-	detail, fetchErr := a.orderMTop.FetchOrderDetail(requestCtx, cookieStr, orderID)
+	// detail、fetchErr 保存共享限流和同订单去重后的平台详情结果及错误。
+	detail, fetchErr := a.orderDetails.Fetch(requestCtx, cookieID, orderID, cookieStr, a.orderMTop)
 	// authoritativeCookies、authoritativeSnapshot、sessionChanged 用于本次流程后续判断的authoritativeCookies、authoritativeSnapshot、sessionChanged
 	authoritativeCookies, authoritativeSnapshot, sessionChanged := cookieSession.State()
 	// credentialUnlock 保存重新进入凭证提交临界区的释放函数。

@@ -26,6 +26,16 @@ type OrderRuntimeFactory interface {
 // NewOrderRuntimeAdapter 构造订单应用运行时 Port；所有外部能力仅通过组合期回调和窄接口进入。
 // chatRefresh 是可选的联系人缓存刷新回调，保持既有测试和无聊天依赖运行模式兼容。
 func NewOrderRuntimeAdapter(dependencies OrderRuntimeFactory, manager *account.Manager, autoCenter *automation.Center, notifier *notify.Notifier, mtopClient func() MTOPClient, updateRunningCookie func(context.Context, string, string), sessionRecovery SessionRecoveryHandler, logger *slog.Logger, reconciliation orderapp.ReconciliationRecorder, chatRefresh ...func(context.Context, string) error) OrderRuntimeAdapter {
+	return newOrderRuntimeAdapter(dependencies, manager, autoCenter, notifier, mtopClient, updateRunningCookie, sessionRecovery, logger, reconciliation, nil, chatRefresh...)
+}
+
+// NewOrderRuntimeAdapterWithOrderDetails 构造订单应用运行时 Port，并把自动发货使用的订单详情协调器固定注入管理端刷新路径。
+func NewOrderRuntimeAdapterWithOrderDetails(dependencies OrderRuntimeFactory, manager *account.Manager, autoCenter *automation.Center, notifier *notify.Notifier, mtopClient func() MTOPClient, updateRunningCookie func(context.Context, string, string), sessionRecovery SessionRecoveryHandler, logger *slog.Logger, reconciliation orderapp.ReconciliationRecorder, orderDetails *OrderDetailCoordinator, chatRefresh ...func(context.Context, string) error) OrderRuntimeAdapter {
+	return newOrderRuntimeAdapter(dependencies, manager, autoCenter, notifier, mtopClient, updateRunningCookie, sessionRecovery, logger, reconciliation, orderDetails, chatRefresh...)
+}
+
+// newOrderRuntimeAdapter 在构造期统一收口订单运行时依赖；orderDetails 为空时仅隔离测试使用独立默认协调器。
+func newOrderRuntimeAdapter(dependencies OrderRuntimeFactory, manager *account.Manager, autoCenter *automation.Center, notifier *notify.Notifier, mtopClient func() MTOPClient, updateRunningCookie func(context.Context, string, string), sessionRecovery SessionRecoveryHandler, logger *slog.Logger, reconciliation orderapp.ReconciliationRecorder, orderDetails *OrderDetailCoordinator, chatRefresh ...func(context.Context, string) error) OrderRuntimeAdapter {
 	// automationPort 保持 nil 接口语义，避免 nil 指针伪装成已装配自动化能力。
 	var automationPort OrderAutomation
 	if autoCenter != nil {
@@ -38,6 +48,8 @@ func NewOrderRuntimeAdapter(dependencies OrderRuntimeFactory, manager *account.M
 	}
 	// hooks 收口账号、自动化、通知、平台和凭证恢复能力，订单应用不接触 HTTP transport。
 	hooks := NewOrderRuntimeHooks(mtopClient, manager, automationPort, notifierPort, updateRunningCookie, sessionRecovery)
+	// OrderDetails 与自动发货 Adapter 共享；同一账号同一订单不会因管理端刷新并发而重复请求平台。
+	hooks.OrderDetails = orderDetails
 	if len(chatRefresh) > 0 {
 		// RefreshChatConversations 保存组合根提供的可选聊天联系人刷新能力。
 		hooks.RefreshChatConversations = chatRefresh[0]

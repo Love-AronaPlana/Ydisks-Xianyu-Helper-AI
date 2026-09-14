@@ -248,8 +248,8 @@ func TestFetchOrderDetailRequestError(t *testing.T) {
 	}
 }
 
-// TestFetchOrderDetailTokenExpiredRetriesWithSetCookie: token 过期 + Set-Cookie，二次成功。
-func TestFetchOrderDetailTokenExpiredRetriesWithSetCookie(t *testing.T) {
+// TestFetchOrderDetailTokenExpiredStopsAfterOneRequest 验证订单详情遇到 Token 过期时立即返回，避免一秒间隔的密集重试。
+func TestFetchOrderDetailTokenExpiredStopsAfterOneRequest(t *testing.T) {
 	// requests 用于本次流程后续判断的请求列表
 	var requests atomic.Int32
 	// server 用于本次流程后续判断的server
@@ -267,29 +267,18 @@ func TestFetchOrderDetailTokenExpiredRetriesWithSetCookie(t *testing.T) {
 
 	// client 用于本次流程后续判断的client
 	client := &ClientImpl{HTTPClient: server.Client(), OrderDetailURL: server.URL + "/"}
-	// ctx、cancel 用于本次流程后续判断的ctx、cancel
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	// res、err 用于本次流程后续判断的res、err
-	res, err := client.FetchOrderDetail(ctx, consignCookies, "order-1")
-	if err != nil {
-		t.Fatalf("err=%v", err)
+	// result、err 保存单次 Token 过期响应的返回结果和错误。
+	result, err := client.FetchOrderDetail(context.Background(), consignCookies, "order-1")
+	if result != nil || err == nil || !IsMTopTokenExpiredErr(err) {
+		t.Fatalf("Token 过期未直接返回 result=%+v err=%v", result, err)
 	}
-	if res.Amount != "9.90" {
-		t.Fatalf("Amount=%q", res.Amount)
-	}
-	if !strings.Contains(res.UpdatedCookies, "newtoken_5") {
-		t.Fatalf("UpdatedCookies=%q", res.UpdatedCookies)
-	}
-	if requests.Load() != 2 {
-		t.Fatalf("requests=%d want 2", requests.Load())
+	if requests.Load() != 1 {
+		t.Fatalf("requests=%d want 1", requests.Load())
 	}
 }
 
-// TestFetchOrderDetailTokenExpiredNoCookieRefreshes: token 过期无 Set-Cookie，
-// 走 RefreshToken 刷新成功后重试成功。
-// TestFetchOrderDetailTokenExpiredNoCookieRefreshes 封装TestFetch订单Detail令牌ExpiredNo登录凭证Refreshes业务协调。
-func TestFetchOrderDetailTokenExpiredNoCookieRefreshes(t *testing.T) {
+// TestFetchOrderDetailTokenExpiredDoesNotRefreshInline 验证 Token 过期时不在详情函数内刷新 Token 或重试，续期由账号级上层协调。
+func TestFetchOrderDetailTokenExpiredDoesNotRefreshInline(t *testing.T) {
 	// orderReqs 用于本次流程后续判断的订单Reqs
 	var orderReqs atomic.Int32
 	// server 用于本次流程后续判断的server
@@ -314,13 +303,13 @@ func TestFetchOrderDetailTokenExpiredNoCookieRefreshes(t *testing.T) {
 	// ctx、cancel 用于本次流程后续判断的ctx、cancel
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	// res、err 用于本次流程后续判断的res、err
-	res, err := client.FetchOrderDetail(ctx, consignCookies, "order-1")
-	if err != nil {
-		t.Fatalf("err=%v", err)
+	// result、err 保存 Token 过期的单次调用结果和错误。
+	result, err := client.FetchOrderDetail(ctx, consignCookies, "order-1")
+	if result != nil || err == nil || !IsMTopTokenExpiredErr(err) {
+		t.Fatalf("Token 过期未交给上层 result=%+v err=%v", result, err)
 	}
-	if res.Amount != "5.00" {
-		t.Fatalf("Amount=%q", res.Amount)
+	if orderReqs.Load() != 1 {
+		t.Fatalf("orderReqs=%d want 1", orderReqs.Load())
 	}
 }
 
@@ -372,8 +361,8 @@ func TestFetchOrderDetailTruncateInParseError(t *testing.T) {
 	}
 }
 
-// TestFetchOrderDetailRetryExhausted: token 过期但每次下发不同 Set-Cookie，4 次重试耗尽。
-func TestFetchOrderDetailRetryExhausted(t *testing.T) {
+// TestFetchOrderDetailTokenExpiredWithSetCookieStillStops 验证即使平台返回新 Cookie，详情函数也不在当前调用中继续重试。
+func TestFetchOrderDetailTokenExpiredWithSetCookieStillStops(t *testing.T) {
 	// requests 用于本次流程后续判断的请求列表
 	var requests atomic.Int32
 	// server 用于本次流程后续判断的server
@@ -387,16 +376,13 @@ func TestFetchOrderDetailRetryExhausted(t *testing.T) {
 
 	// client 用于本次流程后续判断的client
 	client := &ClientImpl{HTTPClient: server.Client(), OrderDetailURL: server.URL + "/"}
-	// ctx、cancel 用于本次流程后续判断的ctx、cancel
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	// err 用于本次流程后续判断的err
-	_, err := client.FetchOrderDetail(ctx, consignCookies, "order-1")
-	if err == nil || !strings.Contains(err.Error(), "订单详情 token 重试失败") {
+	// result、err 保存首次 Token 过期请求的业务结果和错误。
+	result, err := client.FetchOrderDetail(context.Background(), consignCookies, "order-1")
+	if result != nil || err == nil || !IsMTopTokenExpiredErr(err) {
 		t.Fatalf("err=%v", err)
 	}
-	if requests.Load() != 4 {
-		t.Fatalf("requests=%d want 4", requests.Load())
+	if requests.Load() != 1 {
+		t.Fatalf("requests=%d want 1", requests.Load())
 	}
 }
 

@@ -55,6 +55,8 @@ type OrderRuntimeHooks struct {
 	ReportPersistenceFailure func(string, error)
 	// RefreshChatConversations 按需刷新指定账号的聊天联系人缓存；未装配时订单同步保持可用但不补关联。
 	RefreshChatConversations func(context.Context, string) error
+	// OrderDetails 是订单刷新与自动发货共享的详情限流协调器；构造后不可替换。
+	OrderDetails *OrderDetailCoordinator
 }
 
 // NewOrderRuntimeHooks 将账号、自动化和通知依赖转换为订单运行时回调；闭包只存在于 adapter 装配边界。
@@ -90,6 +92,8 @@ type OrderRuntime struct {
 	reconciliation orderapp.ReconciliationRecorder
 	// logger 记录不含凭证的订单持久化错误。
 	logger *slog.Logger
+	// orderDetails 统一限制管理端订单刷新对同一账号发出的详情请求，并与自动发货复用在途请求。
+	orderDetails *OrderDetailCoordinator
 }
 
 // NewOrderRuntime 构造订单平台与运行时适配器。
@@ -99,7 +103,12 @@ func NewOrderRuntime(store *db.Store, hooks OrderRuntimeHooks, reconciliation or
 	if resolvedLogger == nil {
 		resolvedLogger = slog.Default()
 	}
-	return &OrderRuntime{store: store, hooks: hooks, reconciliation: reconciliation, logger: resolvedLogger}
+	// orderDetails 是构造期固定的详情协调器；隔离测试未注入时保留独立默认实例。
+	orderDetails := hooks.OrderDetails
+	if orderDetails == nil {
+		orderDetails = NewOrderDetailCoordinator(resolvedLogger)
+	}
+	return &OrderRuntime{store: store, hooks: hooks, reconciliation: reconciliation, logger: resolvedLogger, orderDetails: orderDetails}
 }
 
 // AccountRunning 判断指定账号是否在线运行。
@@ -273,8 +282,8 @@ func (r *OrderRuntime) FetchOrderDetail(ctx context.Context, detail *orderapp.Pl
 	}
 	// requestCtx、session 保存带 Cookie 快照的平台上下文及响应会话。
 	requestCtx, session := withOrderCookieSnapshot(ctx, platformRuntimeDataForOrder(detail))
-	// result、callErr 保存平台详情响应和错误。
-	result, callErr := fetcher.FetchOrderDetail(requestCtx, detail.Value, orderID)
+	// result、callErr 保存共享限流和同订单去重后的平台详情响应及错误。
+	result, callErr := r.orderDetails.Fetch(requestCtx, detail.ID, orderID, detail.Value, fetcher)
 	// cookieUpdate 保存平台详情请求观察到的 Cookie 会话变化。
 	cookieUpdate := orderCookieUpdate(detail, session)
 	if callErr != nil {

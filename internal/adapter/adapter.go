@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
-	"time"
 
 	accountmanager "xianyu-go/internal/account"
 	accountapp "xianyu-go/internal/application/account"
@@ -78,8 +77,8 @@ type Adapter struct {
 	orderMTop      orderDetailClient
 	chat           *chat.Service
 
-	orderFetchMu   sync.Mutex
-	lastOrderFetch time.Time
+	// orderDetails 协调自动发货订单详情访问；它与订单刷新运行时共享，按账号限流并合并同订单并发请求。
+	orderDetails *OrderDetailCoordinator
 	// passwordCoordinator 按账号协调协议凭证恢复，避免重复外部续期并允许不同账号并行执行。
 	passwordCoordinator *accountapp.CredentialRefreshCoordinator
 	// passwordResultMu 仅保护 passwordResults；持锁期间不执行凭证读取或平台 I/O。
@@ -110,8 +109,16 @@ type notifyEventNotifier interface {
 
 // New 构造可隔离测试的 Adapter；生产进程必须使用 NewRuntimeBundle 完成不可变运行时装配。
 func New(store *db.Store, bm *browser.Manager, logger *slog.Logger) *Adapter {
+	return newAdapter(store, bm, logger, NewOrderDetailCoordinator(logger))
+}
+
+// newAdapter 在运行时启动前构造适配器，并固定订单详情协调器；nil 协调器仅供旧测试构造路径回退为默认实现。
+func newAdapter(store *db.Store, bm *browser.Manager, logger *slog.Logger, orderDetails *OrderDetailCoordinator) *Adapter {
 	if logger == nil {
 		logger = slog.Default()
+	}
+	if orderDetails == nil {
+		orderDetails = NewOrderDetailCoordinator(logger)
 	}
 	return &Adapter{
 		store:               store,
@@ -121,6 +128,7 @@ func New(store *db.Store, bm *browser.Manager, logger *slog.Logger) *Adapter {
 		cooldown:            renewal.GlobalCooldown,
 		captchaReq:          mtop.NewClient(),
 		orderMTop:           mtop.NewClient(),
+		orderDetails:        orderDetails,
 		passwordCoordinator: accountapp.NewCredentialRefreshCoordinator(),
 		passwordResults:     make(map[string]*passwordRenewalResult),
 	}
@@ -139,6 +147,8 @@ type RuntimeBundle struct {
 	Automation *automation.Center
 	// Chat 是处理聊天持久化与实时事件的领域服务。
 	Chat *chat.Service
+	// OrderDetails 是自动发货和管理端订单刷新共用的限流与去重协调器。
+	OrderDetails *OrderDetailCoordinator
 }
 
 // NewRuntimeBundle 在进程启动前一次性完成运行时闭环装配，禁止通过运行期 setter 补齐必需依赖。
@@ -149,8 +159,10 @@ func NewRuntimeBundle(store *db.Store, bm *browser.Manager, logger *slog.Logger)
 	if logger == nil {
 		logger = slog.Default()
 	}
+	// orderDetails 是自动发货和订单刷新共用的限流协调器；它不持有凭证，必须在两个运行时启动前固定注入。
+	orderDetails := NewOrderDetailCoordinator(logger)
 	// runtimeAdapter 是尚未启动的事件与平台适配器，后续字段只在本构造函数内写入。
-	runtimeAdapter := New(store, bm, logger)
+	runtimeAdapter := newAdapter(store, bm, logger, orderDetails)
 	// chatService 是账号实时消息落库和广播服务，必须先于账号引擎启动完成注入。
 	chatService := chat.New(store)
 	// manager 是自动化中心的在线发送器来源，同时在启动期把 Adapter 固定为账号事件处理器。
@@ -169,11 +181,12 @@ func NewRuntimeBundle(store *db.Store, bm *browser.Manager, logger *slog.Logger)
 	runtimeAdapter.automation = autoCenter
 	runtimeAdapter.notifier = notifier
 	return &RuntimeBundle{
-		Adapter:    runtimeAdapter,
-		Manager:    manager,
-		Notifier:   notifier,
-		Automation: autoCenter,
-		Chat:       chatService,
+		Adapter:      runtimeAdapter,
+		Manager:      manager,
+		Notifier:     notifier,
+		Automation:   autoCenter,
+		Chat:         chatService,
+		OrderDetails: orderDetails,
 	}, nil
 }
 
