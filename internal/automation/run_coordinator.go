@@ -258,15 +258,69 @@ func canContinueAfterUncertainAction(remaining []db.AutomationAction) bool {
 	return true
 }
 
+// pendingUncertaintyReasonKey 与 pendingUncertaintyErrorKey 是任务快照里记录「待人工核对」的键。
+// 剩余动作可能带延迟：延迟任务被持久化后本次调用的内存状态会丢失，只能靠快照把人工核对收口带过延迟。
+const (
+	pendingUncertaintyReasonKey = "automation_pending_review_reason"
+	pendingUncertaintyErrorKey  = "automation_pending_review_error"
+)
+
+// restorePendingUncertaintyForRun 从任务快照恢复待人工核对状态，并把已确认数量对齐到当前运行。
+// 没有标记时返回 nil，表示本次运行为全新事件而不是延迟重放。
+func restorePendingUncertaintyForRun(task Task, sent int) *uncertainActionState {
+	// restored 保存从任务快照恢复出的待收口状态；非空时已确认的发送数量取当前运行的计数。
+	restored := restorePendingUncertainty(task)
+	if restored == nil {
+		return nil
+	}
+	restored.sent = sent
+	return restored
+}
+
+// markPendingUncertainty 把「消息动作结果不确定，仍需人工核对」写入任务快照，
+// 使带延迟的收尾动作被持久化后，恢复时仍能收口为人工核对而不是被记为成功。
+// 必须传入任务指针：Raw 为空时需要就地创建映射，按值传参会把新映射丢在副本里。
+func markPendingUncertainty(task *Task, reason string, actionErr error) {
+	if task == nil {
+		return
+	}
+	if task.Raw == nil {
+		task.Raw = map[string]any{}
+	}
+	task.Raw[pendingUncertaintyReasonKey] = reason
+	if actionErr != nil {
+		task.Raw[pendingUncertaintyErrorKey] = actionErr.Error()
+	}
+}
+
+// restorePendingUncertainty 从任务快照恢复待人工核对状态；没有标记时返回 nil。
+// 凭证不在此处恢复：放行时已通过 AdvanceRunAction 落库，恢复路径会从运行记录重新装载。
+func restorePendingUncertainty(task Task) *uncertainActionState {
+	if task.Raw == nil {
+		return nil
+	}
+	// reason 保存放行时写入的人工核对原因；为空说明本次调用没有待收口状态。
+	reason, _ := task.Raw[pendingUncertaintyReasonKey].(string)
+	if strings.TrimSpace(reason) == "" {
+		return nil
+	}
+	// errText 保存原始不确定错误文本；恢复时用它还原错误链，人工核对页面才能看到原因。
+	errText, _ := task.Raw[pendingUncertaintyErrorKey].(string)
+	return &uncertainActionState{reason: reason, err: errors.New(errText)}
+}
+
 // tryContinueAfterUncertain 尝试在消息动作结果不确定时放行后续幂等状态动作。
-// 参数 ctx 是调用方取消边界；run 提供运行 ID 与代次号；ruleID 仅用于日志定位；
+// 参数 task 是本次运行的任务快照（放行时会把待核对原因写入其中，指针语义）；
+// ctx 是调用方取消边界；run 提供运行 ID 与代次号；ruleID 仅用于日志定位；
 // cursor 是不确定动作在冻结计划中的下标；actions 是完整冻结计划；
 // actionResult 是本动作已明确产生的外部结果；sentPlusN 是截至本动作已确认的动作数量；
 // reason 是人工核对原因文本；proofInput 是需要加密保留的凭证；
 // deliveryProof 是已成功投递凭证的汇总；actionErr 是原始的不确定错误。
-// 返回的 continued 表示是否已放行。返回错误表示检查点推进失败，调用方必须立刻把该错误
+// 返回的待收口状态非空表示已放行，调用方必须继续执行剩余动作并在循环结束时收口为人工核对；
+// 返回的凭证是放行后应继续携带的汇总。返回错误表示检查点推进失败，调用方必须立刻把该错误
 // 作为运行结果返回：此时函数已按原有熔断语义写好人工核对记录，不留中间态。
 func (r automationRunCoordinator) tryContinueAfterUncertain(
+	task *Task,
 	ctx context.Context,
 	run *db.AutomationRun,
 	ruleID int64,
@@ -278,15 +332,15 @@ func (r automationRunCoordinator) tryContinueAfterUncertain(
 	proofInput *db.AutomationDeliveryProof,
 	deliveryProof shipmentDeliveryProof,
 	actionErr error,
-) (bool, shipmentDeliveryProof, error) {
+) (*uncertainActionState, shipmentDeliveryProof, error) {
 	if !continueAfterUncertainActionEnabled() || !canContinueAfterUncertainAction(actions[cursor+1:]) {
-		return false, deliveryProof, nil
+		return nil, deliveryProof, nil
 	}
 	// 放行前必须排除「确定未执行」这一类失败：发送前就被拒绝、或本地补取与库存恢复失败时，
 	// 买家并没有收到任何内容（例如库存在恢复失败后仍处于占用状态），此时把订单改判为已发货
 	// 只会掩盖本地不一致，必须维持整链熔断。判据与 executeRule 对确定未执行的处理保持一致。
 	if errors.Is(actionErr, ErrMessageNotSent) || errors.Is(actionErr, errActionNotPerformed) {
-		return false, deliveryProof, nil
+		return nil, deliveryProof, nil
 	}
 	r.logger.Warn("消息动作结果不确定，放行后续幂等状态动作", "run_id", run.ID, "rule_id", ruleID, "cursor", cursor, "remaining_actions", len(actions)-cursor-1, "err", actionErr)
 	// advance 推进游标并保留已产生的发货凭证，但本次动作不计入已确认数量。
@@ -301,14 +355,16 @@ func (r automationRunCoordinator) tryContinueAfterUncertain(
 		// quarantineErr 保存写入人工核对结果的错误；非空时随其他错误一并上报。
 		if quarantineErr := r.store.Automation.QuarantineRunResultWithProof(ctx, run.ID, run.AttemptCount, sentPlusN, reason, proofInput); quarantineErr != nil {
 			r.logger.Error("保存不确定动作人工核对状态失败", "run_id", run.ID, "err", quarantineErr)
-			return false, deliveryProof, errors.Join(errAutomationNeedsReview, errAutomationQuarantine, actionErr, quarantineErr)
+			return nil, deliveryProof, errors.Join(errAutomationNeedsReview, errAutomationQuarantine, actionErr, quarantineErr)
 		}
-		return false, deliveryProof, fmt.Errorf("%w: %v", errAutomationNeedsReview, actionErr)
+		return nil, deliveryProof, fmt.Errorf("%w: %v", errAutomationNeedsReview, actionErr)
 	}
 	// 放行成功后补齐本动作已产生的凭证，供后续状态动作作为发货凭证提交。
 	deliveryProof = mergeShipmentDeliveryProof(deliveryProof, actionResult.proof)
 	deliveryProof = mergeShipmentDeliveryProof(deliveryProof, actionResult.reviewProof)
-	return true, deliveryProof, nil
+	// 待核对原因必须同时写入任务快照：收尾动作带延迟时本次调用会先返回，恢复只能凭快照继续收口。
+	markPendingUncertainty(task, reason, actionErr)
+	return &uncertainActionState{reason: reason, proof: proofInput, sent: sentPlusN, err: actionErr}, deliveryProof, nil
 }
 
 // executeRunActions 按动作游标执行计划，并在每个外部动作前后保存检查点。
@@ -337,7 +393,8 @@ func (r automationRunCoordinator) executeRunActions(ctx context.Context, task Ta
 		skippedTemplateMessages: append([]db.AutomationDeliverySkip(nil), run.DeliveryProof.SkippedTemplateMessages...),
 	}
 	// pendingUncertainty 保存「消息动作结果不确定但已放行后续幂等状态动作」的待收口信息；非空表示循环结束时必须收口为人工核对。
-	var pendingUncertainty *uncertainActionState
+	// 优先从任务快照恢复：收尾动作带延迟时上一次调用已带着标记返回，内存状态丢失，只能靠快照把收口带过延迟。
+	pendingUncertainty := restorePendingUncertaintyForRun(task, sent)
 	// cursor 表示当前动作在计划中的位置。
 	for cursor := run.ActionCursor; cursor < len(actions); cursor++ {
 		// action 是当前待执行的动作定义。
@@ -408,15 +465,14 @@ func (r automationRunCoordinator) executeRunActions(ctx context.Context, task Ta
 					}
 				}
 				// 剩余动作全部是幂等状态动作时放行：消息可能已经送达，不该让与买家无关的状态动作一并作废。
-				// 收口仍为人工核对，且本动作不计入 sent_count；游标必须原子推进，否则后续动作无法领取检查点。
-				// continued 表示本次不确定动作是否已放行；continuedProof 是放行后应继续携带的凭证汇总。
-				continued, continuedProof, continueErr := r.tryContinueAfterUncertain(ctx, run, ruleID, cursor, actions, actionResult, sent+n, reason, proofInput, deliveryProof, actionErr)
+				// continuedState 非空表示本次已放行；该状态同时写入任务快照，供带延迟的收尾动作在恢复时继续收口。
+				continuedState, continuedProof, continueErr := r.tryContinueAfterUncertain(&task, ctx, run, ruleID, cursor, actions, actionResult, sent+n, reason, proofInput, deliveryProof, actionErr)
 				if continueErr != nil {
 					return sent + n, false, continueErr
 				}
-				if continued {
+				if continuedState != nil {
+					pendingUncertainty = continuedState
 					deliveryProof = continuedProof
-					pendingUncertainty = &uncertainActionState{reason: reason, proof: proofInput, sent: sent + n, err: actionErr}
 					sent += n
 					continue
 				}

@@ -335,3 +335,119 @@ func newUncertainTailCoordinator(store *db.Store, executeAction func(context.Con
 		notifyResult: func(context.Context, Task, int64, string, int, string) {},
 	}
 }
+
+// newUncertainTailCoordinatorWithDelay 在基础协调器上再注入延迟与延迟任务回调：
+// delaySeconds 按动作返回等待秒数，onDeferred 捕获被持久化的延迟任务，供恢复用例重放。
+func newUncertainTailCoordinatorWithDelay(
+	store *db.Store,
+	executeAction func(context.Context, Task, db.AutomationAction) (actionExecutionResult, error),
+	delaySeconds func(db.AutomationAction) int,
+	onDeferred func(Task),
+) automationRunCoordinator {
+	// coordinator 是在基础协调器之上注入延迟行为的运行协调器。
+	coordinator := newUncertainTailCoordinator(store, executeAction)
+	// actionDelaySeconds 用测试配置替换默认的零延迟。
+	coordinator.actionDelaySeconds = func(_ context.Context, action db.AutomationAction) (int, error) {
+		return delaySeconds(action), nil
+	}
+	// deferTask 记录延迟任务并返回成功，模拟延迟任务已持久化。
+	coordinator.deferTask = func(_ context.Context, task Task, _ int64) error {
+		if onDeferred != nil {
+			onDeferred(task)
+		}
+		return nil
+	}
+	return coordinator
+}
+
+// TestExecuteRunActionsKeepsReviewAcrossDelayedTailAction 验证收尾动作带延迟时人工核对收口不会丢失。
+// 放行后若收尾动作带延迟，本次调用只持久化延迟任务就返回；恢复时内存状态已经丢失，
+// 必须靠任务快照继续收口为 needs_review，否则「消息送达结果不确定」会被记成成功。
+func TestExecuteRunActionsKeepsReviewAcrossDelayedTailAction(t *testing.T) {
+	// store、cleanup 保存测试数据库及关闭责任。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	// ctx 保存本测试共用的数据库上下文。
+	ctx := context.Background()
+	// admin 保存规则所属管理员账号。
+	admin, adminErr := store.Users.GetByUsername(ctx, "admin")
+	if adminErr != nil {
+		t.Fatal(adminErr)
+	}
+	// ruleID 保存包含发卡与确认发货两类动作的规则主键。
+	ruleID := uncertainTailRule(t, store, admin.ID, "delay-acc",
+		[]db.AutomationActionInput{
+			{ActionType: ActionSendCard, DeliveryCount: 1, Enabled: true, ConfigJSON: `{"spec_name":"颜色","spec_value":"黑"}`},
+			{ActionType: ActionConfirmShipment, Enabled: true},
+		})
+	// runID 保存待执行运行主键。
+	runID := uncertainTailRun(t, store, ruleID, "delay-acc", "o-delay")
+	// running 保存重新读取的运行状态。
+	running := uncertainTailRunningRun(t, store, runID)
+	// executed 收集实际执行过的动作类型。
+	executed := []string{}
+	// deferredTask 保存被持久化的延迟任务，用于模拟延迟到点后的重放。
+	var deferredTask Task
+	// coordinator 是「只有确认发货动作带延迟」的运行协调器。
+	coordinator := newUncertainTailCoordinatorWithDelay(store, func(_ context.Context, _ Task, action db.AutomationAction) (actionExecutionResult, error) {
+		executed = append(executed, action.ActionType)
+		if action.ActionType != ActionSendCard {
+			return actionExecutionResult{}, nil
+		}
+		// 卡密内容可能已经发出但平台响应中断：结果不确定，而不是确定未发送。
+		return actionExecutionResult{reviewProof: shipmentDeliveryProof{messages: []db.AutomationDeliveryMessage{{Kind: "text", Content: "卡密内容"}}}},
+			uncertainAction(errors.New("平台发送响应中断"))
+	}, func(action db.AutomationAction) int {
+		if action.ActionType == ActionConfirmShipment {
+			return 600
+		}
+		return 0
+	}, func(task Task) {
+		deferredTask = task
+	})
+	// task 是与动作规格匹配的付款发货任务。
+	task := Task{TriggerType: TriggerOrderPaid, AccountID: "delay-acc", OrderID: "o-delay",
+		ChatID: "chat-delay", BuyerID: "buyer-delay", ItemID: "item-uncertain",
+		SpecName: "颜色", SpecValue: "黑"}
+	// actions 是运行要执行的动作计划。
+	actions := []db.AutomationAction{
+		{ActionType: ActionSendCard, Enabled: true, CardID: 1, DeliveryCount: 1, ConfigJSON: `{"spec_name":"颜色","spec_value":"黑"}`},
+		{ActionType: ActionConfirmShipment, Enabled: true},
+	}
+	// sent、deferred、runErr 是首轮执行的返回结果：带延迟的收尾动作应让本轮进入延迟队列。
+	sent, deferred, runErr := coordinator.executeRunActions(ctx, task, ruleID, running, actions, false)
+	if !deferred || runErr != nil || sent != 0 {
+		t.Fatalf("带延迟的收尾动作应进入延迟队列: sent=%d deferred=%v err=%v", sent, deferred, runErr)
+	}
+	if len(executed) != 1 || executed[0] != ActionSendCard {
+		t.Fatalf("首轮只应执行发卡动作: %v", executed)
+	}
+	// 待收口标记必须随延迟任务一起持久化，否则恢复后无法继续收口。
+	if deferredTask.Raw[pendingUncertaintyReasonKey] == nil || deferredTask.Raw[pendingUncertaintyErrorKey] == nil {
+		t.Fatalf("延迟任务未携带待人工核对标记: %+v", deferredTask.Raw)
+	}
+	// resumed 保存恢复时的运行快照；游标已由放行逻辑推进到收尾动作。
+	resumed, resumedErr := store.Automation.GetRun(ctx, runID)
+	if resumedErr != nil {
+		t.Fatal(resumedErr)
+	}
+	// sentLater、deferredLater、laterErr 是延迟任务重放的返回结果。
+	sentLater, deferredLater, laterErr := coordinator.executeRunActions(ctx, deferredTask, ruleID, resumed, actions, false)
+	if deferredLater {
+		t.Fatal("延迟重放不应再次进入延迟队列")
+	}
+	if !errors.Is(laterErr, errAutomationNeedsReview) {
+		t.Fatalf("延迟恢复后仍必须收口为人工核对: %v", laterErr)
+	}
+	if sentLater != 0 {
+		t.Fatalf("不确定动作不得计入已确认数量: %d", sentLater)
+	}
+	// final 保存落库后的运行状态，必须收口为人工核对。
+	final, finalErr := store.Automation.GetRun(ctx, runID)
+	if finalErr != nil {
+		t.Fatal(finalErr)
+	}
+	if final.Status != "needs_review" {
+		t.Fatalf("延迟恢复后运行必须收口为人工核对: %+v", final)
+	}
+}
