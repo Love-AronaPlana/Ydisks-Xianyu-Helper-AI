@@ -53,6 +53,8 @@ The exception area of Automation lists actionable runs and delayed tasks. Check 
 
 For a manual resend, locate the order in Orders, confirm buyer, product, and delivery history, then use manual delivery/resend. Record the reason and check inventory afterward.
 
+Paid delivery is normally triggered only by the platform's paid system message. If that message is lost, or the order fails during preparation (not even leaving a run record), the order stays in pending shipment forever. The scheduler scans for such orders once a minute and re-triggers delivery from the order status, reusing the same execution chain. Once an order has any `order_paid` run it is no longer picked up, and further handling goes through the failed runs in the exception area. Two fallback triggers for the same order are at least 10 minutes apart. Unfinished pending-shipment runs are resumed as well, but only idempotent `confirm_shipment` tail actions that never contact the buyer are allowed. Set `XIANYU_PENDING_SHIP_CATCHUP=0` to disable both fallback paths.
+
 ## Keyword and default replies
 
 In Automation → Keyword Replies, select an account, add a rule, enter keywords and text or image URL, and save. Keyword rules apply to ordinary buyer messages.

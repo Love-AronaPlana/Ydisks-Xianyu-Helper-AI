@@ -543,6 +543,22 @@ WHERE o.system_shipped=1
 	return out, rows.Err()
 }
 
+// ReopenRunForRecovery 把处于人工核对或明确失败的运行重新置为可执行，并递增代次使旧检查点失效。
+// 返回 false 表示运行状态或代次已经变化，调用方必须放弃本次恢复，避免与其它 worker 竞争同一运行。
+func (a *AutomationRules) ReopenRunForRecovery(ctx context.Context, runID int64, attempt int, leaseExpiresAt int64) (bool, error) {
+	// res、err 保存重开结果及数据库错误。
+	res, err := a.DB.ExecContext(ctx, `UPDATE automation_runs
+	   SET status='running',action_started=0,attempt_count=attempt_count+1,
+	       lease_expires_at=?,next_retry_at=0,error_message='',updated_at=CURRENT_TIMESTAMP
+	 WHERE id=? AND attempt_count=? AND status IN ('needs_review','failed')`, leaseExpiresAt, runID, attempt)
+	if err != nil {
+		return false, err
+	}
+	// n 保存实际更新的行数；只有恰好一行才算抢到本次恢复。
+	n, err := res.RowsAffected()
+	return err == nil && n == 1, err
+}
+
 // createAutomationRuleTx 封装create自动化规则Tx业务协调。
 func createAutomationRuleTx(ctx context.Context, tx *sql.Tx, dialect Dialect, in AutomationRuleInput) (int64, error) {
 	if in.Priority <= 0 {

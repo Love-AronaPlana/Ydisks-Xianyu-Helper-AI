@@ -354,8 +354,24 @@ DATABASE_URL > -db-url > -db
 | `CAPTCHA_BROWSER_PROXY` | 空 | 仅 token CAPTCHA Chromium 使用的无凭证 `http(s)`、`socks4` 或 `socks5` 代理地址；非法或含凭证的值会被忽略 |
 | `CAPTCHA_IGNORE_CERT_ERRORS` | `false` | 仅受控 TLS 检查代理环境可设为 `true`；默认保持 Chromium 证书校验 |
 | `TZ` | 系统时区；Docker 为 `Asia/Shanghai` | 容器和日志时区 |
+| `XIANYU_PENDING_SHIP_CATCHUP` | 开启 | 待发货兜底扫描与断点续跑的止血开关；显式设为 `0` 时整体跳过 |
 
 前端构建还支持 `VITE_AMAP_JS_KEY`，用于覆盖发布页高德 JS API 的公开 Key；未设置时使用内置的公开 Key。修改后需重新执行 `make frontend` 才会写入嵌入式前端资源。
+
+### 待发货兜底扫描
+
+付款自动发货正常只由平台的付款系统消息（WebSocket 推送）触发。一旦该消息丢失，或订单在准备阶段
+就失败（此时连运行记录都不会产生），订单会永久停在待发货，既不会被失败运行恢复扫描捞到，也不会
+被延迟任务重放捞到。
+
+调度器会每分钟扫描一次这类订单并按订单状态补一次触发，复用同一条执行链，不引入第二套执行逻辑：
+
+- **幂等**：订单只要产生过任意 `order_paid` 运行（无论成功或失败），就不再被兜底选中，后续交由
+  异常区的失败运行处理；
+- **冷却**：同一订单两次兜底触发之间至少间隔 10 分钟，避免上游异常时高频重试；
+- **续跑**：未完成的待发货运行同样会被兜底续跑，但只放行 `confirm_shipment` 这类不会再次联系买家、
+  且平台侧幂等的收尾动作；
+- **止血**：把 `XIANYU_PENDING_SHIP_CATCHUP` 设为 `0` 可一次性关闭上述两条兜底链路。
 
 Docker Compose 还支持：
 
