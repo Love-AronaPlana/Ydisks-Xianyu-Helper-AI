@@ -5,7 +5,6 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
-	"sync"
 	"time"
 
 	itemapp "xianyu-go/internal/application/items"
@@ -55,7 +54,7 @@ func (r *ItemSyncRepository) OwnsAccount(ctx context.Context, userID int64, cook
 	return ownerID == userID, nil
 }
 
-// SyncAll 读取平台商品全集、探测多规格并完成本地 reconcile。
+// SyncAll 读取平台商品列表并完成本地 reconcile；标题、价格、ID 和列表已提供的多规格标记均以列表响应为准，不请求商品详情接口。
 func (r *ItemSyncRepository) SyncAll(ctx context.Context, query itemapp.SyncQuery) (itemapp.SyncAllResult, error) {
 	// requestCtx、cancel 控制全量同步的最长执行时间。
 	requestCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
@@ -81,21 +80,8 @@ func (r *ItemSyncRepository) SyncAll(ctx context.Context, query itemapp.SyncQuer
 	if result == nil {
 		return itemapp.SyncAllResult{}, syncStageError(itemapp.SyncErrorPlatform, errors.New("商品列表接口未返回结果"))
 	}
-	// detailCookies 保存规格探测使用的最新 Cookie 串。
-	detailCookies := cookieValue
-	if result.UpdatedCookies != "" {
-		detailCookies = result.UpdatedCookies
-	}
-	// detailErr 保存远端多规格探测错误。
-	detailErr := r.enrichMultiSpec(requestContext, detailCookies, query.CookieID, result.Items)
-	if detailErr != nil {
-		if mtop.IsCredentialRefreshableErr(detailErr) {
-			r.recoverExpired(requestCtx, query.CookieID, detailErr)
-		}
-		return itemapp.SyncAllResult{}, syncStageError(itemapp.SyncErrorPlatform, detailErr)
-	}
-	// persistErr 保存探测后 Cookie 会话提交错误。
-	persistErr := r.persistAfterEnrich(requestCtx, query, latest, session, cookieValue, result.UpdatedCookies)
+	// persistErr 保存列表请求后 Cookie 会话提交错误。
+	persistErr := r.persistAfterList(requestCtx, query, latest, session, cookieValue, result.UpdatedCookies)
 	if persistErr != nil {
 		return itemapp.SyncAllResult{}, persistErr
 	}
@@ -107,7 +93,7 @@ func (r *ItemSyncRepository) SyncAll(ctx context.Context, query itemapp.SyncQuer
 	return itemapp.SyncAllResult{TotalCount: len(result.Items), TotalPages: result.TotalPages, SavedCount: syncResult.Saved, DeletedCount: syncResult.Deleted}, nil
 }
 
-// SyncPage 读取平台指定页、探测多规格并保存本页商品。
+// SyncPage 读取平台指定页并保存列表已提供的商品基础字段，不请求商品详情接口。
 func (r *ItemSyncRepository) SyncPage(ctx context.Context, query itemapp.SyncQuery) (itemapp.SyncPageResult, error) {
 	// requestCtx、cancel 控制分页同步的最长执行时间。
 	requestCtx, cancel := context.WithTimeout(ctx, time.Minute)
@@ -132,21 +118,8 @@ func (r *ItemSyncRepository) SyncPage(ctx context.Context, query itemapp.SyncQue
 	if result == nil {
 		return itemapp.SyncPageResult{}, syncStageError(itemapp.SyncErrorPlatform, errors.New("商品列表接口未返回结果"))
 	}
-	// detailCookies 保存规格探测使用的最新 Cookie 串。
-	detailCookies := cookieValue
-	if result.UpdatedCookies != "" {
-		detailCookies = result.UpdatedCookies
-	}
-	// detailErr 保存远端多规格探测错误。
-	detailErr := r.enrichMultiSpec(requestContext, detailCookies, query.CookieID, result.Items)
-	if detailErr != nil {
-		if mtop.IsCredentialRefreshableErr(detailErr) {
-			r.recoverExpired(requestCtx, query.CookieID, detailErr)
-		}
-		return itemapp.SyncPageResult{}, syncStageError(itemapp.SyncErrorPlatform, detailErr)
-	}
-	// persistErr 保存探测后 Cookie 会话提交错误。
-	persistErr := r.persistAfterEnrich(requestCtx, query, latest, session, cookieValue, result.UpdatedCookies)
+	// persistErr 保存列表请求后 Cookie 会话提交错误。
+	persistErr := r.persistAfterList(requestCtx, query, latest, session, cookieValue, result.UpdatedCookies)
 	if persistErr != nil {
 		return itemapp.SyncPageResult{}, persistErr
 	}
@@ -234,9 +207,9 @@ func (r *ItemSyncRepository) finishRemote(ctx context.Context, query itemapp.Syn
 	return &latest, session, callErr, nil
 }
 
-// persistAfterEnrich 在多规格探测后复核账号并写回平台 Cookie 变化。
-func (r *ItemSyncRepository) persistAfterEnrich(ctx context.Context, query itemapp.SyncQuery, detail *db.CookiePlatformRuntimeData, session *mtop.CookieSession, originalCookie, updatedCookie string) error {
-	// unlock 保护探测完成后的凭证复核和写回。
+// persistAfterList 在商品列表请求完成后复核账号并写回平台 Cookie 变化。
+func (r *ItemSyncRepository) persistAfterList(ctx context.Context, query itemapp.SyncQuery, detail *db.CookiePlatformRuntimeData, session *mtop.CookieSession, originalCookie, updatedCookie string) error {
+	// unlock 保护列表请求完成后的凭证复核和写回。
 	unlock := r.store.LockAccountCredentials(query.CookieID)
 	// notifyValue 保存提交成功后需要同步给运行时的最新 Cookie；通知必须在释放账号锁后执行。
 	notifyValue := ""
@@ -246,7 +219,7 @@ func (r *ItemSyncRepository) persistAfterEnrich(ctx context.Context, query itema
 			r.notifyRunningCookie(ctx, query.CookieID, notifyValue)
 		}
 	}()
-	// latest、loadErr 保存探测完成后的最新账号凭证视图。
+	// latest、loadErr 保存列表请求完成后的最新账号凭证视图。
 	latest, loadErr := r.store.Cookies.GetCookiePlatformRuntimeData(ctx, query.CookieID)
 	if loadErr != nil {
 		return syncStageError(itemapp.SyncErrorPersistence, loadErr)
@@ -325,59 +298,6 @@ func (r *ItemSyncRepository) syncItems(ctx context.Context, cookieID string, ite
 		rows = append(rows, db.ItemInfoRow{CookieID: cookieID, ItemID: item.ID, ItemTitle: item.Title, ItemCategory: item.CategoryID, ItemPrice: price, ItemDetail: item.ItemDetail, IsMultiSpec: item.IsMultiSpec})
 	}
 	return r.store.Items.SyncFromRemote(ctx, cookieID, rows)
-}
-
-// enrichMultiSpec 每次同步都以远端商品详情重新确定多规格字段，支持多规格与单规格双向变化。
-func (r *ItemSyncRepository) enrichMultiSpec(ctx context.Context, cookies, cookieID string, items []mtop.ItemListItem) error {
-	// fetcher、ok 保存可选商品详情探测能力及其存在状态。
-	fetcher, ok := r.mtopClient().(mtop.ItemDetailFetcher)
-	if !ok {
-		return nil
-	}
-	// candidates 保存本次同步必须重新探测的全部商品下标；不复用本地标记或短期缓存，避免单向锁存旧结果。
-	candidates := make([]int, len(items))
-	// index 表示当前待探测商品在列表中的下标。
-	for index := range candidates {
-		candidates[index] = index
-	}
-	// probeCtx、cancel 控制批量详情探测的收束。
-	probeCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	// semaphore 限制同时进行的详情探测数量。
-	semaphore := make(chan struct{}, 4)
-	// waitGroup 等待所有详情探测 goroutine 结束。
-	var waitGroup sync.WaitGroup
-	// errorMu 保护 firstErr 的并发写入。
-	var errorMu sync.Mutex
-	// firstErr 保存首个详情探测错误，普通平台错误也必须阻止后续错误状态覆盖。
-	var firstErr error
-	// index 表示当前需要启动详情探测的商品下标。
-	for _, index := range candidates {
-		waitGroup.Add(1)
-		go func(index int) {
-			defer waitGroup.Done()
-			select {
-			case semaphore <- struct{}{}:
-			case <-probeCtx.Done():
-				return
-			}
-			defer func() { <-semaphore }()
-			// isMultiSpec、detectErr 保存当前商品详情探测结果及错误。
-			isMultiSpec, detectErr := fetcher.DetectItemMultiSpec(probeCtx, cookies, items[index].ID)
-			if detectErr != nil {
-				errorMu.Lock()
-				if firstErr == nil {
-					firstErr = detectErr
-					cancel()
-				}
-				errorMu.Unlock()
-				return
-			}
-			items[index].IsMultiSpec = isMultiSpec
-		}(index)
-	}
-	waitGroup.Wait()
-	return firstErr
 }
 
 // withCookieSnapshot 创建带完整 Cookie Jar 或平面 Cookie 的平台上下文。

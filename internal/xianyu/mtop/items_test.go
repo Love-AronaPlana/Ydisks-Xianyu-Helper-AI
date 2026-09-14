@@ -645,6 +645,29 @@ func TestParseItemListNumericFields(t *testing.T) {
 	}
 }
 
+// TestParseItemListReadsMultiSpecFromCardData 验证商品列表卡片内的 SKU 结构会直接生成同步所需的多规格标记。
+func TestParseItemListReadsMultiSpecFromCardData(t *testing.T) {
+	// data 模拟商品列表接口同时返回商品基础字段和多规格 SKU 卡片数据。
+	data := map[string]any{
+		"cardList": []any{
+			map[string]any{
+				"cardType": 1,
+				"cardData": map[string]any{
+					"detailParams": map[string]any{"itemId": "list-sku-item"},
+					"title":        "列表多规格商品",
+					"priceInfo":    map[string]any{"price": "18", "preText": "¥"},
+					"skuDO":        map[string]any{"skuProperties": []any{map[string]any{"name": "套餐"}}, "skuList": []any{map[string]any{"id": "basic"}, map[string]any{"id": "pro"}}},
+				},
+			},
+		},
+	}
+	// items 保存列表卡片解析得到的本地同步模型。
+	items := parseItemList(data)
+	if len(items) != 1 || items[0].ID != "list-sku-item" || items[0].Title != "列表多规格商品" || items[0].PriceText != "¥18" || !items[0].IsMultiSpec {
+		t.Fatalf("列表多规格字段解析异常 items=%+v", items)
+	}
+}
+
 // TestBuildItemListQuery 封装TestBuild商品List查询业务协调。
 func TestBuildItemListQuery(t *testing.T) {
 	// q 用于本次流程后续判断的q
