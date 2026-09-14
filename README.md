@@ -78,7 +78,7 @@ links and view data.
 | Card inventory | Text, batch cards, images, and API delivery, with batch import, quantity, and delay settings. |
 | Product management | Synchronization, manual association, single- or multi-variant publishing, image ordering, category lookup, and bulk listing. |
 | Delivery templates | Ordered multi-message delivery and order, buyer, card, and custom variables. |
-| Orders | Synchronization, insertion, editing, platform delivery, card resending, and exception handling. |
+| Orders | Synchronization, editing, platform delivery, card resending, and exception handling. |
 | AI replies | OpenAI-compatible APIs, model discovery, custom prompts, bargaining rounds, and discount limits. |
 | Notifications | Bark, DingTalk, Feishu, WeCom, Telegram, email, and custom Webhooks. |
 | Storage and security | SQLite/MySQL/PostgreSQL, embedded Goose migrations, AES-256-GCM sensitive-field encryption, log redaction, and outbound-address validation. |

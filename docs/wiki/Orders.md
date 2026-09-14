@@ -25,10 +25,6 @@ For a pending-shipment order, click Deliver Now and choose one method:
 
 If you are unsure whether a card was already sent, inspect chat history, inventory changes, and automation exceptions before choosing full delivery.
 
-## Order import status
-
-File-based order import has been retired. The Orders page no longer provides Insert Orders, and the legacy import endpoint returns `501 Not Implemented`. Use Sync All Orders or Sync Order to retrieve orders from Xianyu so account ownership and order state stay consistent.
-
 ## Edit and delete
 
 Edit Order can correct status, buyer ID, paid amount, shipping information, and product title. Order IDs cannot be changed in the page. Before deleting, confirm the record is not needed by automation, statistics, or after-sales handling.

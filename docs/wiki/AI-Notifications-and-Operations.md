@@ -23,7 +23,7 @@ AI handles buyer bargaining messages. A maximum discount percentage or amount of
 4. Save and click Test Notification. Confirm delivery in the target channel.
 5. Return to Account Management → Edit and bind the channel to each account. Creating a channel alone does not make an account use it.
 
-A test notification verifies only channel configuration. Automated transaction notices additionally require the account binding and the corresponding automation event filter. Automation results send when a task reaches completed, failed, or manual-review status. Legacy Transaction Notifications settings remain compatible and receive all automation categories until the channel is edited and saved with granular selections.
+A test notification verifies only channel configuration. Automated task notifications additionally require the account binding and the corresponding automation event filter. Automation results send when a task reaches completed, failed, or manual-review status.
 
 Webhook URLs and bot tokens are equivalent to passwords. Do not paste them into screenshots, Issues, or chat. Update and retest a channel immediately after rotating a token.
 
@@ -42,7 +42,7 @@ Check the following every day or before a major promotion:
 1. **Account offline:** check whether it is paused, whether its Cookie expired, and whether QR login or security verification is required. Confirm the recovery notification afterward.
 2. **Delivery did not run:** check account ownership, product/specification match, enabled rules, card inventory, and automation exceptions. First confirm whether content was already sent.
 3. **AI did not reply:** verify the system API URL, key, and model; then verify AI is enabled for the account and that the message is a bargaining message.
-4. **Notification did not arrive:** send a test notification, then check event filters and account binding. Automated delivery requires Transaction Notifications; email also requires valid SMTP. If it still fails, inspect logs for notification trigger, queue insertion, and send result.
+4. **Notification did not arrive:** send a test notification, then check the matching automation event filter and account binding. Paid delivery requires the Paid Delivery event; email also requires valid SMTP. If it still fails, inspect logs for notification trigger, queue insertion, and send result.
 5. **Database cannot connect:** check `DATABASE_URL`, network/TLS, database permissions, and service logs. Do not delete the database as a repair step.
 
 ## Backup and recovery

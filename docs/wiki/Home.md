@@ -17,7 +17,7 @@ This Wiki is for operators of the management console. Start with [Deployment and
 9. Configure automatic reviews and daily listing refresh under Account Management. Add price-change, paid-delivery, review-gift, or review-reminder rules under Automation.
 10. Optional: configure a model under System and AI, then enable AI for each account.
 11. Create and bind notification channels, then send a test notification.
-12. Use a low-value test order to verify the complete “card delivery → shipping confirmation” flow before listing real products.
+12. Use a low-value test order to verify card delivery and inventory deduction; when the account enables Automatic Shipping Confirmation, also verify that the platform status changes to shipped before listing real products.
 
 For desktop packages, the management URL is `http://127.0.0.1:59188`. Windows and macOS packages include the backend service, tray/menu-bar controller, and matching Playwright driver and Chromium. Linux packages include the same browser runtime and only add system dependencies during installation. The desktop controller stops the backend before it exits.
 

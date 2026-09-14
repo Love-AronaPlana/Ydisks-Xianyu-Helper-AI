@@ -14,8 +14,8 @@ For face or risk-control verification, use only the official Xianyu app or the o
 ## Daily account operations
 
 - **Enable/disable:** a disabled account does not process backend tasks; tasks resume when it is enabled.
-- **Edit:** change notes, automatic shipping confirmation, processing pause duration, and login information.
-- **Reauthorize by QR:** use after Cookie expiry, account disconnection, or failed profile refresh.
+- **Edit:** change notes, automatic delivery/shipping confirmation, processing pause duration, Cookie, and long-login settings.
+- **Reauthorize by QR:** use after Cookie expiry, account disconnection, or failed profile refresh. QR login is the current production login path.
 - **AI Settings:** enable AI for this account and set bargaining limits. The system-wide API and model are configured in System and AI.
 - **Automatic Reviews and Daily Refresh:** open it from the account card, save settings, or click Review Now/Refresh Now for one run.
 - **Delete:** delete only after confirming that related products, rules, and orders no longer need processing.
@@ -31,10 +31,10 @@ Automatic Shipping Confirmation only marks the Xianyu order as shipped; it does 
 1. Create and test a channel in Notification Settings.
 2. Return to Account Management and edit the target account.
 3. Select channels under Notification Channel Binding and save.
-4. To receive delivery, price-change, or review-gift results, also enable Transaction Notifications in the channel’s event filters.
+4. To receive delivery, price-change, or review-gift results, select the corresponding Paid Delivery, Unpaid Price Change, or Review Gift event in the channel’s event filters.
 
 Account alerts and transaction-automation notices follow the account binding. Creating a channel without binding it to an account produces no notices for that account.
 
 ## Login information
 
-Login Cookies and passwords are encrypted by the system. After changing login information or using Password Login Refresh Authorization, confirm that the account is online before re-enabling automation. Never send Cookies, passwords, or QR screenshots through the Wiki, tickets, or chat.
+Login Cookies are encrypted by the system. After updating the Cookie or long-login setting, confirm that the account is online before re-enabling automation. Never send Cookies, passwords, or QR screenshots through the Wiki, tickets, or chat.
