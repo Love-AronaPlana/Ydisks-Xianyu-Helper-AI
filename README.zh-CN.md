@@ -355,6 +355,7 @@ DATABASE_URL > -db-url > -db
 | `CAPTCHA_IGNORE_CERT_ERRORS` | `false` | 仅受控 TLS 检查代理环境可设为 `true`；默认保持 Chromium 证书校验 |
 | `TZ` | 系统时区；Docker 为 `Asia/Shanghai` | 容器和日志时区 |
 | `XIANYU_PENDING_SHIP_CATCHUP` | 开启 | 待发货兜底扫描与断点续跑的止血开关；显式设为 `0` 时整体跳过 |
+| `XIANYU_CONTINUE_AFTER_UNCERTAIN` | 开启 | 消息动作结果不确定时是否放行后续幂等状态动作；显式设为 `0` 可恢复整链熔断 |
 
 前端构建还支持 `VITE_AMAP_JS_KEY`，用于覆盖发布页高德 JS API 的公开 Key；未设置时使用内置的公开 Key。修改后需重新执行 `make frontend` 才会写入嵌入式前端资源。
 
