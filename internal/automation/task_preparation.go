@@ -70,5 +70,9 @@ func mergeOrderIntoTask(task Task, order *db.Order) Task {
 	if task.OrderStatus == "" {
 		task.OrderStatus = order.OrderStatus
 	}
+	// 本地订单同步只会在平台明确识别砍价活动时写入真值；任务一旦携带真值不得在后续补全中降级。
+	if order.IsBargain != 0 {
+		task.IsBargain = true
+	}
 	return task
 }

@@ -29,6 +29,9 @@ const TokenAPI = "https://h5api.m.goofish.com/h5/mtop.taobao.idlemessage.pc.logi
 // ConsignAPI 是虚拟商品确认发货端点。
 const ConsignAPI = "https://h5api.m.goofish.com/h5/mtop.taobao.idle.logistic.consign.dummy/1.0/"
 
+// FreeShippingAPI 是砍价订单免拼发货端点；它与普通虚拟商品确认发货使用不同的平台业务域。
+const FreeShippingAPI = "https://h5api.m.goofish.com/h5/mtop.idle.groupon.activity.seller.freeshipping/1.0/"
+
 // OrderDetailAPI 是卖家订单详情端点。
 const OrderDetailAPI = "https://h5api.m.goofish.com/h5/mtop.idle.web.trade.order.detail/1.0/"
 
@@ -77,6 +80,8 @@ type ClientImpl struct {
 	Logger     *slog.Logger
 	TokenURL   string
 	ConsignURL string
+	// FreeShippingURL 覆盖砍价订单免拼发货端点，仅供本地 HTTP 回归测试注入替身；空值使用官方端点。
+	FreeShippingURL string
 	// AdjustPriceURL 覆盖订单改价端点，仅供测试注入本地 HTTP 服务。
 	AdjustPriceURL      string
 	OrderDetailURL      string

@@ -48,8 +48,10 @@ type Task struct {
 	Quantity      string
 	Amount        string
 	OrderStatus   string
-	Text          string
-	UpdateKey     string
+	// IsBargain 标记订单是否为订单同步已确认的砍价活动订单；确认发货时必须改走免拼接口。
+	IsBargain bool
+	Text      string
+	UpdateKey string
 	// ForceConfirmShipment 仅供明确的人工“完整发货”使用；自动事件仍遵循账号自动确认开关。
 	ForceConfirmShipment bool
 	// ActionPlan 是运行创建时冻结的动作计划。延迟恢复和失败重试必须使用该快照，

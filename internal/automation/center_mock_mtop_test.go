@@ -28,6 +28,18 @@ type fakeMTop struct {
 	consignPicListIn []string
 	consignCookies   []string
 	consignResults   []fakeConsignResult
+	// freeShippingErr 是砍价订单免拼发货调用的预置传输错误。
+	freeShippingErr error
+	// freeShippingOK 是砍价订单免拼发货调用的预置业务成功标志。
+	freeShippingOK bool
+	// freeShippingRet 是砍价订单免拼发货调用的预置业务返回。
+	freeShippingRet []string
+	// freeShippingUpdated 是砍价订单免拼发货调用返回的扁平 Cookie 更新。
+	freeShippingUpdated string
+	// freeShippingCalls 统计砍价订单免拼发货调用次数。
+	freeShippingCalls int
+	// freeShippingOrderIn、freeShippingItemIn、freeShippingBuyerIn 记录免拼发货请求的三个平台标识。
+	freeShippingOrderIn, freeShippingItemIn, freeShippingBuyerIn string
 	// consignStarted 通知测试外部 Consign 调用已经开始。
 	consignStarted chan struct{}
 	// consignRelease 控制测试外部 Consign 调用何时返回。
@@ -128,6 +140,15 @@ func (f *fakeMTop) ConsignContextWithDelivery(_ context.Context, cookiesStr, ord
 		return result.ok, result.ret, result.updated, result.err
 	}
 	return f.consignOk, f.consignRet, f.consignUpdated, f.consignErr
+}
+
+// FreeShippingContext 返回测试预置的免拼发货结果并记录订单、商品和买家标识。
+func (f *fakeMTop) FreeShippingContext(_ context.Context, _ string, orderID, itemID, buyerID string) (bool, []string, string, error) {
+	f.freeShippingCalls++
+	f.freeShippingOrderIn = orderID
+	f.freeShippingItemIn = itemID
+	f.freeShippingBuyerIn = buyerID
+	return f.freeShippingOK, f.freeShippingRet, f.freeShippingUpdated, f.freeShippingErr
 }
 
 // TestConfirmShipmentReleasesCredentialLockBeforeExternalIO 验证 MTOP 外部调用期间同账号凭证锁可以被其他流程获取。
