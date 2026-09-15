@@ -412,7 +412,7 @@ func TestRuntimeStatusClassifiesAuthenticationFailures(t *testing.T) {
 	acc.setRuntimeError(context.Background(), fmt.Errorf("token API 登录凭证已失效: FAIL_SYS_TOKEN_EXOIRED"))
 	// status 用于本次流程后续判断的状态
 	status := acc.RuntimeStatus()
-	if status.State != RuntimeAuthExpired || status.Connected {
+	if status.State != RuntimeReconnecting || status.Connected {
 		t.Fatalf("status=%+v", status)
 	}
 

@@ -77,7 +77,7 @@ type Handler interface {
 	// HandleSystemEvent 处理平台系统事件。系统卡片永远不进入 AI 回复链，
 	// 这里只把事件交给自动化中心，由自动化规则决定是否执行。
 	HandleSystemEvent(ctx context.Context, task automation.Task) error
-	// OnPasswordLoginRefresh 是历史接口名；连续失败时只触发 Go 协议续期，
+	// OnPasswordLoginRefresh 是历史接口名；明确 Session 失效时触发 Go 协议续期，
 	// 不得启动浏览器密码登录。
 	OnPasswordLoginRefresh(ctx context.Context, cookieID string) bool
 	// OnAccountAlert 账号告警通知（token 失效/自动恢复失败/风控验证等）。
@@ -293,6 +293,8 @@ type loginStatusCheckResult struct {
 	recovered       bool
 	riskRequired    bool
 	verificationURL string
+	// sessionExpired 只表示平台明确报告会话失效，网络或 Token 失败不能置真。
+	sessionExpired bool
 }
 
 // Config 构造 Account 所需依赖。
@@ -484,7 +486,7 @@ func (a *Account) beginTask() (context.Context, func(), bool) {
 	return a.lifecycle.beginTask()
 }
 
-// handleMaxFailures 是历史兼容恢复入口；只尝试 Go 协议续期，不执行密码登录。
+// handleMaxFailures 使用 ctx 处理 a 的历史连续失败入口；只有核验明确 Session 过期才续期，返回等待或恢复错误。
 func (a *Account) handleMaxFailures(ctx context.Context) error {
 	// 先执行低成本登录态检查。它可能仅凭 loginuser.get 响应头恢复签名
 	// Cookie，也能在进入静默续期前准确识别风控状态。
@@ -497,6 +499,10 @@ func (a *Account) handleMaxFailures(ctx context.Context) error {
 		a.logger.Info("登录态检查已恢复 Cookie，重置失败计数")
 		a.setRuntimeState(RuntimeConnecting, "登录凭证已刷新，正在重新连接")
 		a.resetFailures()
+		return sleepCtx(ctx, 2*time.Second)
+	}
+	if !loginStatus.sessionExpired {
+		a.setRuntimeState(RuntimeReconnecting, "连接失败，等待重试")
 		return sleepCtx(ctx, 2*time.Second)
 	}
 	a.logger.Warn("连续失败达上限，触发 Go 协议续期", "failures", MaxConnectionFailures)

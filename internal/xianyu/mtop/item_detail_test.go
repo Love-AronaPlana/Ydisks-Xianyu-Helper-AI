@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strings"
 	"testing"
 )
 
@@ -65,7 +64,7 @@ func TestDetectItemMultiSpecRejectsMissingToken(t *testing.T) {
 	// client 用于本次流程后续判断的client
 	client := &ClientImpl{}
 	if // err 用于本次流程后续判断的err
-	_, err := client.DetectItemMultiSpec(context.Background(), "unb=1", "item-1"); err == nil || !strings.Contains(err.Error(), "_m_h5_tk") {
+	_, err := client.DetectItemMultiSpec(context.Background(), "unb=1", "item-1"); err == nil {
 		t.Fatalf("err=%v", err)
 	}
 }

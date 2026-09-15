@@ -243,7 +243,8 @@ func (c *ClientImpl) accountTaskRequestOnce(ctx context.Context, cookiesStr, end
 	// token 用于本次流程后续判断的令牌
 	token := protocol.SignToken(signingCookies)
 	if token == "" {
-		return nil, cookiesStr, fmt.Errorf("cookie 缺少 _m_h5_tk，无法调用 %s", api)
+		// 缺少签名令牌属于可由协议续期恢复的凭证状态；保留接口名称便于诊断。
+		return nil, cookiesStr, &MTopResponseError{Kind: MTopErrorTokenExpired, API: api, Detail: "cookie 缺少 _m_h5_tk"}
 	}
 	// rawData、err 用于本次流程后续判断的原始Data、err
 	rawData, err := json.Marshal(data)

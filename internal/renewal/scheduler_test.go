@@ -228,8 +228,8 @@ func TestPendingAPIRenewPreservesFailureAndLateCookie(t *testing.T) {
 	}
 }
 
-// TestAPICookieRenewSuccessWithoutCredentialChangeRestarts 验证官方成功后无条件 reload，即使 Cookie 值未变化。
-func TestAPICookieRenewSuccessWithoutCredentialChangeRestarts(t *testing.T) {
+// TestAPICookieRenewSuccessWithoutCredentialChangeKeepsRuntime 使用 t 验证无 Cookie 变化时沿用 v1.0.10，不额外重启触发启动续期。
+func TestAPICookieRenewSuccessWithoutCredentialChangeKeepsRuntime(t *testing.T) {
 	// store、cleanup 用于本次流程后续判断的store、cleanup
 	store, cleanup := newSchedulerTestStore(t)
 	defer cleanup()
@@ -249,8 +249,8 @@ func TestAPICookieRenewSuccessWithoutCredentialChangeRestarts(t *testing.T) {
 	s.api = apirenew.Service{HTTPClient: srv.Client(), SilentHasLoginURL: srv.URL, RetryDelay: -1}
 	s.apiCookieRenewOne(context.Background(), "batch-no-change", account)
 	if // got 用于本次流程后续判断的got
-	got := starter.restarts.Load(); got != 1 {
-		t.Fatalf("续期成功后必须模拟 reload，restarts=%d", got)
+	got := starter.restarts.Load(); got != 0 {
+		t.Fatalf("凭证未变化不得重启账号，restarts=%d", got)
 	}
 	if // got 用于本次流程后续判断的got
 	got := lastAPIRenewLog(t, store, account.ID).status; got != "success" {

@@ -19,7 +19,7 @@ type AccountProfilePort struct {
 	client func() mtop.Client
 	// updateRunningCookie 在凭证锁释放后同步运行时 Cookie。
 	updateRunningCookie func(context.Context, string, string)
-	// recoverSession 在平台返回 Session 或 MTOP Token 失效时触发账号恢复。
+	// recoverSession 仅在平台明确返回 Session 失效时触发账号恢复，Token 由 MTOP 客户端内部刷新。
 	recoverSession func(context.Context, string, error) bool
 	// logger 记录不包含凭证内容的资料刷新错误。
 	logger *slog.Logger

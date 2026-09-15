@@ -306,7 +306,7 @@ func (s *Scheduler) loginRenewOne(ctx context.Context, batchID string, account d
 		}
 		if credentialUpdated {
 			s.wakeCredentialBlockedAutomation(ctx, account.ID)
-			s.restartAfterCredentialUpdate(ctx, account.ID, account.Enabled, "登录态续期")
+			// Token Cookie 已持久化，后续 MTOP 请求读取新值；重启会额外触发启动 Session 续期。
 		}
 	}()
 	// started 用于本次流程后续判断的started
@@ -395,6 +395,11 @@ func (s *Scheduler) loginRenewOne(ctx context.Context, batchID string, account d
 		credentialUpdated = true
 	}
 	if callErr != nil {
+		// 仅刷新 Token 时收到的明确 Session 错误可以升级为账号续期。
+		sessionExpired = mtop.IsSessionExpiredErr(callErr)
+		if sessionExpired {
+			s.markSessionExpired(account.ID)
+		}
 		s.addLoginLog(ctx, batchID, account.ID, "failed", callErr.Error(), updated, time.Since(started))
 		s.logger.Warn("login_renew 失败", "account", account.ID, "err", callErr)
 		return
@@ -420,10 +425,8 @@ func (s *Scheduler) loginRenewOne(ctx context.Context, batchID string, account d
 		}
 	}
 	s.addLoginLog(ctx, batchID, account.ID, res.Status, res.Message, updated, time.Since(started))
-	if res.Status == mtop.LoginStatusSessionExpired || res.Status == mtop.LoginStatusTokenEmpty {
-		s.markSessionExpired(account.ID)
-	}
 	if res.Status == mtop.LoginStatusSessionExpired {
+		s.markSessionExpired(account.ID)
 		sessionExpired = true
 	}
 }
@@ -579,8 +582,8 @@ func (s *Scheduler) apiCookieRenewOne(ctx context.Context, batchID string, accou
 		return
 	}
 	renewalSucceeded = res.Success
-	// 官网 .then(location.reload) 不以 Cookie 是否变化为前提；失败只保存响应 Cookie。
-	if res.Success && account.Enabled {
+	// 保持 v1.0.10 的重启边界：无凭证变化不重启，避免再次执行启动续期。
+	if res.Success && account.Enabled && credentialChanged {
 		s.logger.Info("接口续期任务成功", "account", account.ID, "method", res.RenewMethod, "updated", strings.Join(updated, ","), "message", res.Message)
 		credentialUnlock()
 		credentialLocked = false

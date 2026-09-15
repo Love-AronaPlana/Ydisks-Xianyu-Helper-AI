@@ -119,7 +119,8 @@ func (c *ClientImpl) fetchSoldOrdersPageOnce(ctx context.Context, cookies string
 	// token 是仅在当前请求内参与签名的明文令牌，禁止记录。
 	token := protocol.SignToken(signingCookies)
 	if token == "" {
-		return nil, fmt.Errorf("cookie 缺少 _m_h5_tk，无法获取订单列表")
+		// 缺少签名令牌属于可由协议续期恢复的凭证状态；保留原诊断文本供上层展示。
+		return nil, &MTopResponseError{Kind: MTopErrorTokenExpired, API: "订单列表接口", Detail: "cookie 缺少 _m_h5_tk，无法获取订单列表"}
 	}
 	// payload 保留当前卖家工作台查询全部订单的唯一请求格式。
 	payload := map[string]any{

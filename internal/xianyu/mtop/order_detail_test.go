@@ -248,8 +248,8 @@ func TestFetchOrderDetailRequestError(t *testing.T) {
 	}
 }
 
-// TestFetchOrderDetailTokenExpiredStopsAfterOneRequest 验证订单详情遇到 Token 过期时立即返回，避免一秒间隔的密集重试。
-func TestFetchOrderDetailTokenExpiredStopsAfterOneRequest(t *testing.T) {
+// TestFetchOrderDetailTokenExpiredRetriesWithResponseCookie 使用 t 验证新签名 Cookie 可以直接重试详情，不调用账号续期。
+func TestFetchOrderDetailTokenExpiredRetriesWithResponseCookie(t *testing.T) {
 	// requests 用于本次流程后续判断的请求列表
 	var requests atomic.Int32
 	// server 用于本次流程后续判断的server
@@ -269,21 +269,24 @@ func TestFetchOrderDetailTokenExpiredStopsAfterOneRequest(t *testing.T) {
 	client := &ClientImpl{HTTPClient: server.Client(), OrderDetailURL: server.URL + "/"}
 	// result、err 保存单次 Token 过期响应的返回结果和错误。
 	result, err := client.FetchOrderDetail(context.Background(), consignCookies, "order-1")
-	if result != nil || err == nil || !IsMTopTokenExpiredErr(err) {
-		t.Fatalf("Token 过期未直接返回 result=%+v err=%v", result, err)
+	if err != nil || result == nil || result.Amount != "9.90" || !strings.Contains(result.UpdatedCookies, "_m_h5_tk=newtoken_5") {
+		t.Fatalf("Token 换签重试未成功: err=%v", err)
 	}
-	if requests.Load() != 1 {
-		t.Fatalf("requests=%d want 1", requests.Load())
+	if requests.Load() != 2 {
+		t.Fatalf("requests=%d want 2", requests.Load())
 	}
 }
 
-// TestFetchOrderDetailTokenExpiredDoesNotRefreshInline 验证 Token 过期时不在详情函数内刷新 Token 或重试，续期由账号级上层协调。
-func TestFetchOrderDetailTokenExpiredDoesNotRefreshInline(t *testing.T) {
+// TestFetchOrderDetailTokenExpiredRefreshesInline 使用 t 验证详情 Token 过期调用既有刷新方法并仅重试一次。
+func TestFetchOrderDetailTokenExpiredRefreshesInline(t *testing.T) {
 	// orderReqs 用于本次流程后续判断的订单Reqs
 	var orderReqs atomic.Int32
+	// tokenReqs 记录独立 Token 刷新次数，防止遗漏刷新或形成循环。
+	var tokenReqs atomic.Int32
 	// server 用于本次流程后续判断的server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("api") == "mtop.taobao.idlemessage.pc.login.token" {
+			tokenReqs.Add(1)
 			http.SetCookie(w, &http.Cookie{Name: "_m_h5_tk", Value: "refreshed_7", Path: "/"})
 			fmt.Fprint(w, `{"ret":["SUCCESS::调用成功"],"data":{"accessToken":"a"}}`)
 			return
@@ -305,11 +308,11 @@ func TestFetchOrderDetailTokenExpiredDoesNotRefreshInline(t *testing.T) {
 	defer cancel()
 	// result、err 保存 Token 过期的单次调用结果和错误。
 	result, err := client.FetchOrderDetail(ctx, consignCookies, "order-1")
-	if result != nil || err == nil || !IsMTopTokenExpiredErr(err) {
-		t.Fatalf("Token 过期未交给上层 result=%+v err=%v", result, err)
+	if err != nil || result == nil || result.Amount != "5.00" || !strings.Contains(result.UpdatedCookies, "_m_h5_tk=refreshed_7") {
+		t.Fatalf("刷新 Token 后未恢复详情: err=%v", err)
 	}
-	if orderReqs.Load() != 1 {
-		t.Fatalf("orderReqs=%d want 1", orderReqs.Load())
+	if orderReqs.Load() != 2 || tokenReqs.Load() != 1 {
+		t.Fatalf("orderReqs=%d tokenReqs=%d want 2/1", orderReqs.Load(), tokenReqs.Load())
 	}
 }
 
@@ -361,8 +364,8 @@ func TestFetchOrderDetailTruncateInParseError(t *testing.T) {
 	}
 }
 
-// TestFetchOrderDetailTokenExpiredWithSetCookieStillStops 验证即使平台返回新 Cookie，详情函数也不在当前调用中继续重试。
-func TestFetchOrderDetailTokenExpiredWithSetCookieStillStops(t *testing.T) {
+// TestFetchOrderDetailTokenExpiredWithSetCookieStopsAfterRetry 使用 t 验证换签后仍过期只结束请求，不升级 Session 或无限重试。
+func TestFetchOrderDetailTokenExpiredWithSetCookieStopsAfterRetry(t *testing.T) {
 	// requests 用于本次流程后续判断的请求列表
 	var requests atomic.Int32
 	// server 用于本次流程后续判断的server
@@ -378,11 +381,11 @@ func TestFetchOrderDetailTokenExpiredWithSetCookieStillStops(t *testing.T) {
 	client := &ClientImpl{HTTPClient: server.Client(), OrderDetailURL: server.URL + "/"}
 	// result、err 保存首次 Token 过期请求的业务结果和错误。
 	result, err := client.FetchOrderDetail(context.Background(), consignCookies, "order-1")
-	if result != nil || err == nil || !IsMTopTokenExpiredErr(err) {
+	if result != nil || err == nil || !IsMTopTokenExpiredErr(err) || IsSessionExpiredErr(err) {
 		t.Fatalf("err=%v", err)
 	}
-	if requests.Load() != 1 {
-		t.Fatalf("requests=%d want 1", requests.Load())
+	if requests.Load() != 2 {
+		t.Fatalf("requests=%d want 2", requests.Load())
 	}
 }
 

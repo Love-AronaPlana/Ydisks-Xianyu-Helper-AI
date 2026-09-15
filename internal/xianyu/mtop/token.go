@@ -124,10 +124,10 @@ func (c *ClientImpl) RefreshTokenWithCredentialContext(ctx context.Context, cook
 					session.replaceFlat(currentCookies)
 				}
 			}
-			return refreshResultFromContext(ctx, currentCookies, currentSnapshot, currentSnapshotComplete, cookieStateChanged), fmt.Errorf("token API 登录凭证已失效（MTOP Token 重试次数已耗尽）: %w", c.mtopResponseFailure("token API", status, ret, "Token 重试次数已耗尽，登录凭证未恢复"))
+			return refreshResultFromContext(ctx, currentCookies, currentSnapshot, currentSnapshotComplete, cookieStateChanged), fmt.Errorf("token API MTOP Token 重试次数已耗尽: %w", c.mtopResponseFailure("token API", status, ret, "Token 重试次数已耗尽"))
 		}
 	}
-	return refreshResultFromContext(ctx, currentCookies, currentSnapshot, currentSnapshotComplete, cookieStateChanged), fmt.Errorf("token API 登录凭证已失效: %w", c.mtopResponseFailure("token API", 0, nil, "Token 刷新循环未获得有效结果"))
+	return refreshResultFromContext(ctx, currentCookies, currentSnapshot, currentSnapshotComplete, cookieStateChanged), c.mtopResponseFailure("token API", 0, nil, "Token 刷新循环未获得有效结果")
 }
 
 // refreshResult 封装refresh结果业务协调。

@@ -479,7 +479,7 @@ func TestAccountTaskStopsRemainingOrdersOnSessionExpired(t *testing.T) {
 	}
 }
 
-// TestAccountTaskStopsRemainingOrdersOnMTopTokenExpired 验证仅 MTOP Token 失效也会停止当前批次并触发登录态恢复。
+// TestAccountTaskStopsRemainingOrdersOnMTopTokenExpired 验证 Token 内部刷新耗尽后停止当前批次，但不恢复账号；t 管理本地 SQLite。
 func TestAccountTaskStopsRemainingOrdersOnMTopTokenExpired(t *testing.T) {
 	// store、cleanup 用于 Token 失效恢复测试的 SQLite 存储及关闭责任。
 	store, cleanup := newAutomationTestStore(t)
@@ -508,8 +508,8 @@ func TestAccountTaskStopsRemainingOrdersOnMTopTokenExpired(t *testing.T) {
 	if _, err := center.RunAccountTask(ctx, "cid", TaskAutoRate); err == nil || !mtop.IsMTopTokenExpiredErr(err) {
 		t.Fatalf("Token 失效应返回原始分类错误: %v", err)
 	}
-	if client.rateCalls != 1 || recoverer.calls != 1 {
-		t.Fatalf("Token 失效后必须停止剩余订单并恢复凭证: rate=%d recover=%d", client.rateCalls, recoverer.calls)
+	if client.rateCalls != 1 || recoverer.calls != 0 {
+		t.Fatalf("Token 失效后必须停止剩余订单且不得恢复账号: rate=%d recover=%d", client.rateCalls, recoverer.calls)
 	}
 }
 

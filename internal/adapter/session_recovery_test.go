@@ -3,6 +3,7 @@ package adapter
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"xianyu-go/internal/xianyu/mtop"
@@ -43,8 +44,8 @@ func TestSessionRecoveryHandlerDelegatesExpiredErrors(t *testing.T) {
 	}
 }
 
-// TestSessionRecoveryHandlerDelegatesMTopTokenErrors 验证仅 MTOP Token 失效也进入统一凭证恢复端口。
-func TestSessionRecoveryHandlerDelegatesMTopTokenErrors(t *testing.T) {
+// TestSessionRecoveryHandlerRejectsMTopTokenErrors 验证 Token 内部重试失败不会调用账号恢复；t 记录回调次数断言。
+func TestSessionRecoveryHandlerRejectsMTopTokenErrors(t *testing.T) {
 	// calls 记录 Token 失效触发恢复端口的次数。
 	calls := 0
 	// handler 是绑定测试恢复端口的凭证恢复适配器。
@@ -56,7 +57,12 @@ func TestSessionRecoveryHandlerDelegatesMTopTokenErrors(t *testing.T) {
 	tokenErr := &mtop.MTopResponseError{API: "token", Kind: mtop.MTopErrorTokenExpired, HTTPStatus: 200}
 	// recovered 表示 Token 失效后的凭证恢复结果。
 	recovered := handler(context.Background(), "acc1", tokenErr)
-	if !recovered || calls != 1 {
-		t.Fatalf("MTOP Token 失效未正确委托: recovered=%v calls=%d", recovered, calls)
+	if recovered || calls != 0 {
+		t.Fatalf("MTOP Token 失效不得委托账号恢复: recovered=%v calls=%d", recovered, calls)
+	}
+	// wrapped 保留旧版 Token 耗尽的包装文案，不能影响 Session 分类。
+	wrapped := fmt.Errorf("token API 登录凭证已失效: %w", tokenErr)
+	if handler(context.Background(), "acc1", wrapped) || calls != 0 || IsSessionExpiredError(wrapped) || (&OrderRuntime{}).IsSessionExpired(wrapped) {
+		t.Fatal("旧版包装文案不得触发统一、批量发布或订单账号恢复")
 	}
 }

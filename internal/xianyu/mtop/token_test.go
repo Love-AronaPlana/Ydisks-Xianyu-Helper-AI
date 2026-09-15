@@ -320,8 +320,8 @@ func TestRefreshTokenExpiredRetNoCookieUsesOfficialAttemptLimit(t *testing.T) {
 	client := &ClientImpl{HTTPClient: server.Client(), TokenURL: server.URL + "/"}
 	// err 用于本次流程后续判断的err
 	_, err := client.RefreshTokenContext(context.Background(), testCookiesWithUnb)
-	if err == nil || !strings.Contains(err.Error(), "登录凭证已失效") {
-		t.Fatalf("err=%v", err)
+	if !IsMTopTokenExpiredErr(err) || IsSessionExpiredErr(err) || !strings.Contains(err.Error(), "重试次数已耗尽") {
+		t.Fatalf("Token 刷新耗尽必须保留 Token 分类: %v", err)
 	}
 	if requests.Load() != officialMTopMaxAttempts {
 		t.Fatalf("requests=%d want %d", requests.Load(), officialMTopMaxAttempts)
@@ -353,8 +353,8 @@ func TestRefreshTokenExhaustionClearsOfficialMTopCookies(t *testing.T) {
 	result, err := (&ClientImpl{HTTPClient: server.Client(), TokenURL: server.URL + "/"}).RefreshTokenWithCredentialContext(
 		ctx, testCookiesWithUnb, "did", snapshot,
 	)
-	if err == nil || !strings.Contains(err.Error(), "登录凭证已失效") {
-		t.Fatalf("result=%+v err=%v", result, err)
+	if !IsMTopTokenExpiredErr(err) || IsSessionExpiredErr(err) || !strings.Contains(err.Error(), "重试次数已耗尽") {
+		t.Fatalf("Token 重试耗尽必须保留 Token 分类，不能升级 Session: %v", err)
 	}
 	if requests.Load() != officialMTopMaxAttempts {
 		t.Fatalf("requests=%d want %d", requests.Load(), officialMTopMaxAttempts)
@@ -400,8 +400,8 @@ func TestRefreshTokenFlatSessionExhaustionPersistsOfficialCookieClear(t *testing
 	ctx, session := WithFlatCookieSession(context.Background(), initial)
 	// result、err 用于本次流程后续判断的result、err
 	result, err := (&ClientImpl{HTTPClient: server.Client(), TokenURL: server.URL + "/"}).RefreshTokenContext(ctx, initial)
-	if err == nil || !strings.Contains(err.Error(), "登录凭证已失效") {
-		t.Fatalf("result=%+v err=%v", result, err)
+	if !IsMTopTokenExpiredErr(err) || IsSessionExpiredErr(err) || !strings.Contains(err.Error(), "重试次数已耗尽") {
+		t.Fatalf("平面 Cookie 刷新耗尽必须保留 Token 分类: %v", err)
 	}
 	// removed 表示当前遍历过程中的removed
 	for _, removed := range []string{"_m_h5_c=", "_m_h5_tk=", "_m_h5_tk_enc="} {

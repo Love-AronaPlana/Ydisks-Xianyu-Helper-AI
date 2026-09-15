@@ -49,7 +49,7 @@ type OrderRuntimeHooks struct {
 	UpdateRunningCookie func(context.Context, string, string)
 	// NotifyDelivery 发送手动发货结果通知。
 	NotifyDelivery func(string, string, string, string, string)
-	// RecoverExpiredSession 处理平台 Session 或 MTOP Token 过期。
+	// RecoverExpiredSession 处理平台明确的 Session 过期；MTOP Token 刷新由请求客户端负责。
 	RecoverExpiredSession func(context.Context, string, error) bool
 	// ReportPersistenceFailure 记录本地订单状态写入失败。
 	ReportPersistenceFailure func(string, error)
@@ -436,9 +436,9 @@ func (r *OrderRuntime) PersistCookieSession(ctx context.Context, detail *orderap
 	return update.Value, update.Value != detail.Value, true, nil
 }
 
-// IsSessionExpired 保留订单刷新旧接口名，并判断 Session 或 MTOP Token 是否已失效。
+// IsSessionExpired 判断 err 是否明确表示 Session 失效；r 的订单刷新调用不得把 Token 失效升级为账号恢复。
 func (r *OrderRuntime) IsSessionExpired(err error) bool {
-	return mtop.IsCredentialRefreshableErr(err)
+	return mtop.IsSessionExpiredErr(err)
 }
 
 // withOrderCookieSnapshot 为订单平台请求挂载平面 Cookie 或完整 Cookie Jar。

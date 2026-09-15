@@ -619,14 +619,14 @@ func isRiskVerificationRet(ret []string) bool {
 	return false
 }
 
-// IsSessionExpiredErr 判断 err 是否表示 Session 失效；返回 true 时由上层协议续期，失败后要求扫码。
+// IsSessionExpiredErr 判断 err 是否明确表示 Session 失效；结构化分类优先于包装文案，Token 重试耗尽不能升级为账号续期。
 func IsSessionExpiredErr(err error) bool {
 	if err == nil {
 		return false
 	}
-	// kind 表示统一 MTOP 错误模型中的会话失效类别。
-	if kind, ok := MTopErrorKindOf(err); ok && kind == MTopErrorSessionExpired {
-		return true
+	// kind、ok 保存平台错误的权威分类及其是否存在；已分类错误不再由中文包装文案改判。
+	if kind, ok := MTopErrorKindOf(err); ok {
+		return kind == MTopErrorSessionExpired
 	}
 	// sessionErr 用于本次流程后续判断的会话Err
 	var sessionErr *SessionExpiredError
@@ -635,14 +635,17 @@ func IsSessionExpiredErr(err error) bool {
 	}
 	// msg 用于本次流程后续判断的msg
 	msg := strings.ToLower(err.Error())
+	// 旧适配器可能只返回文本；明确 Token 错误码仍优先于“登录凭证已失效”等包装提示。
+	if isOfficialTokenRetryRet([]string{strings.ToUpper(msg)}) {
+		return false
+	}
 	return isSessionExpiredRet([]string{msg}) ||
 		strings.Contains(msg, "登录凭证已失效")
 }
 
-// IsCredentialRefreshableErr 判断错误是否表示当前 Cookie 凭证需要进入统一恢复流程。
-// 仅 MTOP 签名 Token 过期可以先刷新登录态 Cookie；Session 失效则按原有协议续期或重新登录处理。
+// IsCredentialRefreshableErr 保留历史分类入口；Token 由 MTOP 客户端内部刷新，只有 Session 失效允许账号级恢复。
 func IsCredentialRefreshableErr(err error) bool {
-	return IsSessionExpiredErr(err) || IsMTopTokenExpiredErr(err)
+	return IsSessionExpiredErr(err)
 }
 
 // mtopString 封装mtopString业务协调。

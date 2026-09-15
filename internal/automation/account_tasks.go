@@ -147,7 +147,7 @@ func (c *accountTaskCoordinator) runConfiguredAccountTask(ctx context.Context, s
 	default:
 		return AccountTaskSummary{TaskType: taskType}, fmt.Errorf("不支持的账号任务: %s", taskType)
 	}
-	if err != nil && mtop.IsCredentialRefreshableErr(err) {
+	if err != nil && mtop.IsSessionExpiredErr(err) {
 		err = c.recoverAccountTaskCredential(ctx, settings.CookieID, err)
 	}
 	return summary, err
@@ -207,7 +207,7 @@ func (c *accountTaskCoordinator) scanAccountTasks(ctx context.Context) {
 			}
 			// polishSummary、taskErr 保存本轮擦亮结果及其错误；成功结果必须落一条可检索日志。
 			polishSummary, taskErr := c.runAutoPolish(ctx, setting, now, false)
-			if taskErr != nil && mtop.IsCredentialRefreshableErr(taskErr) {
+			if taskErr != nil && mtop.IsSessionExpiredErr(taskErr) {
 				taskErr = c.recoverAccountTaskCredential(ctx, setting.CookieID, taskErr)
 			}
 			if taskErr != nil {
@@ -225,69 +225,24 @@ func (c *accountTaskCoordinator) scanAccountTasks(ctx context.Context) {
 	}
 }
 
-// recoverAccountTaskCredential 封装账号任务凭证失效后的统一恢复；Token 失效不进入 Session 阻断表。
+// recoverAccountTaskCredential 仅为 accountID 的明确 Session 失效请求账号恢复；ctx 控制存储和续期生命周期。
+// c 维护同凭证的自动化阻断；credentialErr 为原始平台错误，返回值保留其分类并说明恢复结果。
 func (c *accountTaskCoordinator) recoverAccountTaskCredential(ctx context.Context, accountID string, credentialErr error) error {
-	// previousToken 保存 MTOP Token 失效前的签名 Cookie，用于拒绝只更新 sdkSilent 的假恢复成功。
-	var previousToken string
-	// previousTokenErr 保存续期前读取签名 Cookie 的错误；无法建立前态证据时不得把恢复回调成功当成 Token 已恢复。
-	var previousTokenErr error
-	if mtop.IsMTopTokenExpiredErr(credentialErr) {
-		previousToken, previousTokenErr = c.accountTaskSigningToken(ctx, accountID)
+	if !mtop.IsSessionExpiredErr(credentialErr) {
+		return credentialErr
 	}
-	// fingerprint 保存当前账号的 Cookie 指纹，fingerprintErr 表示读取指纹时的失败原因。
-	if mtop.IsSessionExpiredErr(credentialErr) {
-		fingerprint, fingerprintErr := c.accountCredentialFingerprint(ctx, accountID) // fingerprint 用于阻断判断，fingerprintErr 表示指纹读取失败。
-		if fingerprintErr == nil {
-			c.sessionExpired.Store(accountID, fingerprint)
-		}
+	// fingerprint、fingerprintErr 保存当前凭证指纹及读取失败；用于阻止同一失效会话继续发送业务请求。
+	fingerprint, fingerprintErr := c.accountCredentialFingerprint(ctx, accountID)
+	if fingerprintErr == nil {
+		c.sessionExpired.Store(accountID, fingerprint)
 	}
-	// label 用于日志和返回错误中区分 Session 失效与 MTOP 签名 Token 失效。
-	label := "MTOP Token"
-	if mtop.IsSessionExpiredErr(credentialErr) {
-		label = "Session"
-	}
-	c.logger.Warn("自动化 API 检测到凭证失效，停止后续请求并开始即时续期", "account", accountID, "kind", label, "err", credentialErr)
-	if // recoverer 用于本次流程后续判断的recoverer
-	recoverer := c.recoverer(); recoverer != nil && recoverer.RecoverExpiredCredential(ctx, accountID) {
-		if previousTokenErr != nil {
-			// 读取失败时虽然恢复器返回成功，但缺少请求前 Token 证据，必须保留原始错误并等待下一轮重试。
-			return errors.Join(credentialErr, fmt.Errorf("协议续期前读取 MTOP 签名 Cookie 失败，不能确认 Token 已恢复: %w", previousTokenErr))
-		}
-		if previousToken != "" {
-			// currentToken 保存协议续期完成后数据库中的签名 Cookie。
-			currentToken, tokenErr := c.accountTaskSigningToken(ctx, accountID)
-			if tokenErr != nil {
-				// 续期后读取失败时无法确认签名轮换，必须保留底层存储错误供调度告警定位。
-				return errors.Join(credentialErr, fmt.Errorf("协议续期后读取 MTOP 签名 Cookie 失败，不能确认 Token 已恢复: %w", tokenErr))
-			}
-			if !mtop.MTopTokenCookieChanged("_m_h5_tk="+previousToken, "_m_h5_tk="+currentToken) {
-				return fmt.Errorf("%w；协议续期未轮换 MTOP 签名 Cookie，不能视为 Token 已恢复", credentialErr)
-			}
-		}
-		if mtop.IsSessionExpiredErr(credentialErr) {
-			c.sessionExpired.Delete(accountID)
-		}
-		return fmt.Errorf("%w；%w；%s 续期成功，本次自动化已停止，下一轮将使用新凭证", errAccountTaskCredentialRenewed, credentialErr, label)
+	c.logger.Warn("自动化 API 检测到 Session 失效，停止后续请求并开始即时续期", "account", accountID, "err", credentialErr)
+	// recoverer 是固定装配的账号恢复端口，只接收明确的 Session 失效。
+	if recoverer := c.recoverer(); recoverer != nil && recoverer.RecoverExpiredCredential(ctx, accountID) {
+		c.sessionExpired.Delete(accountID)
+		return fmt.Errorf("%w；%w；Session 续期成功，本次自动化已停止，下一轮将使用新凭证", errAccountTaskCredentialRenewed, credentialErr)
 	}
 	return fmt.Errorf("%w；已停止该账号自动化 API 请求，等待续期或重新登录", credentialErr)
-}
-
-// accountTaskSigningToken 读取账号当前的 MTOP 签名 Cookie，仅返回令牌值用于恢复结果校验。
-func (c *accountTaskCoordinator) accountTaskSigningToken(ctx context.Context, accountID string) (string, error) {
-	// data 保存受控读取的账号 Cookie 运行视图，不读取登录密码或账号资料。
-	data, err := c.repository.GetCookieRuntimeData(ctx, accountID)
-	if err != nil {
-		return "", err
-	}
-	// part 表示当前 Cookie 头中的一个键值片段。
-	for _, part := range strings.Split(data.Value, ";") {
-		// key、value、ok 保存当前 Cookie 片段的名称和值。
-		key, value, ok := strings.Cut(strings.TrimSpace(part), "=")
-		if ok && strings.TrimSpace(key) == "_m_h5_tk" {
-			return strings.TrimSpace(value), nil
-		}
-	}
-	return "", nil
 }
 
 // accountTaskSessionBlocked 封装账号任务会话Blocked业务协调。
@@ -475,7 +430,8 @@ func (c *accountTaskCoordinator) runAutoRate(ctx context.Context, settings db.Ac
 			if persistErr != nil {
 				return summary, errors.Join(rateErr, persistErr)
 			}
-			if mtop.IsCredentialRefreshableErr(rateErr) {
+			// Token 内部刷新耗尽后停止当前批次，避免继续用失效签名请求其它订单；不触发账号续期。
+			if mtop.IsSessionExpiredErr(rateErr) || mtop.IsMTopTokenExpiredErr(rateErr) {
 				return summary, rateErr
 			}
 			continue
@@ -584,7 +540,8 @@ func (c *accountTaskCoordinator) runAutoPolish(ctx context.Context, settings db.
 			if result != nil && result.Message != "" {
 				lastError = result.Message
 			}
-			if mtop.IsCredentialRefreshableErr(polishErr) {
+			// Token 内部刷新耗尽后停止当前批次，后续恢复仍由 MTOP 客户端负责。
+			if mtop.IsSessionExpiredErr(polishErr) || mtop.IsMTopTokenExpiredErr(polishErr) {
 				return summary, errors.Join(polishErr, persistErr, c.finishAccountTaskRun(ctx, runKey, "failed", summary.Success, summary.Failed, lastError, 0))
 			}
 			if persistErr != nil {

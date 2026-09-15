@@ -2,6 +2,7 @@ package automation
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,6 +17,31 @@ type selectiveSenderProvider struct {
 	// ready 保存账号到就绪状态的映射；缺失的账号按未就绪处理。
 	ready map[string]bool
 }
+
+// contextBoundSender 在外部发送入口等待 Context 取消，用于验证待发货扫描的单轮预算能中断慢任务。
+type contextBoundSender struct {
+	// entered 通知测试发送调用已经进入可取消的外部 I/O 模拟。
+	entered chan struct{}
+	// enteredOnce 保证重复动作或错误重试不会重复关闭 entered 通道。
+	enteredOnce sync.Once
+}
+
+// SendText 模拟遵守 Context 取消协议的慢速文本发送。
+func (s *contextBoundSender) SendText(ctx context.Context, _, _, _ string) error {
+	// enteredOnce 只在首次进入发送时发出测试同步信号。
+	s.enteredOnce.Do(func() { close(s.entered) })
+	// ctxErr 保存扫描预算耗尽后由外部发送返回的取消错误。
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// SendImage 满足消息发送接口；预算测试只走文本卡密发送路径。
+func (s *contextBoundSender) SendImage(context.Context, string, string, string, int64, int, int) error {
+	return nil
+}
+
+// UpdateCookie 满足消息发送接口；预算测试不需要更新运行时凭证。
+func (s *contextBoundSender) UpdateCookie(string) {}
 
 // Sender 返回指定账号的测试发送器；首次访问时创建并缓存。
 func (p selectiveSenderProvider) Sender(accountID string) (MessageSender, bool) {
@@ -217,6 +243,127 @@ func TestScanPendingShipDeliveriesCoversGatesCooldownAndSuccess(t *testing.T) {
 		if candidate.OrderID == "o-ready-acc" {
 			t.Fatalf("已有 order_paid 运行的订单不应再进入兜底候选: %+v", candidate)
 		}
+	}
+}
+
+// TestPendingShipDeliveryScanHonorsBudget 验证单个慢速外部动作不能把待发货扫描拖过本轮预算。
+// 发送器遵守 Context 取消后，扫描必须及时结束并把尚未处理的订单留给下一轮。
+func TestPendingShipDeliveryScanHonorsBudget(t *testing.T) {
+	// store、cleanup 保存测试数据库及关闭责任。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	// ctx 保存本测试共用的数据库上下文。
+	ctx := context.Background()
+	// admin 保存规则所属管理员账号。
+	admin, adminErr := store.Users.GetByUsername(ctx, "admin")
+	if adminErr != nil {
+		t.Fatal(adminErr)
+	}
+	// cardID 保存满足付款规则发卡动作检查的卡密组。
+	cardID, cardErr := store.Cards.Create(ctx, &db.CardFull{
+		Name: "budget-card", Type: "data", DataContent: "budget-secret", Enabled: true, UserID: admin.ID,
+	})
+	if cardErr != nil {
+		t.Fatal(cardErr)
+	}
+	// budgetAccount 是慢速发送订单所属账号；它必须有启用规则和在线发送器才能进入外部动作。
+	budgetAccount := "budget-acc"
+	catchupAccount(t, store, admin.ID, budgetAccount)
+	catchupRule(t, store, admin.ID, budgetAccount, "budget-item", []db.AutomationActionInput{catchupCardAction(cardID)})
+	catchupOrder(t, store, budgetAccount, "o-budget-1", "budget-item", "chat-budget-1")
+	// sender 保存遵守 Context 取消的慢速发送替身。
+	sender := &contextBoundSender{entered: make(chan struct{})}
+	// scheduler 保存短预算配置，便于在测试中毫秒级验证扫描退出。
+	scheduler := &Scheduler{
+		center:              New(store, blockingSenderProvider{sender: sender}, nil),
+		pendingShipCooldown: map[string]time.Time{},
+		// 250ms 给 race 检测下的数据库领取和 goroutine 调度留下进入发送器的余量，同时仍远小于测试超时阈值。
+		pendingShipScanBudget:   250 * time.Millisecond,
+		pendingShipScanMaxTasks: 20,
+	}
+	// startedAt 记录扫描开始时间，用于检测慢动作是否被预算取消。
+	startedAt := time.Now()
+	scheduler.scanPendingShipDeliveries(ctx)
+	// elapsed 保存扫描从进入到返回的墙钟耗时。
+	elapsed := time.Since(startedAt)
+	if elapsed > 2*time.Second {
+		t.Fatalf("待发货扫描超过预算后仍未及时返回: elapsed=%s", elapsed)
+	}
+	// 发送入口必须实际被触发过，否则测试只验证了空扫描而没有覆盖慢动作路径。
+	select {
+	case <-sender.entered:
+	default:
+		t.Fatal("慢速发送器未进入外部动作")
+	}
+	// runCount 保存预算耗尽前已经创建的付款运行数；扫描至少应为首个订单留下运行记录。
+	var runCount int
+	// countErr 保存读取预算测试运行数量时的数据库错误。
+	if countErr := store.DB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM automation_runs WHERE order_id='o-budget-1' AND trigger_type='order_paid'`).Scan(&runCount); countErr != nil {
+		t.Fatal(countErr)
+	}
+	if runCount != 1 {
+		t.Fatalf("预算测试应创建一条运行记录: %d", runCount)
+	}
+	// run、runErr 保存预算取消后的运行状态及读取错误，结果不确定时必须隔离为人工核对，不能遗留 running。
+	run, runErr := store.Automation.GetRun(ctx, 1)
+	if runErr != nil {
+		t.Fatal(runErr)
+	}
+	if run.Status != "needs_review" || !run.ActionStarted {
+		t.Fatalf("预算取消后的不确定运行必须进入人工核对并保留动作保护: %+v", run)
+	}
+}
+
+// TestPendingShipDeliveryScanHonorsTaskLimit 验证单轮任务上限生效，余下订单仍保留在无运行候选集合。
+// 该上限与时间预算共同保证订单量增长不会让分钟级调度循环失去响应。
+func TestPendingShipDeliveryScanHonorsTaskLimit(t *testing.T) {
+	// store、cleanup 保存测试数据库及关闭责任。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	// ctx 保存本测试共用的数据库上下文。
+	ctx := context.Background()
+	// admin 保存规则所属管理员账号。
+	admin, adminErr := store.Users.GetByUsername(ctx, "admin")
+	if adminErr != nil {
+		t.Fatal(adminErr)
+	}
+	// limitAccount 是任务上限测试使用的账号。
+	limitAccount := "limit-acc"
+	catchupAccount(t, store, admin.ID, limitAccount)
+	catchupRule(t, store, admin.ID, limitAccount, "limit-item", []db.AutomationActionInput{{ActionType: ActionConfirmShipment, Enabled: true}})
+	// 创建三个候选订单；确认发货规则会在动作计划校验阶段快速失败，但仍会为实际触发建立运行记录。
+	for _, orderID := range []string{"o-limit-1", "o-limit-2", "o-limit-3"} {
+		// orderID 表示当前任务上限测试订单。
+		catchupOrder(t, store, limitAccount, orderID, "limit-item", "chat-"+orderID)
+	}
+	// sender 保存快速发送替身；本用例在发卡动作校验前结束，不会执行消息发送。
+	sender := &testSender{}
+	// scheduler 保存只允许本轮触发两个订单的配置。
+	scheduler := &Scheduler{
+		center:                  New(store, testSenderProvider{sender: sender}, nil),
+		pendingShipCooldown:     map[string]time.Time{},
+		pendingShipScanBudget:   time.Second,
+		pendingShipScanMaxTasks: 2,
+	}
+	scheduler.scanPendingShipDeliveries(ctx)
+	// runCount 保存本轮实际创建的付款运行数。
+	var runCount int
+	// countErr 保存读取本轮付款运行数量时的数据库错误。
+	if countErr := store.DB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM automation_runs WHERE cookie_id=? AND trigger_type='order_paid'`, limitAccount).Scan(&runCount); countErr != nil {
+		t.Fatal(countErr)
+	}
+	if runCount != 2 {
+		t.Fatalf("单轮任务上限为 2 时应只创建两条运行: %d", runCount)
+	}
+	// remaining 保存第三个订单是否仍在无运行候选集合中。
+	remaining, remainingErr := store.Automation.PendingShipOrdersWithoutPaidRunAfter(ctx, "", 200)
+	if remainingErr != nil {
+		t.Fatal(remainingErr)
+	}
+	if len(remaining) != 1 || remaining[0].OrderID != "o-limit-3" {
+		t.Fatalf("任务上限后应留下一个未处理订单: %+v", remaining)
 	}
 }
 

@@ -46,6 +46,37 @@ func TestFetchSoldOrdersPageRetriesExpiredTokenWithResponseCookie(t *testing.T) 
 	}
 }
 
+// TestFetchSoldOrdersPageRefreshesMissingToken 验证缺少签名令牌时会调用 Token API，并使用刷新后的 Cookie 重试订单列表。
+func TestFetchSoldOrdersPageRefreshesMissingToken(t *testing.T) {
+	// soldRequests、tokenRequests 统计订单列表和凭证刷新请求次数。
+	var soldRequests, tokenRequests atomic.Int32
+	// server 模拟首个请求缺少令牌、续期成功及最终订单列表成功。
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/token") {
+			tokenRequests.Add(1)
+			http.SetCookie(w, &http.Cookie{Name: "_m_h5_tk", Value: "renewed_token", Path: "/"})
+			_, _ = io.WriteString(w, `{"ret":["SUCCESS::调用成功"],"data":{"accessToken":"access"}}`)
+			return
+		}
+		soldRequests.Add(1)
+		if !strings.Contains(r.Header.Get("Cookie"), "_m_h5_tk=renewed_token") {
+			t.Fatalf("刷新重试未携带新令牌: %s", r.Header.Get("Cookie"))
+		}
+		_, _ = io.WriteString(w, `{"ret":["SUCCESS::调用成功"],"data":{"module":{"items":[],"nextPage":false}}}`)
+	}))
+	defer server.Close()
+	// client 使用本地 Token API 和订单列表替身，避免真实平台依赖。
+	client := &ClientImpl{HTTPClient: server.Client(), SoldOrdersURL: server.URL + "/sold", TokenURL: server.URL + "/token"}
+	// page、err 保存缺少令牌经协议续期后的订单页结果。
+	page, err := client.FetchSoldOrdersPage(context.Background(), "unb=1", 1, 30)
+	if err != nil || page == nil || len(page.Items) != 0 {
+		t.Fatalf("page=%+v err=%v", page, err)
+	}
+	if soldRequests.Load() != 1 || tokenRequests.Load() != 1 {
+		t.Fatalf("soldRequests=%d tokenRequests=%d", soldRequests.Load(), tokenRequests.Load())
+	}
+}
+
 // TestFetchSoldOrdersPageCompleteness 用 t 验证唯一已售格式的完整性、合法空页及错误脱敏，失败页不能成为成功快照。
 func TestFetchSoldOrdersPageCompleteness(t *testing.T) {
 	// validOrder 是只含必要订单身份的合成平台记录，不引入另一种响应格式。
@@ -259,10 +290,10 @@ func TestNormalizeSoldOrderTimeSupportsPlatformFormats(t *testing.T) {
 
 // TestFetchSoldOrdersPageRejectsMissingTokenAndFailure 封装TestFetchSold订单列表页码RejectsMissing令牌AndFailure业务协调。
 func TestFetchSoldOrdersPageRejectsMissingTokenAndFailure(t *testing.T) {
-	// client 用于本次流程后续判断的client
+	// client 用于验证缺少令牌时返回可刷新错误分类。
 	client := &ClientImpl{}
 	if // err 用于本次流程后续判断的err
-	_, err := client.FetchSoldOrdersPage(context.Background(), "unb=1", 1, 30); err == nil || !strings.Contains(err.Error(), "_m_h5_tk") {
+	_, err := client.fetchSoldOrdersPageOnce(context.Background(), "unb=1", 1, 30); err == nil || !strings.Contains(err.Error(), "_m_h5_tk") || !IsMTopTokenExpiredErr(err) {
 		t.Fatalf("err=%v", err)
 	}
 	// server 用于本次流程后续判断的server

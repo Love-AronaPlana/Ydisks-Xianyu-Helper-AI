@@ -267,7 +267,10 @@ func (c *credentialCoordinator) tryLoginStatusCheck(ctx context.Context) loginSt
 			if err != nil {
 				a.logger.Warn("登录态检查失败，已保存响应 Cookie", "err", err)
 			}
-			return loginStatusCheckResult{recovered: res != nil && res.Status == mtop.LoginStatusTokenRefreshed}
+			return loginStatusCheckResult{
+				recovered:      res != nil && res.Status == mtop.LoginStatusTokenRefreshed && err == nil,
+				sessionExpired: mtop.IsSessionExpiredErr(err) || (err == nil && res != nil && res.Status == mtop.LoginStatusSessionExpired),
+			}
 		}
 	}
 	// 以下恢复路径会触发可扩展 Handler；提交阶段已经结束，必须先释放凭证锁。
@@ -277,7 +280,7 @@ func (c *credentialCoordinator) tryLoginStatusCheck(ctx context.Context) loginSt
 	}
 	if err != nil {
 		a.logger.Warn("登录态检查失败", "err", err)
-		return loginStatusCheckResult{}
+		return loginStatusCheckResult{sessionExpired: mtop.IsSessionExpiredErr(err)}
 	}
 	if res == nil {
 		return loginStatusCheckResult{}
@@ -292,7 +295,7 @@ func (c *credentialCoordinator) tryLoginStatusCheck(ctx context.Context) loginSt
 		return loginStatusCheckResult{recovered: true}
 	}
 	a.logger.Info("登录态检查未产生可用 Cookie 更新", "status", res.Status, "message", res.Message)
-	return loginStatusCheckResult{}
+	return loginStatusCheckResult{sessionExpired: res.Status == mtop.LoginStatusSessionExpired}
 }
 
 // tryAPIRenew 是密码登录前的轻量恢复层，只执行官网 auto-login plugin 的

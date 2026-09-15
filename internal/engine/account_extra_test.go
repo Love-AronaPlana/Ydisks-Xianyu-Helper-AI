@@ -562,7 +562,7 @@ func TestSetRuntimeError_AllBranches(t *testing.T) {
 		}
 	})
 
-	// 2) token expired 关键词 → AuthExpired（不告警）。
+	// 2) 只有 Session 失效或缺少账号身份才进入 AuthExpired（不告警）。
 	t.Run("token_expired", func(t *testing.T) {
 		// acc、cleanup 用于本次流程后续判断的acc、cleanup
 		acc, _, _, cleanup := newAccountForTest(t)
@@ -573,14 +573,20 @@ func TestSetRuntimeError_AllBranches(t *testing.T) {
 		// msg 表示当前遍历过程中的msg
 		for _, msg := range []string{
 			"登录凭证已失效",
-			"FAIL_SYS_TOKEN_EXOIRED",
-			"FAIL_SYS_TOKEN_EXPIRED",
+			"FAIL_SYS_SESSION_EXPIRED",
 			"cookie 缺少 unb",
 		} {
 			acc.setRuntimeError(ctx, errors.New(msg))
 			if // s 用于本次流程后续判断的s
 			s := acc.RuntimeStatus(); s.State != RuntimeAuthExpired {
 				t.Fatalf("msg=%q state=%q want %q", msg, s.State, RuntimeAuthExpired)
+			}
+		}
+		// msg 遍历 Token 失败代码，验证它们只进入重连，不要求重新登录。
+		for _, msg := range []string{"FAIL_SYS_TOKEN_EXOIRED", "FAIL_SYS_TOKEN_EXPIRED", "FAIL_SYS_TOKEN_EMPTY"} {
+			acc.setRuntimeError(ctx, errors.New(msg))
+			if acc.RuntimeStatus().State != RuntimeReconnecting {
+				t.Fatal("Token 失败不得标记为账号登录失效")
 			}
 		}
 		if // got 用于本次流程后续判断的got
@@ -734,6 +740,8 @@ func TestHandleMaxFailures_RecentMessageStillRunsRecovery(t *testing.T) {
 	// acc、h、cleanup 用于本次流程后续判断的acc、h、cleanup
 	acc, h, _, cleanup := newAccountForTest(t)
 	defer cleanup()
+	// 登录态夹具明确返回 Session 过期，保持本用例对真实账号恢复的验证。
+	acc.mtop = &statusMtop{result: &mtop.LoginStatusResult{Status: mtop.LoginStatusSessionExpired}}
 	// ctx 用于本次流程后续判断的ctx
 	ctx := context.Background()
 
@@ -764,6 +772,8 @@ func TestHandleMaxFailures_PasswordLoginSuccess(t *testing.T) {
 	// acc、h、store、cleanup 用于本次流程后续判断的acc、h、store、cleanup
 	acc, h, store, cleanup := newAccountForTest(t)
 	defer cleanup()
+	// 登录态夹具明确返回 Session 过期，保持本用例对真实账号恢复的验证。
+	acc.mtop = &statusMtop{result: &mtop.LoginStatusResult{Status: mtop.LoginStatusSessionExpired}}
 	// ctx 用于本次流程后续判断的ctx
 	ctx := context.Background()
 
@@ -877,6 +887,8 @@ func TestHandleMaxFailuresReleasesCredentialLockBeforeExternalRecovery(t *testin
 	// acc、store、cleanup 保存账号运行时、凭证存储及清理函数。
 	acc, _, store, cleanup := newAccountForTest(t)
 	defer cleanup()
+	// 登录态夹具明确返回 Session 过期，保持本用例对真实账号恢复的验证。
+	acc.mtop = &statusMtop{result: &mtop.LoginStatusResult{Status: mtop.LoginStatusSessionExpired}}
 	// handler 保存会尝试重新获取账号锁的恢复回调。
 	handler := &lockAwareRefreshHandler{store: store}
 	acc.handler = handler
@@ -900,6 +912,8 @@ func TestHandleMaxFailures_PasswordLoginFailure(t *testing.T) {
 	// acc、cleanup 用于本次流程后续判断的acc、cleanup
 	acc, _, _, cleanup := newAccountForTest(t)
 	defer cleanup()
+	// 登录态夹具明确返回 Session 过期，保持本用例对真实账号恢复的验证。
+	acc.mtop = &statusMtop{result: &mtop.LoginStatusResult{Status: mtop.LoginStatusSessionExpired}}
 
 	acc.mu.Lock()
 	acc.lastMsgReceived = time.Time{}
@@ -1468,6 +1482,8 @@ func TestHandleMaxFailuresUsesValueWithoutLoginSecrets(t *testing.T) {
 	// acc、handler 和 store 是本测试的账号、恢复回调记录器及数据库。
 	acc, handler, store, cleanup := newAccountForTest(t)
 	defer cleanup()
+	// 登录态夹具明确返回 Session 过期，保持本用例对真实账号恢复的验证。
+	acc.mtop = &statusMtop{result: &mtop.LoginStatusResult{Status: mtop.LoginStatusSessionExpired}}
 	// ctx 是测试数据库和恢复流程共用的上下文。
 	ctx := context.Background()
 	// corruptErr 表示写入故意损坏的登录密码密文失败的原因。

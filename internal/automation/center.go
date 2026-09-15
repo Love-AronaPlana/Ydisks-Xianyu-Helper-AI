@@ -85,7 +85,7 @@ type OrderDetailFetcher interface {
 	FetchOrderDetail(ctx context.Context, cookieID, orderID, itemID, buyerID, cookieStr string) (*OrderDetail, error)
 }
 
-// CredentialRecoverer 在平台明确返回 Session 或 MTOP Token 失效时执行一次凭证恢复。
+// CredentialRecoverer 仅在平台明确返回 Session 失效时执行一次账号恢复；Token 过期由 MTOP 客户端内部刷新。
 type CredentialRecoverer interface {
 	RecoverExpiredCredential(ctx context.Context, cookieID string) bool
 }

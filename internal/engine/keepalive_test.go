@@ -389,6 +389,8 @@ func TestHandleMaxFailures_AlertOnce(t *testing.T) {
 	// acc、cleanup 用于本次流程后续判断的acc、cleanup
 	acc, _, _, cleanup := newAccountForTest(t)
 	defer cleanup()
+	// 登录态夹具明确返回 Session 过期，保持本用例对真实账号恢复的验证。
+	acc.mtop = &statusMtop{result: &mtop.LoginStatusResult{Status: mtop.LoginStatusSessionExpired}}
 	// h 用于本次流程后续判断的h
 	h := &failingRefreshHandler{}
 	acc.handler = h

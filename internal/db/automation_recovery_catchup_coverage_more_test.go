@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -366,5 +367,169 @@ func TestReopenRunForRecoveryRequiresUnchangedAttempt(t *testing.T) {
 	raceReopened, raceErr := s.Automation.ReopenRunForRecovery(ctx, runID, 2, leaseAt)
 	if raceErr != nil || raceReopened {
 		t.Fatalf("running 状态不允许重开: reopened=%v err=%v", raceReopened, raceErr)
+	}
+}
+
+// TestPendingShipResumableRunsDeduplicatesOrderAndBlocksActiveRun 验证同一订单只返回最新候选，且存在活动运行时不回退旧运行。
+// 这样可以防止历史重复运行在重启或冷却过期后再次执行确认发货。
+func TestPendingShipResumableRunsDeduplicatesOrderAndBlocksActiveRun(t *testing.T) {
+	// s、cleanup 保存测试数据库及关闭责任。
+	s, cleanup := newTestDB(t)
+	defer cleanup()
+	// ctx 保存本测试共用的数据库上下文。
+	ctx := context.Background()
+	// userID、cookieID 保存测试账号主键与账号标识。
+	userID, cookieID := seedAccount(t, s)
+	// ruleID 保存待续跑规则主键。
+	ruleID := seedCatchupRule(t, s, userID, cookieID, "item-dedup", "重复运行规则", true,
+		[]AutomationActionInput{{ActionType: "confirm_shipment", Enabled: true}})
+	// orderID 保存同时存在多条付款运行的订单标识。
+	orderID := "o-dedup"
+	seedCatchupOrder(t, s, orderID, cookieID, "item-dedup", "chat-dedup", "pending_ship")
+	// firstRunID 保存较早的人工核对运行。
+	firstRunID := seedCatchupRun(t, s, ruleID, cookieID, orderID)
+	// secondRunID 保存绕过正常防重入口写入的较新历史运行。
+	var secondRunID int64
+	// insertErr 保存写入较新重复运行夹具时的数据库错误。
+	if insertErr := s.DB.QueryRowContext(ctx, `
+INSERT INTO automation_runs
+ (rule_id,cookie_id,item_id,order_id,buyer_id,chat_id,trigger_type,trigger_key,status,raw_event_json,attempt_count,action_cursor,action_started,next_retry_at,lease_expires_at)
+VALUES (?,?,?,?,?,?,?,?,'needs_review',?,1,0,0,0,0)
+RETURNING id`, ruleID, cookieID, "item-dedup", orderID, "buyer-"+orderID, "chat-dedup", "order_paid", "duplicate:"+orderID,
+		catchupRunSnapshot(cookieID, orderID, idempotentTailPlanJSON)).Scan(&secondRunID); insertErr != nil {
+		// SQLite 和 PostgreSQL 支持 RETURNING；测试数据库固定为 SQLite，直接保留明确失败信息。
+		t.Fatalf("写入重复运行夹具失败: %v", insertErr)
+	}
+	if secondRunID <= firstRunID {
+		t.Fatalf("重复运行主键应递增: first=%d second=%d", firstRunID, secondRunID)
+	}
+	// firstStateErr 将较早运行置为人工核对，确保查询只因同订单去重而选择较新运行。
+	if _, firstStateErr := s.DB.ExecContext(ctx,
+		`UPDATE automation_runs SET status='needs_review',action_started=0,action_cursor=0,attempt_count=1 WHERE id=?`, firstRunID); firstStateErr != nil {
+		t.Fatal(firstStateErr)
+	}
+	// candidates 保存按订单去重后的续跑候选。
+	candidates, queryErr := s.Automation.PendingShipResumableRunsAfter(ctx, "", 5, 200)
+	if queryErr != nil {
+		t.Fatal(queryErr)
+	}
+	if len(candidates) != 1 || candidates[0].RunID != secondRunID {
+		t.Fatalf("同订单应只返回最新运行: %+v", candidates)
+	}
+	// activeErr 把最新候选改成活动运行，验证旧运行不会因最新运行不可续跑而回退。
+	if _, activeErr := s.DB.ExecContext(ctx, `UPDATE automation_runs SET status='running' WHERE id=?`, secondRunID); activeErr != nil {
+		t.Fatal(activeErr)
+	}
+	// activeCandidates、activeQueryErr 保存最新运行处于活动状态时的候选结果与查询错误。
+	activeCandidates, activeQueryErr := s.Automation.PendingShipResumableRunsAfter(ctx, "", 5, 200)
+	if activeQueryErr != nil {
+		t.Fatal(activeQueryErr)
+	}
+	if len(activeCandidates) != 0 {
+		t.Fatalf("存在活动运行时不得回退旧运行: %+v", activeCandidates)
+	}
+	// exhaustedErr 将最新运行标为超出代次，确认查询不会改选较早的低代次运行。
+	if _, exhaustedErr := s.DB.ExecContext(ctx, `UPDATE automation_runs SET status='failed',attempt_count=5 WHERE id=?`, secondRunID); exhaustedErr != nil {
+		t.Fatal(exhaustedErr)
+	}
+	// exhaustedCandidates、exhaustedQueryErr 保存最新运行达到代次上限时的候选结果与查询错误。
+	exhaustedCandidates, exhaustedQueryErr := s.Automation.PendingShipResumableRunsAfter(ctx, "", 5, 200)
+	if exhaustedQueryErr != nil {
+		t.Fatal(exhaustedQueryErr)
+	}
+	if len(exhaustedCandidates) != 0 {
+		t.Fatalf("最新运行达到代次上限时不得回退旧运行: %+v", exhaustedCandidates)
+	}
+}
+
+// TestReopenRunForRecoverySerializesSameOrder 验证两个并发恢复调用在同一订单上只有一个能取得运行执行权。
+// 订单写锁必须与正常 TryStartRun 使用相同的账号→订单顺序，否则跨进程重启仍可能产生双重确认发货。
+func TestReopenRunForRecoverySerializesSameOrder(t *testing.T) {
+	// s、cleanup 保存测试数据库及关闭责任。
+	s, cleanup := newTestDB(t)
+	defer cleanup()
+	// ctx 保存本测试共用的数据库上下文。
+	ctx := context.Background()
+	// userID、cookieID 保存测试账号主键与账号标识。
+	userID, cookieID := seedAccount(t, s)
+	// ruleID 保存并发恢复规则主键。
+	ruleID := seedCatchupRule(t, s, userID, cookieID, "item-race", "并发重开规则", true,
+		[]AutomationActionInput{{ActionType: "confirm_shipment", Enabled: true}})
+	// orderID 保存两个历史运行共同归属的订单。
+	orderID := "o-reopen-race"
+	seedCatchupOrder(t, s, orderID, cookieID, "item-race", "chat-race", "pending_ship")
+	// firstRunID、secondRunID 保存两个待恢复运行；第二条通过直接插入绕过正常付款运行防重，仅用于模拟历史脏数据。
+	firstRunID := seedCatchupRun(t, s, ruleID, cookieID, orderID)
+	// secondRunID 保存直接插入的第二条待恢复运行主键。
+	var secondRunID int64
+	// insertErr 保存写入第二条并发运行夹具时的数据库错误。
+	if insertErr := s.DB.QueryRowContext(ctx, `
+INSERT INTO automation_runs
+ (rule_id,cookie_id,item_id,order_id,buyer_id,chat_id,trigger_type,trigger_key,status,raw_event_json,attempt_count,action_cursor,action_started,next_retry_at,lease_expires_at)
+VALUES (?,?,?,?,?,?,?,?,'needs_review',?,1,0,0,0,0)
+RETURNING id`, ruleID, cookieID, "item-race", orderID, "buyer-"+orderID, "chat-race", "order_paid", "race:"+orderID,
+		catchupRunSnapshot(cookieID, orderID, idempotentTailPlanJSON)).Scan(&secondRunID); insertErr != nil {
+		t.Fatalf("写入并发运行夹具失败: %v", insertErr)
+	}
+	// firstStateErr 将首条运行置为人工核对，使两条历史运行都具备并发抢占条件。
+	if _, firstStateErr := s.DB.ExecContext(ctx,
+		`UPDATE automation_runs SET status='needs_review',action_started=0,action_cursor=0,attempt_count=1 WHERE id=?`, firstRunID); firstStateErr != nil {
+		t.Fatal(firstStateErr)
+	}
+	// results 保存两个并发重开调用的返回结果。
+	results := make(chan struct {
+		// reopened 表示本次调用是否取得运行执行权。
+		reopened bool
+		// err 保存本次调用遇到的数据库错误。
+		err error
+	}, 2)
+	// startGate 让两个调用尽量同时进入数据库抢占路径。
+	startGate := make(chan struct{})
+	// waitGroup 等待两个恢复调用完成，避免测试提前关闭数据库。
+	var waitGroup sync.WaitGroup
+	// runID 表示当前循环启动的恢复运行主键。
+	for _, runID := range []int64{firstRunID, secondRunID} {
+		// runID 保存当前 goroutine 负责抢占的运行主键副本。
+		runID := runID
+		waitGroup.Add(1)
+		go func() {
+			defer waitGroup.Done()
+			<-startGate
+			// reopened、reopenErr 保存当前并发重开结果。
+			reopened, reopenErr := s.Automation.ReopenRunForRecovery(ctx, runID, 1, time.Now().Add(5*time.Minute).Unix())
+			results <- struct {
+				reopened bool
+				err      error
+			}{reopened: reopened, err: reopenErr}
+		}()
+	}
+	close(startGate)
+	waitGroup.Wait()
+	close(results)
+	// successCount、failureCount 统计唯一成功抢占和明确失权的调用数量。
+	successCount, failureCount := 0, 0
+	// result 保存一个并发恢复调用的最终执行权结果。
+	for result := range results {
+		if result.err != nil {
+			t.Fatalf("并发重开不应返回数据库错误: %v", result.err)
+		}
+		if result.reopened {
+			successCount++
+		} else {
+			failureCount++
+		}
+	}
+	if successCount != 1 || failureCount != 1 {
+		t.Fatalf("同订单并发重开应一成一败: success=%d failure=%d", successCount, failureCount)
+	}
+	// runningCount 保存并发重开后同订单处于活动状态的运行数。
+	var runningCount int
+	// countErr 保存读取同订单活动运行数量时的数据库错误。
+	if countErr := s.DB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM automation_runs WHERE order_id=? AND trigger_type='order_paid' AND status='running'`, orderID).Scan(&runningCount); countErr != nil {
+		t.Fatal(countErr)
+	}
+	if runningCount != 1 {
+		t.Fatalf("同订单最多只能有一条 running 运行: %d", runningCount)
 	}
 }

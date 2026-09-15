@@ -181,7 +181,6 @@ func (c *credentialCoordinator) refreshTokenWithMinGap(ctx context.Context, _ bo
 		a.tokenCredentialFP = credentialFP
 		a.lastCaptchaFailure = time.Time{}
 		a.tokenFetchFailures = 0
-		a.tokenImmediateRefreshes = 0
 		a.lastTokenStatus = tokenRefreshSuccess
 		a.mu.Unlock()
 		a.runtimeMu.Lock()

@@ -153,12 +153,12 @@ func (a *Account) setRuntimeState(state, message string) {
 	a.runtimeUpdatedAt = time.Now()
 }
 
-// setRuntimeError 封装setRuntime错误业务协调。
+// setRuntimeError 根据 err 更新 a 的展示状态；ctx 只用于已有风控通知，Token 失败保持可重试状态。
 func (a *Account) setRuntimeError(ctx context.Context, err error) {
-	// msg 用于本次流程后续判断的msg
+	// msg 归一错误文本大小写，兼容尚未返回结构化错误的调用方。
 	msg := strings.ToLower(errString(err))
 	a.runtimeMu.Lock()
-	// prev 用于本次流程后续判断的prev
+	// prev 是加锁读取的旧状态，用于阻止风控提示重复发送。
 	prev := a.runtimeState
 	a.runtimeMu.Unlock()
 	switch {
@@ -169,7 +169,9 @@ func (a *Account) setRuntimeError(ctx context.Context, err error) {
 			a.alertEvent(ctx, EventSecurityVerification, AlertLevelWarn, "闲鱼要求安全验证",
 				"账号触发闲鱼风控验证（滑块/短信/人脸等）。系统可能无法自动恢复，请前往后台扫码完成验证。")
 		}
-	case strings.Contains(msg, "登录凭证已失效"), strings.Contains(msg, "fail_sys_token_exoired"), strings.Contains(msg, "fail_sys_token_expired"), strings.Contains(msg, "cookie 缺少 unb"):
+	case mtop.IsMTopTokenExpiredErr(err), strings.Contains(msg, "token_exoired"), strings.Contains(msg, "token_expired"), strings.Contains(msg, "token_empty"):
+		a.setRuntimeState(RuntimeReconnecting, "MTOP Token 刷新失败，等待重试")
+	case mtop.IsSessionExpiredErr(err), strings.Contains(msg, "cookie 缺少 unb"):
 		a.setRuntimeState(RuntimeAuthExpired, "登录凭证已失效，请重新扫码登录")
 	default:
 		a.setRuntimeState(RuntimeReconnecting, "连接异常，系统将在限速后自动重试")

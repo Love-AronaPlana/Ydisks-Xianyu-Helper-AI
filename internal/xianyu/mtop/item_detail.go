@@ -111,7 +111,8 @@ func (c *ClientImpl) fetchItemDetailOnce(ctx context.Context, cookies, itemID st
 	// token 是从签名 Cookie 提取的敏感签名密钥，不得记录。
 	token := protocol.SignToken(signingCookies)
 	if token == "" {
-		return nil, fmt.Errorf("cookie 缺少 _m_h5_tk，无法获取商品详情")
+		// 缺少签名令牌属于可由协议续期恢复的凭证状态；保留商品详情诊断语义。
+		return nil, &MTopResponseError{Kind: MTopErrorTokenExpired, API: "商品详情接口", Detail: "cookie 缺少 _m_h5_tk，无法获取商品详情"}
 	}
 	// dataVal 是只包含会话商品 ID 的平台请求体。
 	dataVal := `{"itemId":` + strconv.Quote(itemID) + `}`

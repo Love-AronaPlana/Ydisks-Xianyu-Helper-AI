@@ -191,7 +191,7 @@ func TestConsignParseFailure(t *testing.T) {
 }
 
 // TestConsignTokenExpiredNoCookieRefreshFails: token 过期且响应无 Set-Cookie 时，
-// 会调用 RefreshTokenContext 刷新；刷新失败（凭证失效）应返回 err。
+// 会调用 RefreshTokenContext 刷新；内部耗尽仍保留 Token 失败，不升级为 Session。
 // TestConsignTokenExpiredNoCookieRefreshFails 封装TestConsign令牌ExpiredNo登录凭证RefreshFails业务协调。
 func TestConsignTokenExpiredNoCookieRefreshFails(t *testing.T) {
 	// requests 用于本次流程后续判断的请求列表
@@ -206,14 +206,13 @@ func TestConsignTokenExpiredNoCookieRefreshFails(t *testing.T) {
 
 	// client 用于本次流程后续判断的client
 	client := &ClientImpl{HTTPClient: server.Client(), ConsignURL: server.URL + "/", TokenURL: server.URL + "/"}
-	// 使用 token 过期但无新 Cookie 的场景：RefreshTokenContext 会返回"登录凭证已失效"
+	// err 保存内部刷新耗尽的 Token 错误，不能被上层识别为 Session 失效。
 	_, _, _, err := client.ConsignContext(context.Background(), consignCookies, "order-1")
 	if err == nil {
 		t.Fatalf("expected err, got nil")
 	}
-	// consign 的 RefreshToken 失败包装 或 token 重试失败
-	if !strings.Contains(err.Error(), "consign token 过期且刷新失败") &&
-		!strings.Contains(err.Error(), "登录凭证已失效") {
+	// 保留刷新失败包装和精确分类；一次业务请求加五次内部 Token 请求后停止。
+	if !strings.Contains(err.Error(), "consign token 过期且刷新失败") || !IsMTopTokenExpiredErr(err) || IsSessionExpiredErr(err) || requests.Load() != 1+officialMTopMaxAttempts {
 		t.Fatalf("err=%v", err)
 	}
 }
@@ -260,6 +259,9 @@ func TestConsignTokenExpiredThenRefreshSucceeds(t *testing.T) {
 	}
 	if !ok {
 		t.Fatalf("ok=false want true")
+	}
+	if consignReqs.Load() != 2 || tokenReqs.Load() != 1 {
+		t.Fatalf("应只刷新一次 Token 后重试原业务: consign=%d token=%d", consignReqs.Load(), tokenReqs.Load())
 	}
 	if !strings.Contains(updated, "refreshtoken_42") {
 		t.Fatalf("updated=%q 应含刷新后的 token", updated)

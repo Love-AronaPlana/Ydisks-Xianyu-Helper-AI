@@ -334,7 +334,7 @@ func (a *Adapter) FetchOrderDetail(ctx context.Context, cookieID, orderID, itemI
 	}
 	// detail、err 用于本次流程后续判断的detail、err
 	detail, err := a.fetchOrderDetailAttempt(ctx, cookieID, orderID)
-	if err == nil || !mtop.IsCredentialRefreshableErr(err) {
+	if err == nil || !mtop.IsSessionExpiredErr(err) {
 		return detail, err
 	}
 	a.logger.Warn("订单详情检测到凭证失效，开始即时续期", "account", cookieID, "order_id", orderID)

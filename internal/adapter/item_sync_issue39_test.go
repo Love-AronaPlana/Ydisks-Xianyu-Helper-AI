@@ -136,39 +136,51 @@ func TestItemSyncNotifiesRuntimeAfterCookieCommit(t *testing.T) {
 	if finishErr != nil || callErr != nil || latest == nil || finishedSession == nil {
 		t.Fatalf("Cookie 提交异常 latest=%+v callErr=%v finishErr=%v", latest, callErr, finishErr)
 	}
-	// persistErr 验证列表提交后的重复检查不会丢失第一次写回通知。
-	persistErr := repository.persistAfterList(ctx, query, latest, finishedSession, cookieValue, "")
-	if persistErr != nil || notified != 1 {
-		t.Fatalf("运行时 Cookie 通知次数异常 notified=%d err=%v", notified, persistErr)
+	// enrichErr 验证详情阶段后的重复检查不会丢失第一次写回通知。
+	enrichErr := repository.persistAfterEnrich(ctx, query, latest, finishedSession, cookieValue, "")
+	if enrichErr != nil || notified != 1 {
+		t.Fatalf("运行时 Cookie 通知次数异常 notified=%d err=%v", notified, enrichErr)
 	}
 }
 
-// TestItemSyncSkipsItemDetailProbe 验证同步只使用列表字段，即使详情接口会失败也不应调用它。
-func TestItemSyncSkipsItemDetailProbe(t *testing.T) {
+// TestItemSyncDetailsReuseOperationCookieSession 验证商品详情探测沿用列表同步的 Cookie 会话并覆盖列表规格标记。
+func TestItemSyncDetailsReuseOperationCookieSession(t *testing.T) {
 	// store、cleanup 保存隔离数据库及其关闭责任。
 	store, cleanup := newAdapterTestStore(t)
 	defer cleanup()
-	// detailCalls 保存不应发生的商品详情探测次数。
-	detailCalls := 0
-	// client 为商品列表提供完整同步字段，并让任何误发的详情探测立即失败。
+	// detailSessionObserved 表示详情探测是否拿到了同步主流程会话。
+	detailSessionObserved := false
+	// client 为商品列表和详情探测提供本地平台响应。
 	client := &itemSyncListClient{
-		allResult: &mtop.ItemListResult{Items: []mtop.ItemListItem{{ID: "list-only", Title: "列表商品", PriceText: "¥12", IsMultiSpec: true}}},
-		detect: func(context.Context, string, string) (bool, error) {
-			detailCalls++
-			return false, errors.New("商品详情不应被同步调用")
+		allResult: &mtop.ItemListResult{Items: []mtop.ItemListItem{{ID: "detail-session", Title: "详情会话商品", IsMultiSpec: false}}},
+		detect: func(ctx context.Context, _ string, _ string) (bool, error) {
+			// session 保存详情请求从上下文读取的同步 Cookie 会话。
+			session := mtop.CookieSessionFromContext(ctx)
+			if session == nil {
+				return false, errors.New("商品详情探测缺少同步 Cookie 会话")
+			}
+			detailSessionObserved = true
+			// 详情接口返回的完整 Cookie Jar 必须继续由同步流程持久化。
+			session.ReplaceSnapshot([]cookierefresh.BrowserCookie{{Name: "sid", Value: "detail-rotated", Domain: ".goofish.com", Path: "/"}})
+			return true, nil
 		},
 	}
 	// repository 使用平台替身执行完整商品同步流程。
 	repository := NewItemSyncRepository(store, func() mtop.Client { return client }, nil, nil, nil)
 	// result、syncErr 保存全量同步结果及错误。
 	result, syncErr := repository.SyncAll(context.Background(), itemapp.SyncQuery{UserID: 1, CookieID: "cid", PageSize: 20, MaxPages: 1})
-	if syncErr != nil || result.TotalCount != 1 || result.SavedCount != 1 || detailCalls != 0 {
-		t.Fatalf("同步错误调用详情接口 result=%+v detailCalls=%d err=%v", result, detailCalls, syncErr)
+	if syncErr != nil || result.TotalCount != 1 || !detailSessionObserved {
+		t.Fatalf("详情 Cookie 会话未复用 result=%+v observed=%v err=%v", result, detailSessionObserved, syncErr)
 	}
-	// item、itemErr 验证标题、价格和列表多规格标记均已直接落库。
-	item, itemErr := store.Items.Get(context.Background(), "cid", "list-only")
-	if itemErr != nil || item.ItemTitle != "列表商品" || item.ItemPrice != "¥12" || !item.IsMultiSpec {
-		t.Fatalf("列表字段未直接落库 item=%+v err=%v", item, itemErr)
+	// item、itemErr 验证详情返回的多规格事实已覆盖列表中的单规格默认值。
+	item, itemErr := store.Items.Get(context.Background(), "cid", "detail-session")
+	if itemErr != nil || !item.IsMultiSpec {
+		t.Fatalf("详情多规格事实未落库 item=%+v err=%v", item, itemErr)
+	}
+	// runtime、runtimeErr 验证详情阶段产生的 Cookie 已经写回账号运行时凭证。
+	runtime, runtimeErr := store.Cookies.GetCookiePlatformRuntimeData(context.Background(), "cid")
+	if runtimeErr != nil || runtime.Value == "unb=1" {
+		t.Fatalf("详情 Cookie 未持久化 runtime=%+v err=%v", runtime, runtimeErr)
 	}
 }
 
@@ -248,34 +260,39 @@ func TestItemSyncPageReturnsPersistenceFailure(t *testing.T) {
 	}
 }
 
-// TestItemSyncListMultiSpecMarkerReplacesHistoricalValue 验证列表响应中的多规格标记可直接覆盖本地旧值。
-func TestItemSyncListMultiSpecMarkerReplacesHistoricalValue(t *testing.T) {
+// TestItemSyncDetailProbeFailurePreservesExistingFlag 验证普通详情探测错误不会清除既有多规格标记。
+func TestItemSyncDetailProbeFailurePreservesExistingFlag(t *testing.T) {
 	// store、cleanup 保存详情错误测试使用的隔离数据库及释放函数。
 	store, cleanup := newAdapterTestStore(t)
 	defer cleanup()
 	// ctx 是商品夹具和同步操作共用的上下文。
 	ctx := context.Background()
-	// seedErr 写入已有多规格商品，作为列表单规格标记覆盖的对象。
+	// seedErr 写入已有多规格商品，作为探测失败时必须保留的状态。
 	if seedErr := store.Items.Upsert(ctx, &db.ItemInfoRow{CookieID: "cid", ItemID: "detail-error-item", IsMultiSpec: true}); seedErr != nil {
 		t.Fatal(seedErr)
 	}
-	// recoveryCalls 记录列表同步不应触发凭证恢复回调次数。
+	// detailErr 模拟非凭证类的详情接口失败。
+	detailErr := errors.New("商品详情暂时不可用")
+	// recoveryCalls 记录不应被普通详情错误触发的凭证恢复回调次数。
 	recoveryCalls := 0
-	// client 仅返回明确的列表单规格标记。
+	// client 返回商品列表和普通详情失败。
 	client := &itemSyncListClient{
 		allResult: &mtop.ItemListResult{Items: []mtop.ItemListItem{{ID: "detail-error-item", IsMultiSpec: false}}},
+		detect:    func(context.Context, string, string) (bool, error) { return false, detailErr },
 	}
-	// repository 使用真实同步流程验证列表标记直接生效。
+	// repository 使用真实同步流程验证探测错误传播。
 	repository := NewItemSyncRepository(store, func() mtop.Client { return client }, nil, nil, func(context.Context, string, error) { recoveryCalls++ })
 	// result、syncErr 保存详情探测失败后的同步结果。
 	result, syncErr := repository.SyncAll(ctx, itemapp.SyncQuery{UserID: 1, CookieID: "cid", PageSize: 20, MaxPages: 1})
-	if syncErr != nil || result.SavedCount != 1 || recoveryCalls != 0 {
-		t.Fatalf("列表同步结果异常 result=%+v err=%v recoveries=%d", result, syncErr, recoveryCalls)
+	// typedErr 保存详情失败映射出的应用阶段错误。
+	var typedErr *itemapp.SyncError
+	if result != (itemapp.SyncAllResult{}) || !errors.As(syncErr, &typedErr) || typedErr.Kind != itemapp.SyncErrorPlatform || recoveryCalls != 0 {
+		t.Fatalf("详情普通错误映射异常 result=%+v err=%v recoveries=%d", result, syncErr, recoveryCalls)
 	}
-	// item、itemErr 验证列表单规格标记已清除旧的多规格值。
+	// item、itemErr 验证详情失败时旧多规格标记没有被错误清零。
 	item, itemErr := store.Items.Get(ctx, "cid", "detail-error-item")
-	if itemErr != nil || item.IsMultiSpec {
-		t.Fatalf("列表单规格标记未覆盖旧值 item=%+v err=%v", item, itemErr)
+	if itemErr != nil || !item.IsMultiSpec {
+		t.Fatalf("详情失败不应清除旧多规格标记 item=%+v err=%v", item, itemErr)
 	}
 }
 
@@ -311,21 +328,21 @@ func TestItemSyncCredentialLoadFailuresArePersistenceErrors(t *testing.T) {
 	defer enrichCleanup()
 	// enrichRepository 保存第二阶段凭证提交适配器。
 	enrichRepository := NewItemSyncRepository(enrichStore, nil, nil, nil, nil)
-	// listDetail、listSession、listUnlock 保存关闭数据库前的凭证快照。
-	listDetail, listCookie, _, listSession, listUnlock, listBeginErr := enrichRepository.begin(ctx, itemapp.SyncQuery{UserID: 1, CookieID: "cid"})
-	if listBeginErr != nil {
-		t.Fatal(listBeginErr)
+	// enrichDetail、enrichSession、enrichUnlock 保存关闭数据库前的凭证快照。
+	enrichDetail, enrichCookie, _, enrichSession, enrichUnlock, enrichBeginErr := enrichRepository.begin(ctx, itemapp.SyncQuery{UserID: 1, CookieID: "cid"})
+	if enrichBeginErr != nil {
+		t.Fatal(enrichBeginErr)
 	}
-	listUnlock()
+	enrichUnlock()
 	// closeErr 保存第二阶段测试数据库关闭错误。
 	if closeErr := enrichStore.DB.Close(); closeErr != nil {
 		t.Fatal(closeErr)
 	}
-	// listErr 保存列表请求后的凭证读取失败。
-	listErr := enrichRepository.persistAfterList(ctx, itemapp.SyncQuery{UserID: 1, CookieID: "cid"}, listDetail, listSession, listCookie, "")
-	// listTypedErr 保存列表提交的凭证读取错误分类。
-	var listTypedErr *itemapp.SyncError
-	if !errors.As(listErr, &listTypedErr) || listTypedErr.Kind != itemapp.SyncErrorPersistence {
-		t.Fatalf("列表提交凭证读取失败分类异常: %v", listErr)
+	// enrichErr 保存详情阶段后凭证读取失败的应用错误。
+	enrichErr := enrichRepository.persistAfterEnrich(ctx, itemapp.SyncQuery{UserID: 1, CookieID: "cid"}, enrichDetail, enrichSession, enrichCookie, "")
+	// enrichTypedErr 保存详情提交的凭证读取错误分类。
+	var enrichTypedErr *itemapp.SyncError
+	if !errors.As(enrichErr, &enrichTypedErr) || enrichTypedErr.Kind != itemapp.SyncErrorPersistence {
+		t.Fatalf("详情提交凭证读取失败分类异常: %v", enrichErr)
 	}
 }

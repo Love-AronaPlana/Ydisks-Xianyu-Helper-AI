@@ -153,8 +153,19 @@ SELECT o.order_id,o.item_id,o.buyer_id,o.spec_name,o.spec_value,o.quantity,o.amo
 WHERE o.order_status='pending_ship'
    AND o.deleted_at IS NULL
    AND COALESCE(o.chat_id,'')<>''
+   AND r.cookie_id=o.cookie_id
    AND r.status IN ('needs_review','failed')
    AND r.attempt_count<?
+   AND r.id=(SELECT latest.id
+               FROM automation_runs latest
+              WHERE latest.order_id=o.order_id
+                AND latest.trigger_type='order_paid'
+              ORDER BY latest.updated_at DESC,latest.id DESC
+              LIMIT 1)
+   AND NOT EXISTS (SELECT 1 FROM automation_runs active
+                    WHERE active.order_id=o.order_id
+                      AND active.trigger_type='order_paid'
+                      AND active.status='running')
    AND EXISTS (SELECT 1 FROM automation_rules owner
                 WHERE owner.id=r.rule_id AND owner.cookie_id=o.cookie_id
                   AND owner.trigger_type='order_paid'

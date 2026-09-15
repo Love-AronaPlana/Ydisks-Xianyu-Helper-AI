@@ -179,8 +179,8 @@ func TestRefreshTokenUsesOfficialAttemptLimitWithoutUpdatedCookie(t *testing.T) 
 	client := &ClientImpl{HTTPClient: server.Client(), TokenURL: server.URL + "/"}
 	// err 用于本次流程后续判断的err
 	_, err := client.RefreshTokenContext(context.Background(), "unb=123; _m_h5_tk=oldtoken_1;")
-	if err == nil || !strings.Contains(err.Error(), "登录凭证已失效") {
-		t.Fatalf("err=%v", err)
+	if !IsMTopTokenExpiredErr(err) || IsSessionExpiredErr(err) || !strings.Contains(err.Error(), "重试次数已耗尽") {
+		t.Fatalf("Token 刷新耗尽必须保留 Token 分类: %v", err)
 	}
 	if requests.Load() != officialMTopMaxAttempts {
 		t.Fatalf("请求次数=%d want %d", requests.Load(), officialMTopMaxAttempts)
@@ -391,14 +391,14 @@ func TestIsSessionExpiredErr(t *testing.T) {
 	}
 }
 
-// TestIsCredentialRefreshableErr 覆盖 Session 与仅 MTOP Token 失效都进入统一凭证恢复入口的分类边界。
+// TestIsCredentialRefreshableErr 验证仅明确 Session 失效允许账号级恢复；t 检查兼容分类入口。
 func TestIsCredentialRefreshableErr(t *testing.T) {
-	// tokenErr 是可通过登录态 Cookie 恢复的 MTOP 签名 Token 失效错误。
+	// tokenErr 是只应在 MTOP 内部刷新的签名 Token 失效错误。
 	tokenErr := &MTopResponseError{Kind: MTopErrorTokenExpired, API: "token", HTTPStatus: http.StatusOK}
 	// sessionErr 是需要协议续期或重新登录的 Session 失效错误。
 	sessionErr := &SessionExpiredError{API: "session", Ret: []string{"FAIL_SYS_SESSION_EXPIRED::Session过期"}}
-	if !IsCredentialRefreshableErr(tokenErr) || !IsCredentialRefreshableErr(sessionErr) {
-		t.Fatal("Token 和 Session 失效都应进入统一凭证恢复入口")
+	if IsCredentialRefreshableErr(tokenErr) || !IsCredentialRefreshableErr(sessionErr) {
+		t.Fatal("仅 Session 失效可以进入账号级凭证恢复入口")
 	}
 	if IsCredentialRefreshableErr(errors.New("普通业务失败")) {
 		t.Fatal("普通业务失败不应触发凭证恢复")

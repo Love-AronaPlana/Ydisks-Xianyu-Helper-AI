@@ -543,20 +543,67 @@ WHERE o.system_shipped=1
 	return out, rows.Err()
 }
 
-// ReopenRunForRecovery 把处于人工核对或明确失败的运行重新置为可执行，并递增代次使旧检查点失效。
-// 返回 false 表示运行状态或代次已经变化，调用方必须放弃本次恢复，避免与其它 worker 竞争同一运行。
+// ReopenRunForRecovery 在账号→订单锁内把处于人工核对或明确失败的运行重新置为可执行，并递增代次使旧检查点失效。
+// 同一订单已有其它 order_paid 运行处于 running 时拒绝抢占；返回 false 表示运行状态、代次或订单执行权已经变化。
 func (a *AutomationRules) ReopenRunForRecovery(ctx context.Context, runID int64, attempt int, leaseExpiresAt int64) (bool, error) {
-	// res、err 保存重开结果及数据库错误。
-	res, err := a.DB.ExecContext(ctx, `UPDATE automation_runs
+	if a == nil || a.DB == nil {
+		return false, errors.New("自动化运行存储未初始化")
+	}
+	// cookieID、orderID 保存运行固定的归属身份，仅用于取得账号与订单写锁，不读取任务快照或凭证。
+	var cookieID, orderID string
+	// readErr 保存运行身份读取错误；不存在的运行按未抢占处理；身份读取在事务外避免 SQLite 读快照阻塞后续写锁。
+	readErr := a.DB.QueryRowContext(ctx,
+		`SELECT cookie_id,COALESCE(order_id,'') FROM automation_runs WHERE id=?`, runID).Scan(&cookieID, &orderID)
+	if errors.Is(readErr, sql.ErrNoRows) {
+		return false, nil
+	}
+	if readErr != nil {
+		return false, readErr
+	}
+	// transaction、beginErr 保存本次重开使用的短事务；事务提交前不允许外部动作观察到 running 状态。
+	transaction, beginErr := a.DB.BeginTx(ctx, nil)
+	if beginErr != nil {
+		return false, beginErr
+	}
+	defer transaction.Rollback()
+	// lockErr 按与 TryStartRun/StartRunAction 相同的账号→订单顺序取得写锁，串行化同订单运行抢占。
+	if lockErr := lockAutomationOwnership(ctx, transaction, cookieID, orderID); lockErr != nil {
+		return false, lockErr
+	}
+	if strings.TrimSpace(orderID) != "" {
+		// activeCount 保存同订单其它付款运行的活动数量；存在活动运行时不能再重开历史运行。
+		var activeCount int
+		// countErr 保存查询同订单活动运行数量时的数据库错误。
+		if countErr := transaction.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM automation_runs
+ WHERE order_id=? AND trigger_type='order_paid' AND status='running' AND id<>?`, orderID, runID).Scan(&activeCount); countErr != nil {
+			return false, countErr
+		}
+		if activeCount > 0 {
+			return false, nil
+		}
+	}
+	// res、updateErr 保存带状态、代次和动作占用条件的原子重开结果。
+	res, updateErr := transaction.ExecContext(ctx, `UPDATE automation_runs
 	   SET status='running',action_started=0,attempt_count=attempt_count+1,
 	       lease_expires_at=?,next_retry_at=0,error_message='',updated_at=CURRENT_TIMESTAMP
-	 WHERE id=? AND attempt_count=? AND status IN ('needs_review','failed')`, leaseExpiresAt, runID, attempt)
-	if err != nil {
-		return false, err
+	 WHERE id=? AND attempt_count=? AND status IN ('needs_review','failed') AND action_started=0`, leaseExpiresAt, runID, attempt)
+	if updateErr != nil {
+		return false, updateErr
 	}
-	// n 保存实际更新的行数；只有恰好一行才算抢到本次恢复。
-	n, err := res.RowsAffected()
-	return err == nil && n == 1, err
+	// n、rowsErr 保存实际更新的行数和驱动计数错误；只有恰好一行才算抢到本次恢复。
+	n, rowsErr := res.RowsAffected()
+	if rowsErr != nil {
+		return false, rowsErr
+	}
+	if n != 1 {
+		return false, nil
+	}
+	// commitErr 确认运行状态与订单执行权一起持久化后才向调度器返回成功。
+	if commitErr := transaction.Commit(); commitErr != nil {
+		return false, commitErr
+	}
+	return true, nil
 }
 
 // createAutomationRuleTx 封装create自动化规则Tx业务协调。

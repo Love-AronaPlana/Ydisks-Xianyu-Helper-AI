@@ -217,12 +217,9 @@ func (e *automationActionExecutor) confirmShipmentAttempt(ctx context.Context, t
 	if sessionErr == nil && !result.succeeded {
 		sessionErr = errors.New(strings.Join(result.returns, "; "))
 	}
-	if mtop.IsCredentialRefreshableErr(sessionErr) {
-		// credentialLabel 用于确认发货错误中区分 Session 失效与 MTOP 签名 Token 失效。
-		credentialLabel := "MTOP Token"
-		if mtop.IsSessionExpiredErr(sessionErr) {
-			credentialLabel = "Session"
-		}
+	if mtop.IsSessionExpiredErr(sessionErr) {
+		// credentialLabel 标识唯一允许调用账号恢复器的 Session 失效；Token 已由 MTOP 内部处理。
+		credentialLabel := "Session"
 		if len(persistenceErrs) > 0 {
 			return errors.Join(fmt.Errorf("确认发货 %s 已失效: %w", credentialLabel, sessionErr), errors.Join(persistenceErrs...))
 		}
@@ -330,7 +327,7 @@ func isAdjustPriceTransientBusy(err error) bool {
 	return strings.Contains(message, "CANNOT_MODIFY_FEE") || strings.Contains(message, "稍后重试") || strings.Contains(message, "稍后再试")
 }
 
-// adjustOrderPriceAttempt 使用凭证快照调用订单改价，并以指纹条件写回响应 Cookie；Session 或 MTOP Token 失效时最多执行一次凭证恢复后重试。
+// adjustOrderPriceAttempt 使用凭证快照调用订单改价，并以指纹条件写回响应 Cookie；仅 Session 失效时最多执行一次账号恢复后重试。
 func (e *automationActionExecutor) adjustOrderPriceAttempt(ctx context.Context, task Task, priceCents int64, allowCredentialRecovery bool) error {
 	// session 固定本次 MTOP 请求的最小凭证视图，外部调用期间不持有账号凭证锁。
 	session, err := e.openShipmentConsignSession(ctx, task.AccountID)
@@ -350,12 +347,9 @@ func (e *automationActionExecutor) adjustOrderPriceAttempt(ctx context.Context, 
 	if sessionErr == nil && !result.succeeded {
 		sessionErr = errors.New(strings.Join(result.returns, "; "))
 	}
-	if mtop.IsCredentialRefreshableErr(sessionErr) {
-		// credentialLabel 用于订单改价错误中区分 Session 失效与 MTOP 签名 Token 失效。
-		credentialLabel := "MTOP Token"
-		if mtop.IsSessionExpiredErr(sessionErr) {
-			credentialLabel = "Session"
-		}
+	if mtop.IsSessionExpiredErr(sessionErr) {
+		// credentialLabel 标识唯一允许调用账号恢复器的 Session 失效；Token 已由 MTOP 内部处理。
+		credentialLabel := "Session"
 		if len(persistenceErrs) > 0 {
 			return errors.Join(fmt.Errorf("订单改价 %s 已失效: %w", credentialLabel, sessionErr), errors.Join(persistenceErrs...))
 		}
