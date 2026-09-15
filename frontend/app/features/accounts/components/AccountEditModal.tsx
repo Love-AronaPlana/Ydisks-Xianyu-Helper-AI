@@ -48,6 +48,8 @@ export const AccountEditModal: React.FC<AccountEditModalProps> = ({
   const handleAutoConfirmToggle = () => updateField('auto_confirm', !editForm.auto_confirm);
   // handleAutoConsignToggle 切换自动确认发货（转已发货）设置。
   const handleAutoConsignToggle = () => updateField('auto_consign', !editForm.auto_consign);
+  // handleAutoBargainToggle 切换砍价“待刀成”阶段的独立自动免拼设置。
+  const handleAutoBargainToggle = () => updateField('auto_bargain', !editForm.auto_bargain);
   // handlePauseDurationChange 更新账号暂停时长。
   const handlePauseDurationChange = (event: React.ChangeEvent<HTMLInputElement>) => updateField('pause_duration', parseInt(event.target.value, 10) || 0);
   // handleRestartPause 按当前时长立即重新暂停账号。
@@ -172,6 +174,20 @@ export const AccountEditModal: React.FC<AccountEditModalProps> = ({
               className={`w-14 h-8 rounded-full transition-colors duration-300 relative ${editForm.auto_consign ? 'bg-brand' : 'bg-gray-300'}`}
             >
               <span className={`absolute left-1 top-1 w-6 h-6 bg-white rounded-full shadow-md transition-transform duration-300 ${editForm.auto_consign ? 'translate-x-6' : 'translate-x-0'}`} />
+            </button>
+          </div>
+
+          <div className="flex items-center justify-between p-4 bg-gray-50 rounded-xl">
+            <div>
+              <div className="font-bold text-gray-900 flex items-center gap-2"><Check className="w-4 h-4 text-green-500" />自动免拼</div>
+              <div className="text-xs text-gray-500">仅在收到“我已小刀，待刀成”系统消息时调用免拼；成功小刀待发货后才会发卡</div>
+            </div>
+            <button
+              type="button"
+              onClick={handleAutoBargainToggle}
+              className={`w-14 h-8 rounded-full transition-colors duration-300 relative ${editForm.auto_bargain ? 'bg-brand' : 'bg-gray-300'}`}
+            >
+              <span className={`absolute left-1 top-1 w-6 h-6 bg-white rounded-full shadow-md transition-transform duration-300 ${editForm.auto_bargain ? 'translate-x-6' : 'translate-x-0'}`} />
             </button>
           </div>
 

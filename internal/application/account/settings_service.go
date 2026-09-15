@@ -28,6 +28,8 @@ type SettingsUpdateInput struct {
 	AutoConfirm *bool
 	// AutoConsign 是可选的自动确认发货（转已发货）开关。
 	AutoConsign *bool
+	// AutoBargain 是可选的砍价“待刀成”阶段自动免拼开关。
+	AutoBargain *bool
 	// PauseDuration 是可选的暂停时长，单位为分钟；零表示立即恢复。
 	PauseDuration *int
 	// Username 是可选的密码登录用户名更新值。
@@ -269,6 +271,11 @@ func (s *SettingsService) SetAutoConfirm(ctx context.Context, userID int64, acco
 // SetAutoConsign 更新账号自动确认发货（转已发货）开关。
 func (s *SettingsService) SetAutoConsign(ctx context.Context, userID int64, accountID string, enabled bool) (SettingsResult, error) {
 	return s.UpdateSettings(ctx, SettingsUpdateInput{UserID: userID, AccountID: accountID, AutoConsign: &enabled})
+}
+
+// SetAutoBargain 更新账号砍价“待刀成”阶段的自动免拼开关。
+func (s *SettingsService) SetAutoBargain(ctx context.Context, userID int64, accountID string, enabled bool) (SettingsResult, error) {
+	return s.UpdateSettings(ctx, SettingsUpdateInput{UserID: userID, AccountID: accountID, AutoBargain: &enabled})
 }
 
 // SetRemark 更新账号备注。

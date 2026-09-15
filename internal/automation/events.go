@@ -17,8 +17,10 @@ import (
 
 // TriggerOrderPaid 用于本次流程后续判断的Trigger订单Paid
 const (
-	TriggerOrderCreated         = "order_created"
-	TriggerOrderPaid            = "order_paid"
+	TriggerOrderCreated = "order_created"
+	TriggerOrderPaid    = "order_paid"
+	// TriggerBargainPending 表示砍价“我已小刀，待刀成”系统阶段；它不是用户可配置规则触发器。
+	TriggerBargainPending       = "bargain_pending"
 	TriggerBuyerReviewed        = "buyer_reviewed"
 	TriggerReviewMissingTimeout = "review_missing_timeout"
 
@@ -48,7 +50,7 @@ type Task struct {
 	Quantity      string
 	Amount        string
 	OrderStatus   string
-	// IsBargain 标记订单是否为订单同步已确认的砍价活动订单；确认发货时必须改走免拼接口。
+	// IsBargain 标记订单是否为订单同步或砍价 WS 已确认的砍价活动订单。
 	IsBargain bool
 	Text      string
 	UpdateKey string
@@ -105,6 +107,12 @@ func ExtractTaskFromWS(accountID, cookieStr string, raw map[string]any) *Task {
 		Raw:       raw,
 	}
 	switch {
+	case isBargainPendingCard(f):
+		task.TriggerType = TriggerBargainPending
+		task.IsBargain = true
+	case isBargainReadyCard(f):
+		task.TriggerType = TriggerOrderPaid
+		task.IsBargain = true
 	case isOrderPaidEvent(f):
 		task.TriggerType = TriggerOrderPaid
 	case isOrderCreatedEvent(f):
@@ -490,6 +498,11 @@ func isOrderPaidEvent(f rawFields) bool {
 // isBargainReadyCard 判断是否为参考项目第二阶段的成功小刀系统卡片标题。
 func isBargainReadyCard(fields rawFields) bool {
 	return fields.cardTitle == "我已成功小刀，待发货" || fields.cardTitle == "我已成功小刀,待发货"
+}
+
+// isBargainPendingCard 判断是否为砍价第一阶段的“待刀成”系统卡片。
+func isBargainPendingCard(fields rawFields) bool {
+	return fields.cardTitle == "我已小刀，待刀成" || fields.cardTitle == "我已小刀,待刀成"
 }
 
 // isOrderCreatedEvent 判定买家已拍下但尚未付款的交易卡片。

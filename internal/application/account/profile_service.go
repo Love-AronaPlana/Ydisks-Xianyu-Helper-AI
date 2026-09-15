@@ -28,6 +28,8 @@ type Summary struct {
 	AutoConfirm bool
 	// AutoConsign 表示自动发货后是否自动转已发货。
 	AutoConsign bool
+	// AutoBargain 表示砍价“待刀成”阶段是否自动调用免拼接口。
+	AutoBargain bool
 	// PauseDuration 是账号暂停时长，单位为分钟。
 	PauseDuration int
 	// PausedUntil 是暂停结束时间的 Unix 秒；零值表示当前未暂停。

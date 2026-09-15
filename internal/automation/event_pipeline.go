@@ -37,6 +37,7 @@ func (r eventFactRecorder) record(ctx context.Context, task Task) error {
 		SpecValue:   task.SpecValue,
 		Quantity:    task.Quantity,
 		Amount:      task.Amount,
+		IsBargain:   boolPointer(task.IsBargain),
 	}); err != nil {
 		return fmt.Errorf("记录自动化事件订单事实: %w", err)
 	}
@@ -46,6 +47,12 @@ func (r eventFactRecorder) record(ctx context.Context, task Task) error {
 		err := r.store.Automation.MarkOrderEventTime(ctx, task.OrderID, "paid_at"); err != nil {
 			return fmt.Errorf("记录订单付款时间: %w", err)
 		}
+		if task.IsBargain {
+			// readyErr 保存最终成功小刀阶段事实的写入错误，供最终卡片丢失时的安全兜底使用。
+			if readyErr := r.store.Automation.MarkBargainReady(ctx, task.OrderID, task.AccountID); readyErr != nil {
+				return fmt.Errorf("记录成功小刀阶段: %w", readyErr)
+			}
+		}
 	case TriggerBuyerReviewed:
 		if // err 用于本次流程后续判断的err
 		err := r.store.Automation.MarkOrderEventTime(ctx, task.OrderID, "buyer_reviewed_at"); err != nil {
@@ -53,6 +60,11 @@ func (r eventFactRecorder) record(ctx context.Context, task Task) error {
 		}
 	}
 	return nil
+}
+
+// boolPointer 把任务中的确定布尔事实转换为订单写入所需的可选字段。
+func boolPointer(value bool) *bool {
+	return &value
 }
 
 // ruleMatcher 只查询适用于任务的规则，不执行规则动作或修改运行状态。

@@ -57,6 +57,12 @@ func (s *Scheduler) scanPendingShipDeliveriesWithContextAndLimit(ctx context.Con
 				return
 			}
 			afterOrderID = order.OrderID
+			// catchupReady、waitReason 保存当前订单是否已越过实时事件优先窗口及未放行原因。
+			catchupReady, waitReason := pendingShipCatchupReady(order, time.Now().UTC())
+			if !catchupReady {
+				s.center.logger.Info("待发货兜底任务等待实时付款事件或人工核对", "account", order.CookieID, "order_id", order.OrderID, "reason", waitReason)
+				continue
+			}
 			// allowed、allowErr 保存账号自动化门禁结果。
 			allowed, allowErr := s.center.accountAutomationAllowed(ctx, order.CookieID)
 			if allowErr != nil {
@@ -99,6 +105,22 @@ func (s *Scheduler) scanPendingShipDeliveriesWithContextAndLimit(ctx context.Con
 			return
 		}
 	}
+}
+
+// pendingShipCatchupReady 判断已由候选查询确认阶段资格的订单能否安全转换为付款自动化事件。
+// 所有订单都必须先等待实时付款卡片窗口结束；砍价订单是否已完成免拼由查询层的阶段记录决定，兜底不得推断或调用免拼。
+func pendingShipCatchupReady(order db.Order, now time.Time) (bool, string) {
+	// observedAt 保存本地最后一次观测到待发货事实的时间；优先使用更新时间以覆盖订单同步和事件写入两种来源。
+	observedAt := parseDBTime(firstNonEmpty(order.UpdatedAt, order.PaidAt, order.CreatedAt))
+	if observedAt.IsZero() {
+		return false, "missing_observed_time"
+	}
+	// settleDeadline 是实时付款系统卡片应优先完成处理的截止时刻。
+	settleDeadline := observedAt.Add(defaultPendingShipSettleWindow)
+	if now.Before(settleDeadline) {
+		return false, "waiting_for_realtime_payment_event"
+	}
+	return true, ""
 }
 
 // pendingShipResumeFrozenPlan 从运行的原始事件快照恢复冻结的动作计划，并判定能否自动续跑。

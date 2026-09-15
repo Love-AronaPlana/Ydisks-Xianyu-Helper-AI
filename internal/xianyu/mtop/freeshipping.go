@@ -24,8 +24,12 @@ func (c *ClientImpl) FreeShippingContext(ctx context.Context, cookiesStr, orderI
 	}
 	// lastRet 保存 Token 重试耗尽时最后一次平台返回，便于上层保持业务错误分类。
 	var lastRet []string
+	// transientSyncFailure 标记最近一次失败是否只是团购实例尚未完成平台侧同步。
+	transientSyncFailure := false
 	for // attempt 是包含首次请求在内的免拼发货尝试序号。
 	attempt := 0; attempt < 4; attempt++ {
+		// transientSyncFailure 只描述当前这一轮响应，不能把上一轮的同步错误带入 Token 分支。
+		transientSyncFailure = false
 		// previousCookies 保存本次请求前签名 Cookie，用于判断响应是否已轮换 Token。
 		previousCookies := currentCookies
 		// ok、ret、updated、requestErr 保存单次免拼请求的业务结果、Cookie 更新与传输错误。
@@ -41,15 +45,27 @@ func (c *ClientImpl) FreeShippingContext(ctx context.Context, cookiesStr, orderI
 				currentCookies = updated
 			}
 			if ok {
+				if attempt > 0 {
+					c.logInfo("免拼发货重试成功", "order_id", orderID, "attempt", attempt+1)
+				} else {
+					c.logInfo("免拼发货成功", "order_id", orderID, "attempt", attempt+1)
+				}
 				return true, ret, currentCookies, nil
 			}
-			requestErr = c.mtopResponseFailure("免拼发货接口", http.StatusOK, ret, "平台 ret 未包含 SUCCESS")
-			// kind、classified 保存普通业务拒绝的分类结果；业务拒绝是确定结果，不能升级为外部动作未知。
-			if kind, classified := MTopErrorKindOf(requestErr); classified && kind == MTopErrorBusiness {
-				return false, ret, currentCookies, nil
-			}
-			if !IsMTopTokenExpiredErr(requestErr) {
-				return false, ret, currentCookies, requestErr
+			if isFreeShippingTransientSyncRet(ret) {
+				// 暂不构造并记录最终错误；平台团购实例同步完成后，下一次原请求仍可安全重试。
+				transientSyncFailure = true
+				c.logInfo("免拼发货遇到团购实例暂未同步，等待后重试", "order_id", orderID, "attempt", attempt+1, "next_attempt", attempt+2, "retry_limit", 4, "ret", formatMTopRet(ret))
+			} else {
+				transientSyncFailure = false
+				requestErr = c.mtopResponseFailure("免拼发货接口", http.StatusOK, ret, "平台 ret 未包含 SUCCESS")
+				// kind、classified 保存普通业务拒绝的分类结果；业务拒绝是确定结果，不能升级为外部动作未知。
+				if kind, classified := MTopErrorKindOf(requestErr); classified && kind == MTopErrorBusiness {
+					return false, ret, currentCookies, nil
+				}
+				if !IsMTopTokenExpiredErr(requestErr) {
+					return false, ret, currentCookies, requestErr
+				}
 			}
 		}
 		if updated != "" {
@@ -57,6 +73,13 @@ func (c *ClientImpl) FreeShippingContext(ctx context.Context, cookiesStr, orderI
 		}
 		if attempt == 3 {
 			break
+		}
+		if transientSyncFailure {
+			// sleepErr 保存团购实例同步重试等待期间的取消错误。
+			if sleepErr := sleepCtx(ctx, MTopRetryGap); sleepErr != nil {
+				return false, ret, currentCookies, sleepErr
+			}
+			continue
 		}
 		// MTop 通常会在 Token 过期响应中下发新签名 Cookie；未下发时才主动刷新一次。
 		if !mtopTokenCookieChanged(previousCookies, currentCookies) {
@@ -74,7 +97,24 @@ func (c *ClientImpl) FreeShippingContext(ctx context.Context, cookiesStr, orderI
 			return false, ret, currentCookies, sleepErr
 		}
 	}
+	if transientSyncFailure {
+		c.logInfo("免拼发货团购实例同步重试耗尽，保留系统失败结果", "order_id", orderID, "attempts", 4, "ret", formatMTopRet(lastRet))
+		return false, lastRet, currentCookies, fmt.Errorf("免拼发货接口团购实例同步重试失败: %w", c.mtopResponseFailure("免拼发货接口", http.StatusOK, lastRet, "团购实例同步重试次数已耗尽"))
+	}
 	return false, lastRet, currentCookies, fmt.Errorf("免拼发货接口 Token 重试失败: %w", c.mtopResponseFailure("免拼发货接口", http.StatusOK, lastRet, "重试次数已耗尽"))
+}
+
+// isFreeShippingTransientSyncRet 判断免拼接口是否返回了可等待团购实例同步完成后重试的错误。
+func isFreeShippingTransientSyncRet(ret []string) bool {
+	// value 表示当前待判断的平台 ret 条目。
+	for _, value := range ret {
+		// code 是去除大小写差异后的平台错误码，允许带标准的原因分隔符。
+		code := strings.ToUpper(strings.TrimSpace(value))
+		if code == "GROUPON_INSTANCE_QUERY_ERROR" || strings.HasPrefix(code, "GROUPON_INSTANCE_QUERY_ERROR::") {
+			return true
+		}
+	}
+	return false
 }
 
 // freeShippingOnce 发送一次砍价订单免拼发货请求；调用方负责 Token 过期时的 Cookie 刷新与重试。

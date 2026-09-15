@@ -36,6 +36,8 @@ type cookieSummaryResponse struct {
 	AutoConfirm bool `json:"auto_confirm"`
 	// AutoConsign 表示自动发货后是否自动转已发货。
 	AutoConsign bool `json:"auto_consign"`
+	// AutoBargain 表示砍价“待刀成”阶段是否自动免拼。
+	AutoBargain bool `json:"auto_bargain"`
 	// Remark 是账号备注。
 	Remark string `json:"remark"`
 	// PauseDuration 是自动回复暂停时长，单位为分钟。

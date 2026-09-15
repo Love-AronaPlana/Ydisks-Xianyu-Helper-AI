@@ -26,6 +26,7 @@ const accountFixture: AccountDetail = {
   enabled: true,
   auto_confirm: false,
   auto_consign: false,
+  auto_bargain: false,
   runtime_message: '在线',
 };
 

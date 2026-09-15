@@ -381,6 +381,21 @@ func TestMultiDB_CookiesUpsertBool(t *testing.T) {
 			if consignEnabled, consignErr := s.Cookies.GetAutoConsign(ctx, cid); consignErr != nil || !consignEnabled {
 				t.Fatalf("enabled auto_consign=%v err=%v want true", consignEnabled, consignErr)
 			}
+			// bargainEnabled、bargainErr 验证三方言独立自动免拼开关默认关闭且可显式开启。
+			bargainEnabled, bargainErr := s.Cookies.GetAutoBargain(ctx, cid)
+			if bargainErr != nil || bargainEnabled {
+				t.Fatalf("default auto_bargain=%v err=%v want false", bargainEnabled, bargainErr)
+			}
+			// autoBargainUpdate 是显式开启砍价免拼的设置值。
+			autoBargainUpdate := true
+			// updateErr 保存当前方言写入独立自动免拼开关的错误。
+			if _, updateErr := s.Cookies.UpdateSettings(ctx, cid, AccountSettingsUpdate{UserID: user.ID, AutoBargain: &autoBargainUpdate}); updateErr != nil {
+				t.Fatalf("enable auto_bargain: %v", updateErr)
+			}
+			// bargainEnabled、bargainErr 保存显式开启后的独立开关读取结果。
+			if bargainEnabled, bargainErr := s.Cookies.GetAutoBargain(ctx, cid); bargainErr != nil || !bargainEnabled {
+				t.Fatalf("enabled auto_bargain=%v err=%v want true", bargainEnabled, bargainErr)
+			}
 			if // err 用于本次流程后续判断的err
 			_, err := s.DB.ExecContext(ctx,
 				`UPDATE cookies SET auto_confirm=0 WHERE id=?`, cid); err != nil {

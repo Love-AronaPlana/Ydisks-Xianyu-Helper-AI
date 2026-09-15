@@ -2644,6 +2644,7 @@ export interface components {
             enabled: boolean;
             auto_confirm: boolean;
             auto_consign: boolean;
+            auto_bargain: boolean;
             remark: string;
             pause_duration: number;
             paused_until: number;
@@ -2672,6 +2673,7 @@ export interface components {
             remark?: string;
             auto_confirm?: boolean;
             auto_consign?: boolean;
+            auto_bargain?: boolean;
             pause_duration?: number;
             username?: string;
             login_password?: string;

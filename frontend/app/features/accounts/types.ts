@@ -11,6 +11,8 @@ export interface AccountEditForm {
   auto_confirm: boolean;
   // auto_consign 表示自动发货后是否自动确认发货（转已发货）。
   auto_consign: boolean;
+  // auto_bargain 表示砍价“待刀成”阶段是否自动免拼。
+  auto_bargain: boolean;
   // pause_duration 是账号订单处理暂停时长，单位为分钟。
   pause_duration: number;
   // username 是用于密码登录的闲鱼账号。

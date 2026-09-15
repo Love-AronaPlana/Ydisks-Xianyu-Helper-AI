@@ -145,11 +145,6 @@ func TestExtractTaskFromWS_OrderPaidSignalVariants(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "待刀成前置卡片不直接发货",
-			raw:  `{"1":{"7":1,"6":{"3":{"5":"{\"dxCard\":{\"item\":{\"main\":{\"exContent\":{\"title\":\"我已小刀，待刀成\"}}}}}"}}}}`,
-			want: false,
-		},
-		{
 			name: "成功小刀普通文本不触发",
 			raw:  `{"1":{"7":2,"10":{"reminderContent":"我已成功小刀，待发货"}}}`,
 			want: false,
@@ -169,6 +164,17 @@ func TestExtractTaskFromWS_OrderPaidSignalVariants(t *testing.T) {
 				t.Fatalf("trigger=%q want %q", task.TriggerType, TriggerOrderPaid)
 			}
 		})
+	}
+}
+
+// TestExtractTaskFromWS_BargainPendingCard 验证“我已小刀，待刀成”被识别为独立免拼阶段，而不是付款发货任务。
+func TestExtractTaskFromWS_BargainPendingCard(t *testing.T) {
+	// raw 保存砍价第一阶段的卖家系统卡片样本。
+	raw := mustMap(t, `{"1":{"7":1,"6":{"3":{"5":"{\"dxCard\":{\"item\":{\"main\":{\"exContent\":{\"title\":\"我已小刀，待刀成\"}}}}}"}}}}`)
+	// task 保存从 WS 提取的独立砍价阶段任务。
+	task := ExtractTaskFromWS("acc1", "cookie", raw)
+	if task == nil || task.TriggerType != TriggerBargainPending || !task.IsBargain {
+		t.Fatalf("待刀成卡片未生成独立免拼阶段任务: %+v", task)
 	}
 }
 

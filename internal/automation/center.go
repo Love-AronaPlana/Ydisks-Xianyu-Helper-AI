@@ -326,6 +326,9 @@ func (c *Center) handleTask(ctx context.Context, task Task) (bool, error) {
 		c.logger.Info("账号已停用，记录事件事实但不执行自动化", "account", task.AccountID, "trigger", task.TriggerType)
 		return false, nil
 	}
+	if task.TriggerType == TriggerBargainPending {
+		return c.handleBargainPending(ctx, task)
+	}
 	if task.TriggerType == TriggerOrderPaid && !task.ForceConfirmShipment {
 		// autoConfirm、autoConfirmErr 分别保存参考项目自动发货入口要求的账号开关和读取错误。
 		autoConfirm, autoConfirmErr := c.store.Cookies.GetAutoConfirm(ctx, task.AccountID)
@@ -379,6 +382,60 @@ func (c *Center) handleTask(ctx context.Context, task Task) (bool, error) {
 		}
 	}
 	return false, firstErr
+}
+
+// handleBargainPending 处理砍价“待刀成”WS 阶段：仅按独立账号开关调用免拼，绝不匹配发卡或确认发货规则。
+func (c *Center) handleBargainPending(ctx context.Context, task Task) (bool, error) {
+	if task.Source != "ws" {
+		c.logger.Warn("拒绝非 WebSocket 的免拼阶段任务", "source", task.Source, "account", task.AccountID, "order_id", task.OrderID)
+		return false, nil
+	}
+	// autoBargain、settingsErr 保存独立自动免拼开关和读取错误。
+	autoBargain, settingsErr := c.store.Cookies.GetAutoBargain(ctx, task.AccountID)
+	if settingsErr != nil {
+		return false, fmt.Errorf("读取自动免拼设置: %w", settingsErr)
+	}
+	if !autoBargain {
+		c.logger.Info("账号未启用自动免拼，跳过待刀成阶段", "account", task.AccountID, "order_id", task.OrderID)
+		return false, nil
+	}
+	if task.OrderID == "" {
+		return false, fmt.Errorf("免拼阶段缺少订单ID")
+	}
+	// claimed、claimErr 保存本次 WS 是否取得免拼阶段唯一执行权。
+	claimed, claimErr := c.store.Automation.ClaimBargainFreeShipping(ctx, task.OrderID, task.AccountID)
+	if claimErr != nil {
+		return false, fmt.Errorf("领取免拼阶段执行权: %w", claimErr)
+	}
+	if !claimed {
+		c.logger.Info("免拼阶段已有其他任务处理，跳过重复事件", "account", task.AccountID, "order_id", task.OrderID)
+		return false, nil
+	}
+	c.logger.Info("开始执行自动免拼", "account", task.AccountID, "order_id", task.OrderID, "trigger", task.TriggerType)
+	// actionErr 保存独立免拼接口的执行结果。
+	actionErr := c.actions.freeShipBargain(ctx, task)
+	// status 保存可重试的明确失败、需要人工核对的未知结果或成功终态。
+	status := "succeeded"
+	if actionErr != nil {
+		// uncertain 用于识别可能已被平台执行、因而不能自动再次提交的免拼结果。
+		var uncertain *uncertainActionError
+		if errors.As(actionErr, &uncertain) {
+			status = "needs_review"
+		} else {
+			status = "failed"
+		}
+		c.logger.Warn("自动免拼失败，已保存阶段状态", "account", task.AccountID, "order_id", task.OrderID, "status", status, "err", actionErr)
+	} else {
+		c.logger.Info("自动免拼成功，等待成功小刀消息后发卡", "account", task.AccountID, "order_id", task.OrderID)
+	}
+	// finishErr 保存免拼阶段终态写入错误，避免远端成功后丢失兜底资格。
+	if finishErr := c.store.Automation.FinishBargainFreeShipping(ctx, task.OrderID, task.AccountID, status); finishErr != nil {
+		if actionErr != nil {
+			return false, errors.Join(actionErr, fmt.Errorf("收口免拼阶段: %w", finishErr))
+		}
+		return false, uncertainAction(fmt.Errorf("闲鱼已免拼，但本地阶段保存失败: %w", finishErr))
+	}
+	return false, actionErr
 }
 
 // taskAutomationRunID 封装任务自动化运行ID业务协调。

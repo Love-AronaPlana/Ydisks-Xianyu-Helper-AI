@@ -31,6 +31,10 @@ const pendingShipCatchupEnv = "XIANYU_PENDING_SHIP_CATCHUP"
 // 付款事件在准备阶段失败时可能不会留下任何运行记录，若不设冷却会每分钟重试并放大上游压力。
 const defaultPendingShipCooldown = 10 * time.Minute
 
+// defaultPendingShipSettleWindow 是新进入待发货状态的订单在通用兜底触发前必须经历的观察窗口。
+// 该窗口让实时付款系统卡片优先到达并建立运行记录，避免调度器把尚在结算中的订单误判为事件丢失。
+const defaultPendingShipSettleWindow = 2 * time.Minute
+
 // pendingShipTaskTimeout 是单次兜底任务的执行预算，避免上游接口挂起拖住整个分钟级扫描。
 const pendingShipTaskTimeout = 90 * time.Second
 

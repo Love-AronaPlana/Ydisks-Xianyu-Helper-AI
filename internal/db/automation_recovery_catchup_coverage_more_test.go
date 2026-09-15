@@ -131,7 +131,13 @@ func TestPendingShipOrdersWithoutPaidRunAfterFilters(t *testing.T) {
 	// 已有 order_paid 运行 → 交由失败运行恢复链处理，不能重复触发。
 	seedCatchupOrder(t, s, "o-hasrun", cookieID, "item-1", "chat-hasrun", "pending_ship")
 	seedCatchupRun(t, s, activeRuleID, cookieID, "o-hasrun")
-	// 候选、排除三类夹具共同构成完整的过滤矩阵。
+	// 砍价订单未记录免拼成功阶段 → 必须排除，防止兜底推断阶段并抢跑免拼/发卡。
+	seedCatchupOrder(t, s, "o-bargain", cookieID, "item-1", "chat-bargain", "pending_ship")
+	// bargainUpdateErr 保存砍价标记夹具写入错误。
+	if _, bargainUpdateErr := s.DB.ExecContext(ctx, `UPDATE orders SET is_bargain=1 WHERE order_id='o-bargain'`); bargainUpdateErr != nil {
+		t.Fatal(bargainUpdateErr)
+	}
+	// candidates 保存候选集合；未完成免拼阶段的砍价订单不能由订单状态兜底进入。
 	candidates, err := s.Automation.PendingShipOrdersWithoutPaidRunAfter(ctx, "", 0)
 	if err != nil {
 		t.Fatal(err)

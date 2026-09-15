@@ -27,11 +27,13 @@ type Cookies struct {
 // ChannelIDs 非 nil 时覆盖通知绑定（空切片表示明确解绑全部）。
 // AccountSettingsUpdate 用于本次流程后续判断的账号设置Update
 type AccountSettingsUpdate struct {
-	UserID        int64
-	Value         *string
-	Remark        *string
-	AutoConfirm   *bool
-	AutoConsign   *bool
+	UserID      int64
+	Value       *string
+	Remark      *string
+	AutoConfirm *bool
+	AutoConsign *bool
+	// AutoBargain 是砍价“待刀成”阶段是否自动免拼的独立开关，不从自动发货开关派生。
+	AutoBargain   *bool
 	PauseDuration *int
 	Username      *string
 	Password      *string
@@ -98,6 +100,10 @@ func (c *Cookies) UpdateSettings(ctx context.Context, cookieID string, input Acc
 	if input.AutoConsign != nil {
 		assignments = append(assignments, "auto_consign=?")
 		args = append(args, boolToInt(*input.AutoConsign))
+	}
+	if input.AutoBargain != nil {
+		assignments = append(assignments, "auto_bargain=?")
+		args = append(args, boolToInt(*input.AutoBargain))
 	}
 	// pausedUntil 用于本次流程后续判断的pausedUntil
 	pausedUntil := int64(0)
@@ -610,6 +616,21 @@ func (c *Cookies) GetAutoConsign(ctx context.Context, cookieID string) (bool, er
 	var enabled int
 	// err 用于本次流程后续判断的err
 	err := c.DB.QueryRowContext(ctx, `SELECT auto_consign FROM cookies WHERE id=?`, cookieID).Scan(&enabled)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, ErrNotFound
+		}
+		return false, err
+	}
+	return enabled != 0, nil
+}
+
+// GetAutoBargain 读取账号是否允许在砍价“待刀成”阶段自动免拼。
+func (c *Cookies) GetAutoBargain(ctx context.Context, cookieID string) (bool, error) {
+	// enabled 保存数据库中的独立自动免拼开关值。
+	var enabled int
+	// err 保存读取账号设置时的数据库错误。
+	err := c.DB.QueryRowContext(ctx, `SELECT auto_bargain FROM cookies WHERE id=?`, cookieID).Scan(&enabled)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return false, ErrNotFound

@@ -185,6 +185,7 @@ type AccountSettingsPort interface {
 	SetStatus(context.Context, int64, string, bool) (accountapp.StatusResult, error)
 	SetAutoConfirm(context.Context, int64, string, bool) (accountapp.SettingsResult, error)
 	SetAutoConsign(context.Context, int64, string, bool) (accountapp.SettingsResult, error)
+	SetAutoBargain(context.Context, int64, string, bool) (accountapp.SettingsResult, error)
 	SetRemark(context.Context, int64, string, string) (accountapp.SettingsResult, error)
 	SetPause(context.Context, int64, string, int) (accountapp.SettingsResult, error)
 	GetPause(context.Context, int64, string) (accountapp.PauseState, error)

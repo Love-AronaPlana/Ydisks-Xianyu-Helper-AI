@@ -176,9 +176,6 @@ func (e *automationActionExecutor) confirmShipmentWithProof(ctx context.Context,
 	if task.OrderID == "" {
 		return fmt.Errorf("确认发货缺少订单ID")
 	}
-	if task.IsBargain && (strings.TrimSpace(task.ItemID) == "" || strings.TrimSpace(task.BuyerID) == "") {
-		return fmt.Errorf("%w: 免拼发货缺少商品ID或买家ID", errActionNotPerformed)
-	}
 	// enabled 表示账号是否打开自动确认发货（转已发货）设置；readErr 表示读取该账号设置时的数据库错误。
 	enabled, readErr := e.store.Cookies.GetAutoConsign(ctx, task.AccountID)
 	if readErr != nil {
@@ -198,7 +195,7 @@ func (e *automationActionExecutor) confirmShipmentAttempt(ctx context.Context, t
 		return err
 	}
 	// succeeded、returns、updatedCookie、callErr 分别保存 MTOP 的业务成功标记、业务返回、扁平 Cookie 更新和调用错误。
-	// client 保存当前确认发货使用的平台客户端；砍价订单需要免拼能力，普通订单仍可兼容旧的带凭证确认发货实现。
+	// client 保存当前普通确认发货使用的平台客户端；砍价订单在最终阶段也必须使用该普通确认发货接口。
 	client := e.mtop()
 	// succeeded 表示平台是否明确确认订单已发货。
 	var succeeded bool
@@ -208,20 +205,11 @@ func (e *automationActionExecutor) confirmShipmentAttempt(ctx context.Context, t
 	var updatedCookie string
 	// callErr 保存确认发货请求或响应解析错误。
 	var callErr error
-	if task.IsBargain {
-		// freeShipping、supported 保存砍价订单免拼能力及其是否由当前客户端实现；不允许回退普通确认发货端点。
-		freeShipping, supported := client.(freeShippingClient)
-		if !supported {
-			return fmt.Errorf("%w: 当前 MTOP 客户端不支持免拼发货", errActionNotPerformed)
-		}
-		succeeded, returns, updatedCookie, callErr = freeShipping.FreeShippingContext(session.requestContext, session.cookieStr, task.OrderID, task.ItemID, task.BuyerID)
+	// deliveryClient、supported 保存可选的带发货凭证能力及其是否可用。
+	if deliveryClient, supported := client.(consignWithDeliveryClient); supported {
+		succeeded, returns, updatedCookie, callErr = deliveryClient.ConsignContextWithDelivery(session.requestContext, session.cookieStr, task.OrderID, proof.tradeText, proof.picList)
 	} else {
-		// deliveryClient、supported 保存可选的带发货凭证能力及其是否可用。
-		if deliveryClient, supported := client.(consignWithDeliveryClient); supported {
-			succeeded, returns, updatedCookie, callErr = deliveryClient.ConsignContextWithDelivery(session.requestContext, session.cookieStr, task.OrderID, proof.tradeText, proof.picList)
-		} else {
-			succeeded, returns, updatedCookie, callErr = client.ConsignContext(session.requestContext, session.cookieStr, task.OrderID)
-		}
+		succeeded, returns, updatedCookie, callErr = client.ConsignContext(session.requestContext, session.cookieStr, task.OrderID)
 	}
 	// result 归并 MTOP 远端结果，Cookie 写回与订单状态写入随后独立处理。
 	result := shipmentConsignResult{succeeded: succeeded, returns: returns, updatedCookie: updatedCookie, callErr: callErr}
@@ -274,6 +262,47 @@ func (e *automationActionExecutor) confirmShipmentAttempt(ctx context.Context, t
 	persistenceErrs = append(persistenceErrs, orderPersistence...)
 	if len(persistenceErrs) > 0 {
 		return uncertainAction(fmt.Errorf("闲鱼已确认发货，但本地状态保存失败: %w", errors.Join(persistenceErrs...)))
+	}
+	return nil
+}
+
+// freeShipBargain 在砍价“待刀成”阶段调用独立免拼接口；它不发送卡密、不确认发货，也不修改订单已发货状态。
+func (e *automationActionExecutor) freeShipBargain(ctx context.Context, task Task) error {
+	if task.OrderID == "" || strings.TrimSpace(task.ItemID) == "" || strings.TrimSpace(task.BuyerID) == "" {
+		return fmt.Errorf("%w: 免拼发货缺少订单ID、商品ID或买家ID", errActionNotPerformed)
+	}
+	// session 固定本次免拼请求的凭证视图，外部调用期间不持有账号凭证锁。
+	session, err := e.openShipmentConsignSession(ctx, task.AccountID)
+	if err != nil {
+		return err
+	}
+	// freeShipping、supported 保存当前 MTOP 客户端的独立免拼能力。
+	freeShipping, supported := e.mtop().(freeShippingClient)
+	if !supported {
+		return fmt.Errorf("%w: 当前 MTOP 客户端不支持免拼发货", errActionNotPerformed)
+	}
+	// succeeded、returns、updatedCookie、callErr 保存免拼接口的远端结果。
+	succeeded, returns, updatedCookie, callErr := freeShipping.FreeShippingContext(session.requestContext, session.cookieStr, task.OrderID, task.ItemID, task.BuyerID)
+	// result 统一 Cookie 持久化所需的远端调用结果。
+	result := shipmentConsignResult{succeeded: succeeded, returns: returns, updatedCookie: updatedCookie, callErr: callErr}
+	// cookiePersistence 保存响应 Cookie 的条件写回错误。
+	cookiePersistence := e.persistShipmentConsignCookies(ctx, task.AccountID, session, result)
+	if result.callErr != nil {
+		if len(cookiePersistence.errors) > 0 {
+			return uncertainAction(errors.Join(result.callErr, errors.Join(cookiePersistence.errors...)))
+		}
+		return uncertainAction(result.callErr)
+	}
+	if !result.succeeded {
+		// failure 表示平台明确拒绝免拼；该结果可由同阶段新 WS 事件重新尝试。
+		failure := fmt.Errorf("免拼发货失败: %s", strings.Join(result.returns, "; "))
+		if len(cookiePersistence.errors) > 0 {
+			return errors.Join(failure, errors.Join(cookiePersistence.errors...))
+		}
+		return failure
+	}
+	if len(cookiePersistence.errors) > 0 {
+		return uncertainAction(fmt.Errorf("闲鱼已免拼，但响应凭证保存失败: %w", errors.Join(cookiePersistence.errors...)))
 	}
 	return nil
 }

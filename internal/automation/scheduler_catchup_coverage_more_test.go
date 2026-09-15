@@ -113,6 +113,138 @@ func catchupOrder(t *testing.T, store *db.Store, cookieID, orderID, itemID, chat
 	}); upsertErr != nil {
 		t.Fatalf("写入订单夹具失败: %v", upsertErr)
 	}
+	// observedAt 是模拟付款系统卡片已丢失足够久的最后观测时间，使既有兜底成功夹具跨过实时事件等待窗。
+	observedAt := time.Now().UTC().Add(-defaultPendingShipSettleWindow - time.Minute).Format(time.RFC3339Nano)
+	// updateErr 保存把夹具调整为可安全补触发历史订单的写入错误。
+	if _, updateErr := store.DB.ExecContext(context.Background(), `UPDATE orders SET updated_at=? WHERE order_id=?`, observedAt, orderID); updateErr != nil {
+		t.Fatalf("回拨订单夹具观测时间失败: %v", updateErr)
+	}
+}
+
+// TestPendingShipCatchupReadyDefersFreshThenAllowsObservedOrders 验证通用兜底会等待实时卡片窗口，订单阶段资格由查询层决定。
+func TestPendingShipCatchupReadyDefersFreshThenAllowsObservedOrders(t *testing.T) {
+	// now 是固定的当前时刻，保证时间窗口断言不依赖测试执行速度。
+	now := time.Date(2026, time.September, 15, 8, 0, 0, 0, time.UTC)
+	// cases 覆盖普通订单等待/放行和无法确认观测时间三条安全边界。
+	cases := []struct {
+		// name 是当前安全边界的可读名称。
+		name string
+		// order 是输入给通用兜底的本地订单事实。
+		order db.Order
+		// wantReady 是该订单是否允许被通用兜底转换为付款事件。
+		wantReady bool
+		// wantReason 是拒绝时写入诊断日志的稳定原因。
+		wantReason string
+	}{
+		{name: "普通订单仍在实时卡片窗口", order: db.Order{UpdatedAt: now.Add(-time.Minute).Format(time.RFC3339Nano)}, wantReason: "waiting_for_realtime_payment_event"},
+		{name: "普通订单已过实时卡片窗口", order: db.Order{UpdatedAt: now.Add(-defaultPendingShipSettleWindow).Format(time.RFC3339Nano)}, wantReady: true},
+		{name: "已由候选查询确认阶段资格的砍价订单在窗口后放行", order: db.Order{IsBargain: 1, UpdatedAt: now.Add(-time.Hour).Format(time.RFC3339Nano)}, wantReady: true},
+		{name: "缺少可解析观测时间时安全停止", order: db.Order{UpdatedAt: "not-a-time"}, wantReason: "missing_observed_time"},
+	}
+	// testCase 表示当前待验证的兜底安全边界。
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			// ready、reason 保存被测订单的通用兜底放行结果及诊断原因。
+			ready, reason := pendingShipCatchupReady(testCase.order, now)
+			if ready != testCase.wantReady || reason != testCase.wantReason {
+				t.Fatalf("兜底放行结果异常: ready=%v reason=%q wantReady=%v wantReason=%q", ready, reason, testCase.wantReady, testCase.wantReason)
+			}
+		})
+	}
+}
+
+// TestPendingShipDeliveryScanUsesNormalConsignAfterRecordedBargainStage 验证兜底仅在免拼成功已记录后补发卡，并使用普通确认发货接口。
+func TestPendingShipDeliveryScanUsesNormalConsignAfterRecordedBargainStage(t *testing.T) {
+	// store、cleanup 保存隔离自动化数据库及资源释放函数。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	// ctx 保存本测试的数据库与扫描上下文。
+	ctx := context.Background()
+	// admin、adminErr 保存规则所属管理员及查询错误。
+	admin, adminErr := store.Users.GetByUsername(ctx, "admin")
+	if adminErr != nil {
+		t.Fatal(adminErr)
+	}
+	// enabled 同时开启付款自动发货和平台确认发货，使测试覆盖最终普通确认动作。
+	enabled := true
+	// cookieID 是砍价订单所属测试账号。
+	cookieID := "aged-bargain-catchup-acc"
+	catchupAccount(t, store, admin.ID, cookieID)
+	// settingsErr 保存账号自动化开关写入错误。
+	if _, settingsErr := store.Cookies.UpdateSettings(ctx, cookieID, db.AccountSettingsUpdate{UserID: admin.ID, AutoConfirm: &enabled, AutoConsign: &enabled}); settingsErr != nil {
+		t.Fatal(settingsErr)
+	}
+	// cardID 是付款动作完整性校验和发送路径需要的卡密组标识。
+	cardID := catchupCard(t, store, admin.ID)
+	catchupRule(t, store, admin.ID, cookieID, "aged-bargain-item", []db.AutomationActionInput{catchupCardAction(cardID), {ActionType: ActionConfirmShipment, Enabled: true}})
+	catchupOrder(t, store, cookieID, "aged-bargain-catchup-order", "aged-bargain-item", "aged-bargain-chat")
+	// bargainUpdateErr 保存把历史待发货夹具标识为砍价订单的写入错误。
+	if _, bargainUpdateErr := store.DB.ExecContext(ctx, `UPDATE orders SET is_bargain=1 WHERE order_id=?`, "aged-bargain-catchup-order"); bargainUpdateErr != nil {
+		t.Fatal(bargainUpdateErr)
+	}
+	// claimed、claimErr 保存模拟“待刀成”WS 已成功完成免拼后的阶段领取结果。
+	claimed, claimErr := store.Automation.ClaimBargainFreeShipping(ctx, "aged-bargain-catchup-order", cookieID)
+	if claimErr != nil || !claimed {
+		t.Fatalf("领取已完成免拼阶段失败: claimed=%v err=%v", claimed, claimErr)
+	}
+	// finishErr 保存模拟免拼成功终态的阶段写入错误。
+	if finishErr := store.Automation.FinishBargainFreeShipping(ctx, "aged-bargain-catchup-order", cookieID, "succeeded"); finishErr != nil {
+		t.Fatal(finishErr)
+	}
+	// client 是记录最终普通确认和免拼调用次数的平台替身。
+	client := &fakeMTop{consignOk: true, consignRet: []string{"SUCCESS::调用成功"}}
+	// sender 是验证兜底仍先发送交付内容的在线替身。
+	sender := &testSender{}
+	// scheduler 是注入平台替身的待发货兜底调度器。
+	scheduler := &Scheduler{center: NewWithDependencies(store, testSenderProvider{sender: sender}, nil, CenterDependencies{MTop: client}), pendingShipCooldown: map[string]time.Time{}}
+	scheduler.scanPendingShipDeliveries(ctx)
+	if len(sender.texts) != 1 {
+		t.Fatalf("砍价兜底应在已记录免拼后发送一次交付内容: %+v", sender.texts)
+	}
+	if client.freeShippingCalls != 0 || client.consignCalls != 1 {
+		t.Fatalf("砍价兜底错误调用免拼或遗漏普通确认: free=%d consign=%d", client.freeShippingCalls, client.consignCalls)
+	}
+}
+
+// TestPendingShipDeliveryScanDefersFreshOrder 验证新进入待发货状态的普通订单不会被调度器立即伪造成付款事件。
+func TestPendingShipDeliveryScanDefersFreshOrder(t *testing.T) {
+	// store、cleanup 保存隔离自动化数据库及资源释放函数。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	// ctx 保存本测试的数据库与扫描上下文。
+	ctx := context.Background()
+	// admin、adminErr 保存规则所属管理员及查询错误。
+	admin, adminErr := store.Users.GetByUsername(ctx, "admin")
+	if adminErr != nil {
+		t.Fatal(adminErr)
+	}
+	// cardID 是付款动作完整性校验所需的卡密组标识。
+	cardID := catchupCard(t, store, admin.ID)
+	// cookieID 是新订单所属并报告在线的测试账号。
+	cookieID := "fresh-catchup-acc"
+	catchupAccount(t, store, admin.ID, cookieID)
+	catchupRule(t, store, admin.ID, cookieID, "fresh-item", []db.AutomationActionInput{catchupCardAction(cardID)})
+	// upsertErr 保存新进入待发货状态订单的写入错误；这里刻意不回拨 updated_at。
+	if upsertErr := store.Orders.Upsert(ctx, "fresh-catchup-order", db.OrderUpsertOpts{ItemID: "fresh-item", BuyerID: "fresh-buyer", CookieID: cookieID, ChatID: "fresh-chat", OrderStatus: "pending_ship", Quantity: "1", Amount: "9.90", SpecName: "颜色", SpecValue: "黑"}); upsertErr != nil {
+		t.Fatal(upsertErr)
+	}
+	// sender 是记录是否发生提前发送的在线替身。
+	sender := &testSender{}
+	// scheduler 是待验证的通用待发货兜底调度器。
+	scheduler := &Scheduler{center: New(store, testSenderProvider{sender: sender}, nil), pendingShipCooldown: map[string]time.Time{}}
+	scheduler.scanPendingShipDeliveries(ctx)
+	if len(sender.texts) != 0 {
+		t.Fatalf("新订单不应被兜底提前发送: %+v", sender.texts)
+	}
+	// runCount 保存新订单对应付款运行数；等待窗内必须保持为零。
+	var runCount int
+	// countErr 保存读取提前付款运行数量的错误。
+	if countErr := store.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM automation_runs WHERE order_id=? AND trigger_type='order_paid'`, "fresh-catchup-order").Scan(&runCount); countErr != nil {
+		t.Fatal(countErr)
+	}
+	if runCount != 0 {
+		t.Fatalf("新订单不应被兜底提前创建付款运行: %d", runCount)
+	}
 }
 
 // catchupRun 为订单写入一条 order_paid 运行记录并返回运行主键。

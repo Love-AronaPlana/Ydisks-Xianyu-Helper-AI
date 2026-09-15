@@ -116,6 +116,7 @@ type updateCookieSettingsRequest struct {
 	Remark        *string  `json:"remark"`
 	AutoConfirm   *bool    `json:"auto_confirm"`
 	AutoConsign   *bool    `json:"auto_consign"`
+	AutoBargain   *bool    `json:"auto_bargain"`
 	PauseDuration *int     `json:"pause_duration"`
 	Username      *string  `json:"username"`
 	LoginPassword *string  `json:"login_password"`
@@ -226,7 +227,7 @@ func (s *Server) updateCookieSettings(w http.ResponseWriter, r *http.Request) {
 	// settingsResult、err 保存应用服务返回的暂停截止时间、补偿错误和主写入错误。
 	settingsResult, err := s.accountSettingsApplication().UpdateSettings(r.Context(), accountapp.SettingsUpdateInput{
 		UserID: ownedDetail.UserID, AccountID: cid, Cookie: req.Cookie, Remark: req.Remark,
-		AutoConfirm: req.AutoConfirm, AutoConsign: req.AutoConsign, PauseDuration: req.PauseDuration, Username: req.Username,
+		AutoConfirm: req.AutoConfirm, AutoConsign: req.AutoConsign, AutoBargain: req.AutoBargain, PauseDuration: req.PauseDuration, Username: req.Username,
 		Password: password, ShowBrowser: req.ShowBrowser, ChannelIDs: req.ChannelIDs,
 	})
 	if err != nil {
@@ -294,6 +295,7 @@ func (s *Server) listCookieDetails(w http.ResponseWriter, r *http.Request) {
 			Enabled:           statusErr == nil && enabled,
 			AutoConfirm:       summary.AutoConfirm,
 			AutoConsign:       summary.AutoConsign,
+			AutoBargain:       summary.AutoBargain,
 			Remark:            summary.Remark,
 			PauseDuration:     summary.PauseDuration,
 			PausedUntil:       summary.PausedUntil,
@@ -342,6 +344,7 @@ func (s *Server) getCookieDetails(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, cookieDetailResponse{
 		ID: summary.ID, Enabled: statusErr == nil && enabled, AutoConfirm: summary.AutoConfirm,
 		AutoConsign: summary.AutoConsign,
+		AutoBargain: summary.AutoBargain,
 		Remark:      summary.Remark, PauseDuration: summary.PauseDuration, PausedUntil: summary.PausedUntil,
 		Paused: summary.PausedUntil > time.Now().UTC().Unix(), ShowBrowser: summary.ShowBrowser,
 		Username: summary.Username, Nickname: cachedCookieSummaryNickname(summary), AvatarURL: summary.AvatarURL,
