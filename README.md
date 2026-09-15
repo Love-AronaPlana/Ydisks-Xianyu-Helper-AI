@@ -18,9 +18,6 @@ is available for the primary Chinese-speaking Xianyu community.
 > This project is for personal technical learning and research only. It has no official authorization from Xianyu
 > or Alibaba.
 >
-> This project uses Xianyu’s non-public web-facing interfaces. Using it may violate the Xianyu user agreement and
-> may cause an account to be restricted or banned.
->
 > This is an unofficial community tool and has no affiliation, partnership, or authorization relationship with Xianyu,
 > Alibaba Group, or their affiliates.
 >
