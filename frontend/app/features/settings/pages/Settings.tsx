@@ -244,9 +244,9 @@ const Settings: React.FC = () => {
                     type="button"
                     onClick={testConnection}
                     disabled={connectionTestLoading}
-                    className="px-4 py-3 rounded-xl bg-amber-50 text-amber-700 hover:bg-amber-100 disabled:opacity-60 font-bold flex items-center justify-center gap-2 whitespace-nowrap border border-amber-200"
+                    className="px-4 py-3 rounded-xl bg-gray-100 text-gray-700 hover:bg-gray-200 disabled:opacity-60 font-bold flex items-center justify-center gap-2 whitespace-nowrap cursor-pointer"
                   >
-                    <Zap className={`w-4 h-4 ${connectionTestLoading ? 'animate-pulse' : ''}`} />
+                    <Zap className={`w-4 h-4 ${connectionTestLoading ? 'animate-spin' : ''}`} />
                     测试连接
                   </button>
                 </div>
