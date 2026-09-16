@@ -645,18 +645,17 @@ func TestParseItemListNumericFields(t *testing.T) {
 	}
 }
 
-// TestParseItemListReadsMultiSpecFromCardData 验证商品列表卡片内的 SKU 结构会直接生成同步所需的多规格标记。
+// TestParseItemListReadsMultiSpecFromCardData 验证商品列表卡片只要包含 isSKU 字段就会生成多规格标记。
 func TestParseItemListReadsMultiSpecFromCardData(t *testing.T) {
-	// data 模拟商品列表接口同时返回商品基础字段和多规格 SKU 卡片数据。
+	// data 模拟商品列表接口同时返回商品基础字段和多规格标记。
 	data := map[string]any{
 		"cardList": []any{
 			map[string]any{
 				"cardType": 1,
 				"cardData": map[string]any{
-					"detailParams": map[string]any{"itemId": "list-sku-item"},
 					"title":        "列表多规格商品",
 					"priceInfo":    map[string]any{"price": "18", "preText": "¥"},
-					"skuDO":        map[string]any{"skuProperties": []any{map[string]any{"name": "套餐"}}, "skuList": []any{map[string]any{"id": "basic"}, map[string]any{"id": "pro"}}},
+					"detailParams": map[string]any{"itemId": "list-sku-item", "isSKU": false},
 				},
 			},
 		},
@@ -665,6 +664,24 @@ func TestParseItemListReadsMultiSpecFromCardData(t *testing.T) {
 	items := parseItemList(data)
 	if len(items) != 1 || items[0].ID != "list-sku-item" || items[0].Title != "列表多规格商品" || items[0].PriceText != "¥18" || !items[0].IsMultiSpec {
 		t.Fatalf("列表多规格字段解析异常 items=%+v", items)
+	}
+}
+
+// TestParseItemListTreatsMissingSKUFieldAsSingleSpec 验证列表卡片缺少 isSKU 字段时按普通单规格处理。
+func TestParseItemListTreatsMissingSKUFieldAsSingleSpec(t *testing.T) {
+	// data 模拟已从多规格改为普通商品后的列表卡片，保留其他商品字段但移除 isSKU。
+	data := map[string]any{
+		"cardList": []any{map[string]any{
+			"cardData": map[string]any{
+				"detailParams": map[string]any{"itemId": "list-single-item"},
+				"title":        "列表普通商品",
+			},
+		}},
+	}
+	// items 保存列表卡片解析得到的商品同步模型。
+	items := parseItemList(data)
+	if len(items) != 1 || items[0].ID != "list-single-item" || items[0].IsMultiSpec {
+		t.Fatalf("缺少 isSKU 的商品不应标记为多规格 items=%+v", items)
 	}
 }
 

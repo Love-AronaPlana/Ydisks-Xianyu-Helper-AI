@@ -438,8 +438,19 @@ func parseItemList(data map[string]any) []ItemListItem {
 			ItemDetail:  string(detailJSON),
 			AuctionType: mtopString(cardData["auctionType"]),
 			ItemStatus:  mtopInt(cardData["itemStatus"]),
-			IsMultiSpec: detectItemMultiSpec(cardData),
+			IsMultiSpec: hasItemSKUField(detailParams),
 		})
 	}
 	return items
+}
+
+// hasItemSKUField 判断商品列表卡片的 detailParams 是否包含平台多规格标记。
+// 列表接口用 isSKU 字段的存在表示多规格商品；字段缺失表示普通单规格商品，字段值本身不参与判断。
+func hasItemSKUField(detailParams map[string]any) bool {
+	if detailParams == nil {
+		return false
+	}
+	// exists 表示列表卡片是否明确携带 isSKU 字段。
+	_, exists := detailParams["isSKU"]
+	return exists
 }

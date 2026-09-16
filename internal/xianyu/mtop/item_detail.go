@@ -1,4 +1,4 @@
-// Package mtop: 商品详情域 — 补充商品列表未返回的多规格信息。
+// Package mtop: 商品详情域 — 提供显式商品详情与发布人信息查询能力。
 package mtop
 
 import (
@@ -15,7 +15,7 @@ import (
 	"xianyu-go/internal/xianyu/protocol"
 )
 
-// ItemDetailFetcher 是商品同步使用的可选详情能力。
+// ItemDetailFetcher 是显式调用商品详情多规格探测的可选能力；商品同步直接使用列表标记，不依赖该接口。
 type ItemDetailFetcher interface {
 	DetectItemMultiSpec(ctx context.Context, cookies, itemID string) (bool, error)
 }
