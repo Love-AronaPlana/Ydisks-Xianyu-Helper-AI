@@ -30,6 +30,7 @@ func TestOpenAPIRemainingVersionedSuccessResponses(t *testing.T) {
 	t.Run("initialize", testOpenAPISessionInitializeSuccess)
 	t.Run("long-login", testOpenAPILongLoginSuccess)
 	t.Run("ai-models", testOpenAPIAIModelsSuccess)
+	t.Run("ai-test", testOpenAPIAITestSuccess)
 	t.Run("cards-batch", testOpenAPICardsBatchSuccess)
 	t.Run("chat-history-and-read", testOpenAPIChatHistoryAndReadSuccess)
 	t.Run("chat-metadata", testOpenAPIChatMetadataSuccess)
@@ -128,6 +129,31 @@ func testOpenAPIAIModelsSuccess(t *testing.T) {
 	sessionCookie := loginHelper(t, handler)
 	// request 是指向本地模型替身的版本化 AI 模型请求。
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/settings/ai-models", strings.NewReader(`{"base_url":"`+modelServer.URL+`","api_key":"test-key"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.AddCookie(sessionCookie)
+	// recorder 保存真实代理成功响应。
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	assertOpenAPIRecordedSuccessResponse(t, request, recorder)
+}
+
+// testOpenAPIAITestSuccess 覆盖 AI 连接测试的本地成功响应。
+func testOpenAPIAITestSuccess(t *testing.T) {
+	// chatServer 模拟兼容 OpenAI 的 chat completion 端点。
+	chatServer := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+		responseWriter.Header().Set("Content-Type", "application/json")
+		_, _ = responseWriter.Write([]byte(`{"choices":[{"message":{"content":"你好！有什么可以帮你的？"}}]}`))
+	}))
+	defer chatServer.Close()
+	// srv、_、cleanup 分别是服务、无需直接读取的存储和资源释放函数。
+	srv, _, cleanup := newTestServer(t)
+	defer cleanup()
+	// handler 是当前场景的真实 Router。
+	handler := srv.Router()
+	// sessionCookie 是访问管理员连接测试所需的认证会话。
+	sessionCookie := loginHelper(t, handler)
+	// request 是指向本地 chat 替身的版本化 AI 连接测试请求。
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/settings/ai-test", strings.NewReader(`{"base_url":"`+chatServer.URL+`","api_key":"test-key","model":"contract-model"}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.AddCookie(sessionCookie)
 	// recorder 保存真实代理成功响应。

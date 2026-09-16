@@ -6628,6 +6628,54 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  "/api/v1/settings/ai-test":
+    post:
+      operationId: postApiV1SettingsAiTest
+      summary: postApiV1SettingsAiTest
+      security: [{cookieAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AIConnectionTestRequest'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIConnectionTestResponse'
+        '400':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   "/api/v1/settings/ai-reply":
     get:
       operationId: getApiV1SettingsAiReply
@@ -8266,6 +8314,28 @@ components:
           type: array
           items:
             type: string
+    AIConnectionTestRequest:
+      type: object
+      required: [base_url]
+      properties:
+        base_url:
+          type: string
+        api_key:
+          type: string
+        model:
+          type: string
+    AIConnectionTestResponse:
+      type: object
+      required: [success, model, latency_ms, reply]
+      properties:
+        success:
+          type: boolean
+        model:
+          type: string
+        latency_ms:
+          type: integer
+        reply:
+          type: string
     SecretSettingChange:
       type: object
       required: [action]

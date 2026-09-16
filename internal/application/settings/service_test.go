@@ -197,6 +197,12 @@ func (c *modelClientFake) Fetch(context.Context, string, string) ([]string, erro
 	return []string{"qwen-plus"}, nil
 }
 
+// TestConnection 返回固定连接测试结果并记录调用次数。
+func (c *modelClientFake) TestConnection(context.Context, string, string, string) (AIConnectionTestResult, error) {
+	c.calls++
+	return AIConnectionTestResult{Model: "qwen-plus", LatencyMS: 42, Reply: "你好"}, nil
+}
+
 // TestServiceApplySystemChangesAuditsSecrets 验证敏感系统设置写入先审计再进入 Port。
 func TestServiceApplySystemChangesAuditsSecrets(t *testing.T) {
 	// repository 保存测试设置 Port。

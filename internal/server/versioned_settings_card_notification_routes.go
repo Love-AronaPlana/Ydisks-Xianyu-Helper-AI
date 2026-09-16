@@ -20,6 +20,7 @@ func (s *Server) mountVersionedSettingsCardNotificationRoutes(r chi.Router) {
 		r.Put("/api/v1/settings/system", s.setSettings)
 		r.Put("/api/v1/settings/system/{key}", s.setSetting)
 		r.Post("/api/v1/settings/ai-models", s.listAIModels)
+		r.Post("/api/v1/settings/ai-test", s.testAIConnection)
 		r.Get("/api/v1/admin/notifications/outbox/uncertain", s.listAdminUncertainNotifications)
 	})
 

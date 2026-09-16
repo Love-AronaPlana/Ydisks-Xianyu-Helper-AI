@@ -1,7 +1,7 @@
 import type { OperationResponse,SystemSettings } from './models';
 import { contractClient, runContractRequest } from '../../../shared/api-contract/client';
 import { normalizeSystemSettingsUpdate,SENSITIVE_SYSTEM_SETTING_KEYS } from '../../../shared/api-contract/settings';
-import { type RequestControlOptions } from '../../../shared/http/client';
+import { post, type RequestControlOptions } from '../../../shared/http/client';
 import type { SystemSettingsUpdate } from '../../../shared/api-contract/settings';
 export type * from './models';
 export { normalizeSystemSettingsUpdate } from '../../../shared/api-contract/settings';
@@ -74,6 +74,22 @@ export const fetchAIModels = async (baseURL: string, apiKey = '', options?: Requ
   }), options);
   return Array.isArray(response.models) ? response.models : [];
 };
+
+/** AI 连接测试结果。 */
+export interface AIConnectionTestResult {
+  /** 测试是否成功。 */
+  success: boolean;
+  /** 实际被测试的模型名称。 */
+  model: string;
+  /** 请求耗时毫秒数。 */
+  latency_ms: number;
+  /** 模型回复摘要。 */
+  reply: string;
+}
+
+/** 发送一次最小对话请求验证 AI API 地址、密钥和模型的组合是否可用。 */
+export const testAIConnection = async (baseURL: string, apiKey: string, model: string, options?: RequestControlOptions): Promise<AIConnectionTestResult> =>
+  post<AIConnectionTestResult>('/api/v1/settings/ai-test', { base_url: baseURL, api_key: apiKey, model }, { timeoutMs: 60_000, ...options });
 
 /** 在保存登录凭据前读取当前会话状态。 */
 export const verifySession = async (options?: RequestControlOptions): Promise<SettingsSessionStatusResponse> =>

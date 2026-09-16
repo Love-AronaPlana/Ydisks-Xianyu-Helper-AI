@@ -54,6 +54,16 @@ type aiModelListRequest struct {
 	APIKey string `json:"api_key"`
 }
 
+// aiConnectionTestRequest 是 AI 连接测试的 HTTP 请求 DTO。
+type aiConnectionTestRequest struct {
+	// BaseURL 是目标 AI 服务的基础地址。
+	BaseURL string `json:"base_url"`
+	// APIKey 是仅在请求作用域内转交给适配器的访问密钥。
+	APIKey string `json:"api_key"`
+	// Model 是要测试的模型名称，为空时使用系统设置中的 ai_model。
+	Model string `json:"model"`
+}
+
 // userSettingUpdateRequest 是保存用户范围设置的 HTTP 请求 DTO。
 type userSettingUpdateRequest struct {
 	// Value 是需要持久化的用户设置值。
@@ -68,6 +78,7 @@ func (s *Server) mountSettingsReal(r chi.Router) {
 		r.Put("/system-settings", s.setSettings)
 		r.Put("/system-settings/{key}", s.setSetting)
 		r.Post("/ai-models", s.listAIModels)
+		r.Post("/ai-test", s.testAIConnection)
 	})
 }
 
@@ -473,6 +484,31 @@ func (s *Server) listAIModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, aiModelsResponse{Models: models})
+}
+
+// testAIConnection 发送一次最小对话请求验证 AI API 地址、密钥和模型的组合是否可用。
+func (s *Server) testAIConnection(w http.ResponseWriter, r *http.Request) {
+	var req aiConnectionTestRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	sess := authSess(r)
+	if sess == nil {
+		writeErr(w, http.StatusInternalServerError, "审计失败")
+		return
+	}
+	result, err := s.settingsApplication().TestAIConnection(r.Context(), sess.UserID, req.BaseURL, req.APIKey, req.Model)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, aiConnectionTestResponse{
+		Success:   true,
+		Model:     result.Model,
+		LatencyMS: result.LatencyMS,
+		Reply:     result.Reply,
+	})
 }
 
 // ---- 用户设置 ----

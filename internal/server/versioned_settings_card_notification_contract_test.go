@@ -54,6 +54,7 @@ func TestVersionedSettingsCardNotificationRoutesPreserveLegacyContracts(t *testi
 		{name: "system-settings-bulk", method: http.MethodPut, versionedPath: "/api/v1/settings/system", legacyPath: "/system-settings", body: `{}`, wantStatus: http.StatusBadRequest},
 		{name: "system-settings-key", method: http.MethodPut, versionedPath: "/api/v1/settings/system/theme_color", legacyPath: "/system-settings/theme_color", body: `{"value":"blue"}`, wantStatus: http.StatusOK},
 		{name: "ai-models-invalid", method: http.MethodPost, versionedPath: "/api/v1/settings/ai-models", legacyPath: "/ai-models", body: `not-json`, wantStatus: http.StatusBadRequest},
+		{name: "ai-test-invalid", method: http.MethodPost, versionedPath: "/api/v1/settings/ai-test", legacyPath: "/ai-test", body: `not-json`, wantStatus: http.StatusBadRequest},
 		{name: "ai-reply-list", method: http.MethodGet, versionedPath: "/api/v1/settings/ai-reply", legacyPath: "/ai-reply-settings", wantStatus: http.StatusOK},
 		{name: "ai-reply-missing", method: http.MethodGet, versionedPath: "/api/v1/settings/ai-reply/missing", legacyPath: "/ai-reply-settings/missing", wantStatus: http.StatusNotFound},
 		{name: "ai-reply-update-missing", method: http.MethodPut, versionedPath: "/api/v1/settings/ai-reply/missing", legacyPath: "/ai-reply-settings/missing", body: `{}`, wantStatus: http.StatusNotFound},
