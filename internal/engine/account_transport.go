@@ -144,6 +144,27 @@ func (a *Account) notifyTransportReady(ctx context.Context) {
 	}
 }
 
+// notifyInitialTransportReady 仅在本 Account 实例第一次成功注册 WebSocket 后异步通知订单同步端口。
+// 任务由 accountLifecycle 登记、取消和等待；断线重连不会重复发起平台请求，账号重启会构造新实例并获得一次新机会。
+func (a *Account) notifyInitialTransportReady() {
+	// handler、ok 保存支持首次传输就绪回调的可选业务端口。
+	handler, ok := a.handler.(initialTransportReadyHandler)
+	if !ok {
+		return
+	}
+	a.initialTransportReadyOnce.Do(func() {
+		// taskCtx、finish、accepted 分别表示账号生命周期拥有的同步上下文、结束登记和当前是否允许新任务。
+		taskCtx, finish, accepted := a.lifecycle.beginTask()
+		if !accepted {
+			return
+		}
+		go func() {
+			defer finish()
+			handler.OnInitialTransportReady(taskCtx, a.CookieID)
+		}()
+	})
+}
+
 // setRuntimeState 封装setRuntime状态业务协调。
 func (a *Account) setRuntimeState(state, message string) {
 	a.runtimeMu.Lock()

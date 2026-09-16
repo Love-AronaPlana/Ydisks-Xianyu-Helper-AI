@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"math/big"
 	"strings"
+	"sync"
 	"time"
 
 	"xianyu-go/internal/automation"
@@ -116,6 +117,12 @@ type credentialUpdateHandler interface {
 // transportReadyHandler 用于本次流程后续判断的transportReadyHandler
 type transportReadyHandler interface {
 	OnTransportReady(ctx context.Context, cookieID string)
+}
+
+// initialTransportReadyHandler 接收单个账号运行实例首次 WebSocket 注册完成事件。
+// 它只用于启动后订单同步，不能替代每次重连均需执行的 transportReadyHandler。
+type initialTransportReadyHandler interface {
+	OnInitialTransportReady(ctx context.Context, cookieID string)
 }
 
 // tokenCaptchaHandler 用于本次流程后续判断的令牌CaptchaHandler
@@ -239,6 +246,8 @@ type Account struct {
 	accountRuntimeComponents
 	// accountDependencies 固定该账号运行时使用的基础设施和业务端口。
 	accountDependencies
+	// initialTransportReadyOnce 确保每个运行实例只在首次消息传输就绪后启动一次订单同步；重连不重复触发，重启会创建新实例。
+	initialTransportReadyOnce sync.Once
 }
 
 // debounceEntry 用于本次流程后续判断的debounceEntry

@@ -24,6 +24,11 @@ type discoveryRaceRepository struct {
 	deletes int
 }
 
+// GetOwnerID 返回并发发现测试中固定的非敏感账号所有者标识。
+func (r *discoveryRaceRepository) GetOwnerID(context.Context, string) (int64, error) {
+	return 7, nil
+}
+
 // LockCredentials 为 r 的 cookieID 返回独立锁的释放函数；调用方负责释放，不涉及平台 I/O。
 func (r *discoveryRaceRepository) LockCredentials(cookieID string) func() {
 	r.credentials[cookieID].Lock()

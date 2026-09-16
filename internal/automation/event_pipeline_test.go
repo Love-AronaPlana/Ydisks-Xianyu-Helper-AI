@@ -63,8 +63,8 @@ func TestEventFactRecorderWithoutOrderIsNoOp(t *testing.T) {
 	}
 }
 
-// TestEventFactRecorderPersistsPaidAndReviewedFacts 验证付款与评价事件会写入订单事实及对应事件时间。
-func TestEventFactRecorderPersistsPaidAndReviewedFacts(t *testing.T) {
+// TestEventFactRecorderPersistsPaidCompletedAndReviewedFacts 验证付款、确认收货与买家评价事件分别写入正确的订单事实和时间。
+func TestEventFactRecorderPersistsPaidCompletedAndReviewedFacts(t *testing.T) {
 	// ctx 保存本地数据库测试共用的上下文。
 	ctx := context.Background()
 	// database、dialect、openErr 保存内存隔离数据库的打开结果。
@@ -96,8 +96,18 @@ func TestEventFactRecorderPersistsPaidAndReviewedFacts(t *testing.T) {
 	if paidErr != nil {
 		t.Fatalf("付款事实写入失败: %v", paidErr)
 	}
+	// completedErr 保存买家确认收货事件事实写入错误；该事件负责把订单推进到已完成。
+	completedErr := recorder.record(ctx, Task{AccountID: "account-1", OrderID: "order-completed", ItemID: "item-2", BuyerID: "buyer-2", ChatID: "chat-2", TriggerType: TriggerOrderCompleted, OrderStatus: "completed", Quantity: "1", Amount: "3.00"})
+	if completedErr != nil {
+		t.Fatalf("确认收货事实写入失败: %v", completedErr)
+	}
+	// completedSeedErr 保存买家评价前“已完成”订单写入错误，验证评价事件不会重复推进订单阶段。
+	completedSeedErr := store.Orders.Upsert(ctx, "order-reviewed", db.OrderUpsertOpts{CookieID: "account-1", OrderStatus: "completed"})
+	if completedSeedErr != nil {
+		t.Fatalf("写入已完成订单失败: %v", completedSeedErr)
+	}
 	// reviewedErr 保存评价事件事实写入错误。
-	reviewedErr := recorder.record(ctx, Task{AccountID: "account-1", OrderID: "order-reviewed", ItemID: "item-2", BuyerID: "buyer-2", ChatID: "chat-2", TriggerType: TriggerBuyerReviewed, OrderStatus: "reviewed", Quantity: "1", Amount: "3.00"})
+	reviewedErr := recorder.record(ctx, Task{AccountID: "account-1", OrderID: "order-reviewed", ItemID: "item-2", BuyerID: "buyer-2", ChatID: "chat-2", TriggerType: TriggerBuyerReviewed, Quantity: "1", Amount: "3.00"})
 	if reviewedErr != nil {
 		t.Fatalf("评价事实写入失败: %v", reviewedErr)
 	}
@@ -106,9 +116,14 @@ func TestEventFactRecorderPersistsPaidAndReviewedFacts(t *testing.T) {
 	if paidReadErr != nil || paidOrder.PaidAt == "" {
 		t.Fatalf("付款订单事实异常 order=%+v err=%v", paidOrder, paidReadErr)
 	}
+	// completedOrder、completedReadErr 保存确认收货订单读取结果。
+	completedOrder, completedReadErr := store.Orders.Get(ctx, "order-completed")
+	if completedReadErr != nil || completedOrder.OrderStatus != "completed" || completedOrder.CompletedAt == "" {
+		t.Fatalf("确认收货订单事实异常 order=%+v err=%v", completedOrder, completedReadErr)
+	}
 	// reviewedOrder、reviewedReadErr 保存评价订单读取结果。
 	reviewedOrder, reviewedReadErr := store.Orders.Get(ctx, "order-reviewed")
-	if reviewedReadErr != nil || reviewedOrder.BuyerReviewedAt == "" {
+	if reviewedReadErr != nil || reviewedOrder.OrderStatus != "completed" || reviewedOrder.BuyerReviewedAt == "" {
 		t.Fatalf("评价订单事实异常 order=%+v err=%v", reviewedOrder, reviewedReadErr)
 	}
 	// paidSeedErr 保存付款事件错误分支预置订单的写入错误。

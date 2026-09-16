@@ -15,6 +15,7 @@
   --color-brand: 0 148 247;
   --color-brand-highlight: 0 113 227;
   --color-brand-light: 40 126 254;
+  --color-selection: 34 180 238;
 
   --color-ink: 29 29 31;
   --color-muted: 134 134 139;
@@ -400,8 +401,8 @@ body {
 
 /* 文本选择 */
 ::selection {
-  background: rgb(var(--color-brand));
-  color: rgb(var(--color-white));
+  background: rgb(var(--color-selection));
+  color: rgb(var(--color-ink));
 }
 
 /* 工具类 */

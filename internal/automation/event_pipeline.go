@@ -58,6 +58,11 @@ func (r eventFactRecorder) record(ctx context.Context, task Task) error {
 		err := r.store.Automation.MarkOrderEventTime(ctx, task.OrderID, "buyer_reviewed_at"); err != nil {
 			return fmt.Errorf("记录买家评价时间: %w", err)
 		}
+	case TriggerOrderCompleted:
+		if // err 保存买家确认收货后订单完成时间写入错误。
+		err := r.store.Automation.MarkOrderEventTime(ctx, task.OrderID, "completed_at"); err != nil {
+			return fmt.Errorf("记录订单完成时间: %w", err)
+		}
 	}
 	return nil
 }

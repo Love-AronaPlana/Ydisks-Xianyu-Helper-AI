@@ -22,6 +22,8 @@ type AccountTaskRepository interface {
 	Get(ctx context.Context, cookieID string) (db.AccountTaskSettings, error)
 	// Enabled 返回启用中的账号任务设置。
 	Enabled(ctx context.Context) ([]db.AccountTaskSettings, error)
+	// DueAutoRateOrderIDs 返回由本地买家确认收货事件确认、可消费的订单号。
+	DueAutoRateOrderIDs(ctx context.Context, cookieID string, limit int) ([]string, error)
 	// ClaimRun 抢占可重复执行的任务运行记录。
 	ClaimRun(ctx context.Context, run db.AccountTaskRun, now int64) (bool, error)
 	// ClaimRunImmediately 抢占人工立即执行的任务运行记录。
@@ -95,6 +97,11 @@ func (r storeAccountTaskRepository) Get(ctx context.Context, cookieID string) (d
 // Enabled 委托启用任务设置查询。
 func (r storeAccountTaskRepository) Enabled(ctx context.Context) ([]db.AccountTaskSettings, error) {
 	return r.store.AccountTasks.Enabled(ctx)
+}
+
+// DueAutoRateOrderIDs 委托读取本地买家确认收货事件确认的自动评价候选订单。
+func (r storeAccountTaskRepository) DueAutoRateOrderIDs(ctx context.Context, cookieID string, limit int) ([]string, error) {
+	return r.store.AccountTasks.DueAutoRateOrderIDs(ctx, cookieID, limit)
 }
 
 // ClaimRun 委托任务运行抢占。

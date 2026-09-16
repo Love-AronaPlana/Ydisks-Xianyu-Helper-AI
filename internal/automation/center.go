@@ -329,6 +329,10 @@ func (c *Center) handleTask(ctx context.Context, task Task) (bool, error) {
 	if task.TriggerType == TriggerBargainPending {
 		return c.handleBargainPending(ctx, task)
 	}
+	if task.TriggerType == TriggerOrderCompleted {
+		// 买家确认收货事件只更新本地订单完成事实，自动评价由账号任务扫描该事实后独立执行。
+		return true, nil
+	}
 	if task.TriggerType == TriggerOrderPaid && !task.ForceConfirmShipment {
 		// autoConfirm、autoConfirmErr 分别保存参考项目自动发货入口要求的账号开关和读取错误。
 		autoConfirm, autoConfirmErr := c.store.Cookies.GetAutoConfirm(ctx, task.AccountID)

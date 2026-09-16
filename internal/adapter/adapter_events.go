@@ -557,6 +557,20 @@ func (a *Adapter) OnTransportReady(ctx context.Context, cookieID string) {
 	a.wakeCredentialBlockedAutomation(ctx, cookieID)
 }
 
+// OnInitialTransportReady 在单个账号运行实例首次 WebSocket 注册完成后同步订单快照。
+// 同步由 engine 的账号生命周期任务拥有；失败只记录脱敏诊断，不阻断 WebSocket 消息接收或重连。
+func (a *Adapter) OnInitialTransportReady(ctx context.Context, cookieID string) {
+	// syncOrders 是构造期固定的订单同步回调，nil 保持隔离测试和未装配运行模式无副作用。
+	syncOrders := a.initialOrderSync
+	if syncOrders == nil {
+		return
+	}
+	// syncErr 保存首次连接订单同步的失败原因，不携带 Cookie、Token 等敏感请求数据。
+	if syncErr := syncOrders(ctx, cookieID); syncErr != nil {
+		a.logger.Warn("账号首次连接后的订单同步失败", "cookie_id", cookieID, "err", syncErr)
+	}
+}
+
 // beginPasswordLogin 兼容旧测试对账号恢复登记的访问；生产路径统一使用 account.CredentialRefreshCoordinator.Run。
 func (a *Adapter) beginPasswordLogin(cookieID string) bool {
 	if a.passwordCoordinator == nil {

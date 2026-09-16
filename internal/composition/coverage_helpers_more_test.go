@@ -137,11 +137,21 @@ func TestServicesBoundaryMethodsAreNilSafe(t *testing.T) {
 	if nilServices.UpdateRunningCookie(context.Background(), "account", "cookie") != nil {
 		t.Fatal("nil services should ignore cookie updates")
 	}
+	// nilSyncErr 保存未构造组合服务拒绝运行账号订单同步的错误。
+	nilSyncErr := nilServices.RefreshRuntimeAccount(context.Background(), "account")
+	if nilSyncErr == nil {
+		t.Fatal("nil services should reject runtime order sync")
+	}
 	if nilServices.RecoverExpiredCredential(context.Background(), "account") {
 		t.Fatal("nil services should not recover credentials")
 	}
 	// emptyServices 表示已分配但尚未填充应用服务字段的组合对象。
 	emptyServices := &Services{}
+	// emptySyncErr 保存缺少订单服务时运行账号订单同步的错误。
+	emptySyncErr := emptyServices.RefreshRuntimeAccount(context.Background(), "account")
+	if emptySyncErr == nil {
+		t.Fatal("empty services should reject runtime order sync")
+	}
 	// components 保存空组合服务应返回的生命周期组件列表。
 	if components := emptyServices.LifecycleComponents(); len(components) != 0 {
 		t.Fatalf("empty services components=%v", components)

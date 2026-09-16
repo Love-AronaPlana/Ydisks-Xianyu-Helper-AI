@@ -27,7 +27,6 @@ var errAccountTaskCredentialRenewed = errors.New("账号任务凭证已续期，
 
 // AccountTaskClient 用于本次流程后续判断的账号任务Client
 type AccountTaskClient interface {
-	FetchPendingRateOrders(ctx context.Context, cookiesStr string, page, pageSize int) (*mtop.PendingRateResult, error)
 	RateBuyer(ctx context.Context, cookiesStr, tradeID, feedback string) (*mtop.AccountTaskResult, error)
 	FetchAllItems(ctx context.Context, cookiesStr string, pageSize, maxPages int) (*mtop.ItemListResult, error)
 	PolishItem(ctx context.Context, cookiesStr, itemID string) (*mtop.AccountTaskResult, error)
@@ -354,50 +353,43 @@ func newAccountTaskCompensationContext(parent context.Context) (context.Context,
 	return context.WithTimeout(context.WithoutCancel(parent), 5*time.Second)
 }
 
-// runAutoRate 执行自动评价任务，并在明确的单值 Cookie 查询边界内调用平台 API。
+// runAutoRate 只消费 WebSocket 已确认收货的本地完成订单；它不会以远端 MTOP 列表扫描发现候选订单。
 func (c *accountTaskCoordinator) runAutoRate(ctx context.Context, settings db.AccountTaskSettings) (AccountTaskSummary, error) {
 	// summary 用于本次流程后续判断的summary
 	summary := AccountTaskSummary{TaskType: TaskAutoRate}
+	if c.repository == nil {
+		return summary, fmt.Errorf("账号任务存储未初始化")
+	}
+	// orderIDs、err 保存本地买家已确认收货候选订单及读取错误；该读取不触达闲鱼平台。
+	orderIDs, err := c.repository.DueAutoRateOrderIDs(ctx, settings.CookieID, 200)
+	if err != nil {
+		return summary, fmt.Errorf("读取本地已评价订单: %w", err)
+	}
+	summary.Found = len(orderIDs)
+	if len(orderIDs) == 0 {
+		// err 保存本地候选为空时写入扫描时间的错误。
+		if err := c.repository.MarkRateScan(ctx, settings.CookieID, time.Now().UTC().Unix()); err != nil {
+			return summary, fmt.Errorf("保存自动评价本地扫描时间: %w", err)
+		}
+		return summary, nil
+	}
 	if c.client() == nil {
 		return summary, fmt.Errorf("自动评价客户端未初始化")
 	}
-	// credential、err 保存本轮任务使用的 Cookie 会话及其读取错误。
+	// credential、err 保存仅在存在本地候选订单时才读取的 Cookie 会话及其读取错误。
 	credential, err := c.openAccountTaskCredentialSession(ctx, settings.CookieID)
 	if err != nil {
 		return summary, err
 	}
 	// current 保存本轮任务当前可继续使用的扁平 Cookie。
 	current := credential.cookieValue
-	// orders 用于本次流程后续判断的订单列表
-	var orders []mtop.PendingRateOrder
-	for // page 用于本次流程后续判断的页码
-	page := 1; page <= 20; page++ {
-		// pending、err 用于本次流程后续判断的pending、err
-		pending, err := c.client().FetchPendingRateOrders(credential.requestContext, current, page, 50)
-		if err != nil {
-			// persistErr 保存列表请求失败前已吸收的响应 Cookie 写回错误。
-			_, persistErr := c.persistTaskCookieSession(ctx, settings.CookieID, current, "", &credential)
-			return summary, errors.Join(err, persistErr)
-		}
-		// updatedCookies 保存扫描接口返回的最新 Cookie；cookieErr 表示同步该 Cookie 时的持久化错误。
-		updatedCookies, cookieErr := c.persistTaskCookieSession(ctx, settings.CookieID, current, pending.UpdatedCookies, &credential)
-		if cookieErr != nil {
-			return summary, cookieErr
-		}
-		current = updatedCookies
-		orders = append(orders, pending.Orders...)
-		if len(pending.Orders) < 50 {
-			break
-		}
-	}
-	summary.Found = len(orders)
-	// order 表示当前遍历过程中的订单
-	for _, order := range orders {
+	// orderID 表示当前由买家确认收货 WebSocket 确认、可执行评价动作的订单。
+	for _, orderID := range orderIDs {
 		// runKey 用于本次流程后续判断的运行Key
-		runKey := "rate:" + settings.CookieID + ":" + order.TradeID
+		runKey := "rate:" + settings.CookieID + ":" + orderID
 		// claimed、err 用于本次流程后续判断的claimed、err
 		claimed, err := c.repository.ClaimRun(ctx, db.AccountTaskRun{RunKey: runKey, CookieID: settings.CookieID,
-			TaskType: TaskAutoRate, TargetID: order.TradeID}, time.Now().UTC().Unix())
+			TaskType: TaskAutoRate, TargetID: orderID}, time.Now().UTC().Unix())
 		if err != nil {
 			return summary, err
 		}
@@ -406,7 +398,7 @@ func (c *accountTaskCoordinator) runAutoRate(ctx context.Context, settings db.Ac
 			continue
 		}
 		// result、rateErr 用于本次流程后续判断的result、rateErr
-		result, rateErr := c.client().RateBuyer(credential.requestContext, current, order.TradeID, settings.RateContent)
+		result, rateErr := c.client().RateBuyer(credential.requestContext, current, orderID, settings.RateContent)
 		if rateErr != nil || result == nil || !result.Success {
 			// persistErr 保存动作失败前已收到的响应 Cookie，避免平台已轮换凭证却被错误路径丢弃。
 			_, persistErr := c.persistTaskCookieSession(ctx, settings.CookieID, current, "", &credential)
@@ -431,7 +423,7 @@ func (c *accountTaskCoordinator) runAutoRate(ctx context.Context, settings db.Ac
 				return summary, errors.Join(rateErr, persistErr)
 			}
 			// Token 内部刷新耗尽后停止当前批次，避免继续用失效签名请求其它订单；不触发账号续期。
-			if mtop.IsSessionExpiredErr(rateErr) || mtop.IsMTopTokenExpiredErr(rateErr) {
+			if mtop.IsSessionExpiredErr(rateErr) || mtop.IsMTopTokenExpiredErr(rateErr) || mtop.IsRiskVerificationErr(rateErr) {
 				return summary, rateErr
 			}
 			continue

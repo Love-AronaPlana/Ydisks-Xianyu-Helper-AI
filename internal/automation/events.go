@@ -19,6 +19,8 @@ import (
 const (
 	TriggerOrderCreated = "order_created"
 	TriggerOrderPaid    = "order_paid"
+	// TriggerOrderCompleted 表示买家确认收货后平台发出的完成交易系统提示；仅用于更新本地订单事实。
+	TriggerOrderCompleted = "order_completed"
 	// TriggerBargainPending 表示砍价“我已小刀，待刀成”系统阶段；它不是用户可配置规则触发器。
 	TriggerBargainPending       = "bargain_pending"
 	TriggerBuyerReviewed        = "buyer_reviewed"
@@ -117,6 +119,9 @@ func ExtractTaskFromWS(accountID, cookieStr string, raw map[string]any) *Task {
 		task.TriggerType = TriggerOrderPaid
 	case isOrderCreatedEvent(f):
 		task.TriggerType = TriggerOrderCreated
+	case isOrderCompletedEvent(f):
+		task.TriggerType = TriggerOrderCompleted
+		task.OrderStatus = "completed"
 	case isBuyerReviewedEvent(f):
 		task.TriggerType = TriggerBuyerReviewed
 	default:
@@ -518,6 +523,16 @@ func isOrderCreatedEvent(f rawFields) bool {
 	return strings.Contains(f.text, "我已拍下") ||
 		strings.Contains(f.text, "已拍下，待付款") ||
 		strings.Contains(f.redReminder, "等待买家付款")
+}
+
+// isOrderCompletedEvent 判定卖家收到的买家确认收货系统提醒；contentType=25 是该类平台卡片的稳定协议标识。
+func isOrderCompletedEvent(f rawFields) bool {
+	if f.orderRole == "buyer" || !isSystemEvent(f) || strings.TrimSpace(f.contentType) != "25" {
+		return false
+	}
+	// message 汇总平台卡片展示字段，只接受确认收货后的固定评价提醒，避免把普通评价文案误记为订单完成。
+	message := strings.Join([]string{f.text, f.redReminder, f.reminderNotice, f.title, f.detail, f.taskName, f.cardTitle}, "\n")
+	return strings.Contains(message, "快给ta一个评价吧") || strings.Contains(message, "买家已确认收货")
 }
 
 // isPriceModifiedEvent 判断卖家改价后的确认卡片，避免它沿用“等待买家付款”文案时被重复识别为拍下事件。

@@ -270,6 +270,17 @@ func (services *Services) UpdateRunningCookie(ctx context.Context, accountID, va
 	return services.accountRuntime.UpdateCookie(ctx, accountID, value)
 }
 
+// RefreshRuntimeAccount 在账号运行实例首次连接闲鱼消息服务后同步该账号订单。
+// 该入口只供进程组合期注入的运行时回调使用，不是 HTTP 用户接口；订单服务内部仍会以非敏感账号归属复核用户范围。
+func (services *Services) RefreshRuntimeAccount(ctx context.Context, accountID string) error {
+	if services == nil || services.orders == nil || services.orders.Refresh == nil {
+		return errors.New("订单运行时同步服务未初始化")
+	}
+	// refreshErr 保存订单同步失败原因；同步摘要已通过持久化完成，无需在连接回调中返回给 HTTP。
+	_, refreshErr := services.orders.Refresh.RefreshRuntimeAccount(ctx, accountID)
+	return refreshErr
+}
+
 // RecoverExpiredCredential 将已确认的会话失效转交给账号运行时恢复。
 func (services *Services) RecoverExpiredCredential(ctx context.Context, accountID string) bool {
 	return services != nil && services.accountRuntime != nil && services.accountRuntime.RecoverExpiredCredential(ctx, accountID)

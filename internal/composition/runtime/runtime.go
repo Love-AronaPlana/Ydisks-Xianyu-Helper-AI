@@ -51,13 +51,22 @@ func BuildRuntime(options RuntimeOptions, infrastructure RuntimeInfrastructure) 
 	if infrastructure.Store == nil || infrastructure.Logger == nil {
 		return Runtime{}, fmt.Errorf("组合根基础设施不完整")
 	}
+	// services 在全部组合完成前保持 nil；首次连接回调只会在生命周期启动后触发，因此不会观察到半初始化服务。
+	var services *composition.Services
+	// initialOrderSync 是账号首次消息传输就绪后的订单同步回调，失败交给 Adapter 记录，不影响连接。
+	initialOrderSync := func(ctx context.Context, accountID string) error {
+		if services == nil {
+			return fmt.Errorf("订单运行时同步服务尚未完成装配")
+		}
+		return services.RefreshRuntimeAccount(ctx, accountID)
+	}
 	// browserManager 是可选 Chromium 生命周期拥有者；禁用浏览器时保持 nil。
 	var browserManager *browser.Manager
 	if !options.NoBrowser {
 		browserManager = browser.NewManager(infrastructure.Logger)
 	}
 	// runtimeBundle、bundleErr 分别是账号运行时依赖集合及其构造失败原因。
-	runtimeBundle, bundleErr := adapter.NewRuntimeBundle(infrastructure.Store, browserManager, infrastructure.Logger)
+	runtimeBundle, bundleErr := adapter.NewRuntimeBundle(infrastructure.Store, browserManager, infrastructure.Logger, initialOrderSync)
 	if bundleErr != nil {
 		return Runtime{}, fmt.Errorf("构造账号运行时依赖失败: %w", bundleErr)
 	}
@@ -153,8 +162,6 @@ func BuildRuntime(options RuntimeOptions, infrastructure RuntimeInfrastructure) 
 	if transportErr != nil {
 		return Runtime{}, fmt.Errorf("构造 transport 应用服务失败: %w", transportErr)
 	}
-	// services 是完成构造后才供回调使用的应用服务集合，构造期保持 nil 防止半初始化调用。
-	var services *composition.Services
 	// updateRunningCookie 将平台返回的新 Cookie 同步到运行时；值不记录到日志。
 	updateRunningCookie := func(ctx context.Context, accountID, value string) {
 		if services == nil {

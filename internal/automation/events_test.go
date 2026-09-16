@@ -50,6 +50,25 @@ func TestExtractTaskFromWS_BuyerReviewedUsesBusinessKeyAcrossCopyVariants(t *tes
 	}
 }
 
+// TestExtractTaskFromWS_OrderCompleted 验证确认收货后的官方评价提醒会推进本地订单完成事实，而不是被当作买家评价赠品事件。
+func TestExtractTaskFromWS_OrderCompleted(t *testing.T) {
+	// raw 保存带订单跳转链接和 contentType=25 的卖家侧确认收货系统卡片。
+	raw := mustMap(t, `{
+	  "1":{"2":"60000000001@goofish","7":1,"10":{
+	    "reminderContent":"快给ta一个评价吧～",
+	    "reminderTitle":"买家已确认收货",
+	    "senderUserId":"buyer-3",
+	    "reminderUrl":"fleamarket://order_detail?id=3310145690545023995&role=seller&peerUserId=buyer-3&sid=60000000001",
+	    "extJson":"{\"contentType\":\"25\"}"
+	  }}
+	}`)
+	// task 保存从确认收货系统卡片解析出的本地订单事实任务。
+	task := ExtractTaskFromWS("acc1", "cookie", raw)
+	if task == nil || task.TriggerType != TriggerOrderCompleted || task.OrderStatus != "completed" || task.OrderID != "3310145690545023995" {
+		t.Fatalf("确认收货任务解析错误: %+v", task)
+	}
+}
+
 // TestExtractTaskFromWS_ServiceReviewInvitationIgnored 封装TestExtract任务FromWSServiceReviewInvitationIgnored业务协调。
 func TestExtractTaskFromWS_ServiceReviewInvitationIgnored(t *testing.T) {
 	// raw 用于本次流程后续判断的原始

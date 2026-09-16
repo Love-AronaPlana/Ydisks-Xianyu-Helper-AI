@@ -245,6 +245,7 @@ func (c *connectionCoordinator) markConnectionOnline(ctx context.Context, conn W
 	a.runtimeMu.Unlock()
 	a.setRuntimeState(RuntimeOnline, "消息服务连接正常")
 	a.notifyTransportReady(ctx)
+	a.notifyInitialTransportReady()
 	if shouldRecovered {
 		a.alertEvent(ctx, EventAccountRecovered, AlertLevelInfo, "账号已恢复在线", fmt.Sprintf("账号 %s 已重新连接闲鱼消息服务。掉线开始时间：%s。", a.CookieID, formatTimeOrUnknown(offlineSince)))
 	}

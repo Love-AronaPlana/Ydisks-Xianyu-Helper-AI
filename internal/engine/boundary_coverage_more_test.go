@@ -24,6 +24,19 @@ func (h *transportReadyCoverageHandler) OnTransportReady(context.Context, string
 	h.calls++
 }
 
+// initialTransportReadyCoverageHandler 覆盖每个账号运行实例首次传输就绪后的订单同步回调。
+type initialTransportReadyCoverageHandler struct {
+	// Handler 嵌入基础处理器接口，避免本测试重复实现无关回调。
+	Handler
+	// called 在首次回调实际运行时发送上下文，供测试确认生命周期拥有关系。
+	called chan context.Context
+}
+
+// OnInitialTransportReady 将后台同步任务上下文发送给测试等待者。
+func (h *initialTransportReadyCoverageHandler) OnInitialTransportReady(ctx context.Context, _ string) {
+	h.called <- ctx
+}
+
 // noRefreshCoverageHandler 覆盖密码登录续期明确失败的 token 错误分支。
 type noRefreshCoverageHandler struct {
 	// recordingHandler 提供账号运行所需的基础业务回调。
@@ -81,6 +94,35 @@ func TestReleaseReliabilityTokenRequiresSigningRotation(t *testing.T) {
 	if retry || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("签名未轮换时不应立即重连: retry=%v err=%v", retry, err)
 	}
+}
+
+// TestInitialTransportReadyRunsOnceAndJoinsLifecycle 验证首次连接同步异步执行一次、重连不重复，并受账号停止生命周期管理。
+func TestInitialTransportReadyRunsOnceAndJoinsLifecycle(t *testing.T) {
+	// handler 保存接收首次传输就绪任务的可选回调。
+	handler := &initialTransportReadyCoverageHandler{called: make(chan context.Context, 2)}
+	// account 保存测试单账号运行实例。
+	account := New(Config{CookieID: "initial-ready", Handler: handler})
+	// runCtx、cancel 是账号运行时生命周期上下文和其关闭函数。
+	runCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	account.lifecycle.start(runCtx, cancel)
+	account.notifyInitialTransportReady()
+	account.notifyInitialTransportReady()
+	select {
+	// taskCtx 是首次连接同步任务继承的账号生命周期上下文。
+	case taskCtx := <-handler.called:
+		if taskCtx == nil || taskCtx.Err() != nil {
+			t.Fatal("首次传输就绪任务没有收到有效账号生命周期上下文")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("首次传输就绪没有启动订单同步任务")
+	}
+	select {
+	case <-handler.called:
+		t.Fatal("同一运行实例的重连重复启动了订单同步")
+	case <-time.After(50 * time.Millisecond):
+	}
+	account.Stop()
 }
 
 // TestReleaseReliabilityTokenRefreshIsBounded 验证连续 Token 失效只退避，不能调用账号级续期；t 管理本地测试资源。

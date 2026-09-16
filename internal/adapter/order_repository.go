@@ -13,6 +13,11 @@ type OrderRepository struct {
 	store *db.Store
 }
 
+// GetOwnerID 查询运行账号所属用户标识，不读取或解密账号平台凭证。
+func (r OrderRepository) GetOwnerID(ctx context.Context, cookieID string) (int64, error) {
+	return r.store.Cookies.GetOwnerID(ctx, cookieID)
+}
+
 // ExistsOwned 委托账号归属查询。
 func (r OrderRepository) ExistsOwned(ctx context.Context, userID int64, cookieID string) (bool, error) {
 	return r.store.Cookies.ExistsOwned(ctx, userID, cookieID)

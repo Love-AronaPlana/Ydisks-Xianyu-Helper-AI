@@ -8,6 +8,10 @@ import (
 
 // refreshRepositoryFake 是订单刷新应用服务使用的内存持久化 Port。
 type refreshRepositoryFake struct {
+	// ownerID 是运行账号同步使用的非敏感所有者标识。
+	ownerID int64
+	// ownerIDErr 是读取运行账号所有者时返回的预置错误。
+	ownerIDErr error
 	// owned 保存账号归属关系。
 	owned map[string]bool
 	// order 保存订单实体。
@@ -60,6 +64,17 @@ type refreshRepositoryFake struct {
 	loadErrors []error
 	// loadCalls 保存账号视图读取次数。
 	loadCalls int
+}
+
+// GetOwnerID 返回运行账号同步所需的测试所有者标识。
+func (f *refreshRepositoryFake) GetOwnerID(context.Context, string) (int64, error) {
+	if f.ownerIDErr != nil {
+		return 0, f.ownerIDErr
+	}
+	if f.ownerID > 0 {
+		return f.ownerID, nil
+	}
+	return 7, nil
 }
 
 // ExistsOwned 判断测试账号是否属于指定用户。
@@ -459,6 +474,40 @@ func TestPersistSoldOrdersBackfillsUniqueChatID(t *testing.T) {
 	order := repository.orders["order-1"]
 	if err != nil || discovered != 1 || updated != 0 || len(newIDs) != 1 || len(remoteIDs) != 1 || order == nil || order.ChatID != "chat-1" {
 		t.Fatalf("同步会话回填异常: discovered=%d updated=%d new=%v remote=%v order=%+v err=%v", discovered, updated, newIDs, remoteIDs, order, err)
+	}
+}
+
+// TestRefreshRuntimeAccountUsesNonSensitiveOwner 验证运行实例就绪后的同步先读取非敏感归属，再复用指定账号刷新。
+func TestRefreshRuntimeAccountUsesNonSensitiveOwner(t *testing.T) {
+	// repository 保存仅允许 account-ready 账号完成同步的内存仓储。
+	repository := &refreshRepositoryFake{
+		ownerID: 11, owned: map[string]bool{"cookie-1": true},
+		detail: &PlatformRuntimeData{ID: "cookie-1", UserID: 11, Value: "cookie"},
+		orders: map[string]*Order{},
+	}
+	// runtime 保存返回一条已完成订单列表事实的平台替身，详情接口关闭以验证状态来自列表同步。
+	runtime := &refreshRuntimeFake{soldAvailable: true, soldResult: RefreshSoldFetchResult{Orders: []RefreshSoldOrder{{OrderID: "completed-order", OrderStatus: "completed"}}}}
+	// service 保存需要验证运行账号同步入口的订单服务。
+	service := NewRefreshService(repository, runtime, 100)
+	// result、refreshErr 保存运行账号订单同步的结果。
+	result, refreshErr := service.RefreshRuntimeAccount(context.Background(), " cookie-1 ")
+	if refreshErr != nil || result.Summary.Discovered != 1 || repository.orders["completed-order"] == nil || repository.orders["completed-order"].OrderStatus != "completed" {
+		t.Fatalf("运行账号同步结果异常: result=%+v order=%+v err=%v", result, repository.orders["completed-order"], refreshErr)
+	}
+}
+
+// TestRefreshRuntimeAccountRejectsEmptyAccount 验证空运行账号标识不读取归属也不访问平台。
+func TestRefreshRuntimeAccountRejectsEmptyAccount(t *testing.T) {
+	// repository 保存不应被调用的测试仓储。
+	repository := &refreshRepositoryFake{}
+	// runtime 保存不应被调用的平台替身。
+	runtime := &refreshRuntimeFake{}
+	// service 保存待校验输入保护的订单服务。
+	service := NewRefreshService(repository, runtime, 100)
+	// refreshErr 保存空账号标识的拒绝结果。
+	_, refreshErr := service.RefreshRuntimeAccount(context.Background(), " ")
+	if refreshErr == nil || repository.loadCalls != 0 {
+		t.Fatalf("空账号标识不应继续同步: load=%d err=%v", repository.loadCalls, refreshErr)
 	}
 }
 

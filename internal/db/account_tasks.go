@@ -133,6 +133,34 @@ func (s *AccountTaskStore) Enabled(ctx context.Context) ([]AccountTaskSettings, 
 	return result, rows.Err()
 }
 
+// DueAutoRateOrderIDs 返回由买家确认收货 WebSocket 标记、尚可由本地自动评价任务消费的订单号。
+// 它只读取本地 orders 表，绝不为了发现待评价订单向平台发起列表请求。
+func (s *AccountTaskStore) DueAutoRateOrderIDs(ctx context.Context, cookieID string, limit int) ([]string, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 200
+	}
+	// rows、err 分别保存按确认收货时间排序的本地候选订单和查询错误。
+	rows, err := s.DB.QueryContext(ctx, `SELECT order_id FROM orders
+		WHERE cookie_id=? AND deleted_at IS NULL AND order_status='completed' AND completed_at<>''
+		ORDER BY completed_at,order_id LIMIT ?`, cookieID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	// orderIDs 保存本轮允许尝试评价的本地已确认收货订单标识。
+	orderIDs := make([]string, 0)
+	for rows.Next() {
+		// orderID 保存当前已确认收货订单的稳定业务标识。
+		var orderID string
+		// err 保存读取当前订单标识时的数据库扫描错误。
+		if err := rows.Scan(&orderID); err != nil {
+			return nil, err
+		}
+		orderIDs = append(orderIDs, orderID)
+	}
+	return orderIDs, rows.Err()
+}
+
 // ClaimRun creates a run or atomically reclaims a due failed run.
 // ClaimRun 封装Claim运行业务协调。
 func (s *AccountTaskStore) ClaimRun(ctx context.Context, run AccountTaskRun, now int64) (bool, error) {

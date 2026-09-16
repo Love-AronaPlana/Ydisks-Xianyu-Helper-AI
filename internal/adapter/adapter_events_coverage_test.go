@@ -194,4 +194,21 @@ func TestAdapterCredentialWakeCallbacks(t *testing.T) {
 	adapter.SetCredentialWakeService(nil)
 	adapter.OnCredentialUpdated(ctx, "cid")
 	adapter.OnTransportReady(ctx, "cid")
+	// initialSyncCalls 记录首次传输就绪订单同步回调次数。
+	initialSyncCalls := 0
+	adapter.initialOrderSync = func(syncCtx context.Context, accountID string) error {
+		// syncContextDone 表示同步上下文不应在回调开始前取消。
+		syncContextDone := syncCtx.Err()
+		if syncContextDone != nil || accountID != "cid" {
+			t.Fatalf("首次同步回调参数异常: account=%q context=%v", accountID, syncContextDone)
+		}
+		initialSyncCalls++
+		return nil
+	}
+	adapter.OnInitialTransportReady(ctx, "cid")
+	if initialSyncCalls != 1 {
+		t.Fatalf("首次传输就绪订单同步次数=%d", initialSyncCalls)
+	}
+	adapter.initialOrderSync = nil
+	adapter.OnInitialTransportReady(ctx, "cid")
 }

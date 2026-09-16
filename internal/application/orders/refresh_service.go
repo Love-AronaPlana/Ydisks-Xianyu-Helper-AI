@@ -171,6 +171,9 @@ type SingleRefreshResult struct {
 
 // RefreshRepository 定义订单刷新用例所需的最小持久化能力。
 type RefreshRepository interface {
+	// GetOwnerID 返回指定运行账号的非敏感所有者标识，不读取或解密平台凭证。
+	// 仅由账号运行时完成连接后的内部同步使用，HTTP 调用仍必须传入当前会话用户。
+	GetOwnerID(ctx context.Context, cookieID string) (int64, error)
 	// FindOrderOwnership 读取含软删除行的非敏感归属；userID 限制可见身份，orderID 不存在时返回 ErrNotFound。
 	FindOrderOwnership(ctx context.Context, userID int64, orderID string) (RefreshOwnership, error)
 	// RecoverSoldOwnership 以已验证旧归属和版本为条件，原子修正账号、合并 options 并记录恢复审计。
@@ -245,6 +248,26 @@ func NewRefreshService(repository RefreshRepository, runtime RefreshRuntime, det
 		detailChunkSize = 100
 	}
 	return &RefreshService{repository: repository, runtime: runtime, detailChunkSize: detailChunkSize}
+}
+
+// RefreshRuntimeAccount 在账号消息传输首次就绪后同步该账号的订单快照。
+// 它先以非敏感归属查询取得内部编排所需用户标识，再复用 Refresh 的完整发现、状态写回和详情补全流程；
+// cookieID 为空、账号不存在或服务未装配时均不触碰平台。
+func (s *RefreshService) RefreshRuntimeAccount(ctx context.Context, cookieID string) (RefreshResult, error) {
+	if s == nil || s.repository == nil || s.runtime == nil {
+		return RefreshResult{}, errors.New("订单刷新依赖未初始化")
+	}
+	// normalizedCookieID 是去除空白后的运行账号标识，空值不能触发平台订单请求。
+	normalizedCookieID := strings.TrimSpace(cookieID)
+	if normalizedCookieID == "" {
+		return RefreshResult{}, errors.New("账号标识不能为空")
+	}
+	// ownerID、ownerErr 保存只读账号归属结果，不读取 Cookie、Token 或其他敏感字段。
+	ownerID, ownerErr := s.repository.GetOwnerID(ctx, normalizedCookieID)
+	if ownerErr != nil {
+		return RefreshResult{}, ownerErr
+	}
+	return s.Refresh(ctx, ownerID, normalizedCookieID, "")
 }
 
 // RefreshSingle 刷新单个订单详情并写回本地订单。

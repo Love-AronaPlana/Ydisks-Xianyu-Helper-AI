@@ -124,6 +124,57 @@ func TestAccountTaskStoreSQLiteLifecycle(t *testing.T) {
 	}
 }
 
+// TestDueAutoRateOrderIDsOnlyReturnsLocallyCompletedOrders 验证自动评价候选只来自本地确认收货事实，且不会混入其他状态或账号订单。
+func TestDueAutoRateOrderIDsOnlyReturnsLocallyCompletedOrders(t *testing.T) {
+	// store、cleanup 保存本地迁移数据库及其释放函数。
+	store, cleanup := newTestDB(t)
+	defer cleanup()
+	// ctx 是本地订单事实写入和候选读取共用的数据库上下文。
+	ctx := context.Background()
+	// created、createErr 保存候选订单测试用户初始化结果。
+	created, createErr := store.Users.Create(ctx, "rate-candidate-user", "rate-candidate@example.com", "pw")
+	if createErr != nil || !created {
+		t.Fatalf("创建测试用户失败: created=%v err=%v", created, createErr)
+	}
+	// user、userErr 保存账号归属所需用户身份及读取错误。
+	user, userErr := store.Users.GetByUsername(ctx, "rate-candidate-user")
+	if userErr != nil || user == nil {
+		t.Fatalf("读取测试用户失败: user=%+v err=%v", user, userErr)
+	}
+	// primaryCookieErr 保存目标账号凭证归属写入错误。
+	primaryCookieErr := store.Cookies.Save(ctx, "rate-candidate-account", "sid=primary", user.ID)
+	// otherCookieErr 保存其他账号凭证归属写入错误。
+	otherCookieErr := store.Cookies.Save(ctx, "rate-other-account", "sid=other", user.ID)
+	if primaryCookieErr != nil || otherCookieErr != nil {
+		t.Fatalf("保存测试账号失败: primary=%v other=%v", primaryCookieErr, otherCookieErr)
+	}
+	// completedErr 保存有完整确认收货事实的订单写入错误。
+	completedErr := store.Orders.Upsert(ctx, "completed-order", OrderUpsertOpts{CookieID: "rate-candidate-account", OrderStatus: "completed"})
+	// reviewedErr 保存买家评价已发生但不应触发自动评价的订单写入错误。
+	reviewedErr := store.Orders.Upsert(ctx, "reviewed-order", OrderUpsertOpts{CookieID: "rate-candidate-account", OrderStatus: "reviewed"})
+	// unmarkedErr 保存缺少确认收货时间的已完成订单写入错误。
+	unmarkedErr := store.Orders.Upsert(ctx, "unmarked-order", OrderUpsertOpts{CookieID: "rate-candidate-account", OrderStatus: "completed"})
+	// otherErr 保存其他账号已完成订单写入错误。
+	otherErr := store.Orders.Upsert(ctx, "other-account-order", OrderUpsertOpts{CookieID: "rate-other-account", OrderStatus: "completed"})
+	if completedErr != nil || reviewedErr != nil || unmarkedErr != nil || otherErr != nil {
+		t.Fatalf("写入测试订单失败: completed=%v reviewed=%v unmarked=%v other=%v", completedErr, reviewedErr, unmarkedErr, otherErr)
+	}
+	// completedTimeErr 保存目标订单确认收货事实的写入错误。
+	completedTimeErr := store.Automation.MarkOrderEventTime(ctx, "completed-order", "completed_at")
+	// reviewedTimeErr 保存评价事实的写入错误，证明买家评价不是自动评价候选条件。
+	reviewedTimeErr := store.Automation.MarkOrderEventTime(ctx, "reviewed-order", "buyer_reviewed_at")
+	// otherTimeErr 保存其他账号订单确认收货事实的写入错误。
+	otherTimeErr := store.Automation.MarkOrderEventTime(ctx, "other-account-order", "completed_at")
+	if completedTimeErr != nil || reviewedTimeErr != nil || otherTimeErr != nil {
+		t.Fatalf("写入订单事件时间失败: completed=%v reviewed=%v other=%v", completedTimeErr, reviewedTimeErr, otherTimeErr)
+	}
+	// candidates、candidateErr 保存目标账号的本地自动评价候选和查询错误。
+	candidates, candidateErr := store.AccountTasks.DueAutoRateOrderIDs(ctx, "rate-candidate-account", 1)
+	if candidateErr != nil || len(candidates) != 1 || candidates[0] != "completed-order" {
+		t.Fatalf("本地自动评价候选错误: candidates=%v err=%v", candidates, candidateErr)
+	}
+}
+
 // TestAccountTaskStoreNoRetryRunIsNotReclaimed 验证账号任务永久失败记录不会被自动或人工入口再次抢占。
 func TestAccountTaskStoreNoRetryRunIsNotReclaimed(t *testing.T) {
 	// store、cleanup 保存本地迁移数据库及其释放函数。

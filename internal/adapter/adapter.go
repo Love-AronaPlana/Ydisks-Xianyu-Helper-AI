@@ -76,6 +76,8 @@ type Adapter struct {
 	captchaReq     tokenCaptchaRequester
 	orderMTop      orderDetailClient
 	chat           *chat.Service
+	// initialOrderSync 在账号运行实例首次 WebSocket 注册成功后执行一次订单同步；仅在进程组合期注入，运行中不可替换。
+	initialOrderSync func(context.Context, string) error
 
 	// orderDetails 协调自动发货订单详情访问；它与订单刷新运行时共享，按账号限流并合并同订单并发请求。
 	orderDetails *OrderDetailCoordinator
@@ -152,7 +154,7 @@ type RuntimeBundle struct {
 }
 
 // NewRuntimeBundle 在进程启动前一次性完成运行时闭环装配，禁止通过运行期 setter 补齐必需依赖。
-func NewRuntimeBundle(store *db.Store, bm *browser.Manager, logger *slog.Logger) (*RuntimeBundle, error) {
+func NewRuntimeBundle(store *db.Store, bm *browser.Manager, logger *slog.Logger, initialOrderSync func(context.Context, string) error) (*RuntimeBundle, error) {
 	if store == nil {
 		return nil, fmt.Errorf("运行时装配需要数据库存储")
 	}
@@ -163,6 +165,8 @@ func NewRuntimeBundle(store *db.Store, bm *browser.Manager, logger *slog.Logger)
 	orderDetails := NewOrderDetailCoordinator(logger)
 	// runtimeAdapter 是尚未启动的事件与平台适配器，后续字段只在本构造函数内写入。
 	runtimeAdapter := newAdapter(store, bm, logger, orderDetails)
+	// initialOrderSync 在账号管理器启动前固定到事件适配器，避免运行期补齐订单同步依赖。
+	runtimeAdapter.initialOrderSync = initialOrderSync
 	// chatService 是账号实时消息落库和广播服务，必须先于账号引擎启动完成注入。
 	chatService := chat.New(store)
 	// manager 是自动化中心的在线发送器来源，同时在启动期把 Adapter 固定为账号事件处理器。

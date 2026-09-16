@@ -53,6 +53,11 @@ func TestAccountTaskStoreCoversClosedDatabaseOperations(t *testing.T) {
 			return err
 		}(),
 		func() error {
+			// err 表示本地自动评价候选读取在关闭数据库后的底层错误。
+			_, err := store.AccountTasks.DueAutoRateOrderIDs(ctx, "cid", 1)
+			return err
+		}(),
+		func() error {
 			// err 表示普通任务领取在关闭数据库后的底层错误。
 			_, err := store.AccountTasks.ClaimRun(ctx, run, 1)
 			return err
