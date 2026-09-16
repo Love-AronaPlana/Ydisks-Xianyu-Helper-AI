@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	settingsapp "xianyu-go/internal/application/settings"
 	"xianyu-go/internal/netguard"
 )
 
@@ -19,14 +20,21 @@ const MaxAIModelsResponseBytes = 4 << 20
 type AIModelClient struct {
 	// newHTTPClient 允许测试替换端点客户端，同时生产默认使用受信任端点策略。
 	newHTTPClient func(baseURL string) (*http.Client, error)
+	// newTestHTTPClient 允许测试连接使用更长的超时，适应慢推理模型。
+	newTestHTTPClient func(baseURL string) (*http.Client, error)
 }
 
 // NewAIModelClient 构造 AI 模型目录适配器。
 func NewAIModelClient() *AIModelClient {
 	// client 保存生产环境使用的模型目录客户端。
-	client := &AIModelClient{newHTTPClient: func(baseURL string) (*http.Client, error) {
-		return netguard.ConfiguredEndpointHTTPClient(baseURL, 20*time.Second)
-	}}
+	client := &AIModelClient{
+		newHTTPClient: func(baseURL string) (*http.Client, error) {
+			return netguard.ConfiguredEndpointHTTPClient(baseURL, 20*time.Second)
+		},
+		newTestHTTPClient: func(baseURL string) (*http.Client, error) {
+			return netguard.ConfiguredEndpointHTTPClient(baseURL, 50*time.Second)
+		},
+	}
 	return client
 }
 
@@ -149,15 +157,115 @@ func ParseAIModels(raw []byte) ([]string, error) {
 	return result, nil
 }
 
-// truncateAIModelBody 截取错误响应，避免把超大远端正文写入日志或 HTTP 错误。
+// AIConnectionTestResult 描述一次 AI 连接测试的诊断信息。
+// 返回 application 层的 AIConnectionTestResult 以满足 ModelClient 端口契约。
+
+// TestConnection 发送一次最小 chat completion 请求，验证 API 地址、密钥和模型的组合是否可用。
+// API 密钥只存在于请求头中，不会被记录或返回。
+func (c *AIModelClient) TestConnection(ctx context.Context, baseURL, apiKey, model string) (settingsapp.AIConnectionTestResult, error) {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if baseURL == "" {
+		return settingsapp.AIConnectionTestResult{}, fmt.Errorf("AI API 地址为空")
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return settingsapp.AIConnectionTestResult{}, fmt.Errorf("未选择模型，请先填写模型名称或点击「读取模型」")
+	}
+	if c == nil || c.newHTTPClient == nil {
+		return settingsapp.AIConnectionTestResult{}, fmt.Errorf("AI 模型客户端未初始化")
+	}
+	// testClient 使用 50 秒超时，适应推理类模型的首 token 延迟。
+	var client *http.Client
+	var clientErr error
+	if c.newTestHTTPClient != nil {
+		client, clientErr = c.newTestHTTPClient(baseURL)
+	} else {
+		// 退化到默认客户端，保证旧测试不需要额外装配。
+		client, clientErr = c.newHTTPClient(baseURL)
+	}
+	if clientErr != nil {
+		return settingsapp.AIConnectionTestResult{}, fmt.Errorf("AI API 地址无效: %w", clientErr)
+	}
+	// 用 json.Marshal 构造请求体，确保模型名中的特殊字符被正确转义。
+	payload := map[string]any{
+		"model":      model,
+		"messages":   []map[string]string{{"role": "user", "content": "你好"}},
+		"max_tokens": 16,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return settingsapp.AIConnectionTestResult{}, fmt.Errorf("构造测试请求失败: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/chat/completions", strings.NewReader(string(body)))
+	if err != nil {
+		return settingsapp.AIConnectionTestResult{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	if strings.TrimSpace(apiKey) != "" {
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(apiKey))
+	}
+
+	start := time.Now()
+	response, err := client.Do(req)
+	latency := time.Since(start).Milliseconds()
+	if err != nil {
+		return settingsapp.AIConnectionTestResult{Model: model, LatencyMS: latency}, fmt.Errorf("连接失败: %w", err)
+	}
+	defer response.Body.Close()
+
+	raw, err := ReadAIModelsBody(response.Body)
+	if err != nil {
+		return settingsapp.AIConnectionTestResult{}, err
+	}
+
+	if response.StatusCode == 401 || response.StatusCode == 403 {
+		return settingsapp.AIConnectionTestResult{Model: model, LatencyMS: latency}, fmt.Errorf("认证失败：API Key 无效或权限不足 (HTTP %d)", response.StatusCode)
+	}
+	if response.StatusCode == 404 {
+		return settingsapp.AIConnectionTestResult{Model: model, LatencyMS: latency}, fmt.Errorf("模型不存在或地址错误 (HTTP 404)")
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return settingsapp.AIConnectionTestResult{Model: model, LatencyMS: latency}, fmt.Errorf("请求失败: HTTP %d %s", response.StatusCode, truncateAIModelBody(string(raw), 180))
+	}
+
+	reply := extractChatReply(raw)
+	if reply == "" {
+		return settingsapp.AIConnectionTestResult{Model: model, LatencyMS: latency}, fmt.Errorf("请求成功但未返回有效回复内容")
+	}
+	return settingsapp.AIConnectionTestResult{Model: model, LatencyMS: latency, Reply: truncateAIModelBody(reply, 100)}, nil
+}
+
+// extractChatReply 从 OpenAI 兼容的 chat completion 响应中提取模型回复文本。
+func extractChatReply(raw []byte) string {
+	var payload struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return ""
+	}
+	if len(payload.Choices) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(payload.Choices[0].Message.Content)
+}
+
+// truncateAIModelBody 截取文本，避免把超大远端正文写入日志或 HTTP 错误。
+// 按 rune 截断，防止切出半个多字节字符。
 func truncateAIModelBody(value string, limit int) string {
 	value = strings.TrimSpace(value)
-	if len(value) <= limit {
+	runes := []rune(value)
+	if len(runes) <= limit {
 		return value
 	}
-	return value[:limit]
+	return string(runes[:limit])
 }
 
 var _ interface {
 	Fetch(context.Context, string, string) ([]string, error)
+	TestConnection(context.Context, string, string, string) (settingsapp.AIConnectionTestResult, error)
 } = (*AIModelClient)(nil)

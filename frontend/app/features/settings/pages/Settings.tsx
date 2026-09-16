@@ -9,7 +9,8 @@ Save,
 Settings as SettingsIcon,
 ShieldCheck,
 Sparkles,
-UserRound
+UserRound,
+Zap
 } from 'lucide-react';
 import React from 'react';
 import { DEFAULT_AI_API_URL,LOG_LEVELS } from '../constants';
@@ -21,7 +22,8 @@ const Settings: React.FC = () => {
   const {
     settings, loading, loadError, saving, saveError, aiModels, modelsLoading, modelError, modelDropdownOpen,
     showApiKey, showCaptchaSecret, showCurrentPassword, showNewPassword, credentialsSaving, credentialsMessage,
-    credentials, modelPickerRef, loadSettings, loadAIModels, handleSave, handleCredentialsSave,
+    credentials, modelPickerRef, loadSettings, loadAIModels, testConnection, connectionTestLoading,
+    connectionTestMessage, handleSave, handleCredentialsSave,
     setSettings, setModelDropdownOpen, setShowApiKey, setShowCaptchaSecret, setShowCurrentPassword,
     setShowNewPassword, setCredentials,
   } = useSettings();
@@ -238,6 +240,15 @@ const Settings: React.FC = () => {
                     <RefreshCw className={`w-4 h-4 ${modelsLoading ? 'animate-spin' : ''}`} />
                     读取模型
                   </button>
+                  <button
+                    type="button"
+                    onClick={testConnection}
+                    disabled={connectionTestLoading}
+                    className="px-4 py-3 rounded-xl bg-gray-100 text-gray-700 hover:bg-gray-200 disabled:opacity-60 font-bold flex items-center justify-center gap-2 whitespace-nowrap cursor-pointer"
+                  >
+                    <Zap className={`w-4 h-4 ${connectionTestLoading ? 'animate-spin' : ''}`} />
+                    测试连接
+                  </button>
                 </div>
                 {modelError ? (
                   <p className="text-xs text-red-500">{modelError}</p>
@@ -245,6 +256,11 @@ const Settings: React.FC = () => {
                   <p className="text-xs text-gray-500">
                     {aiModels.length > 0 ? `已从当前 API 地址读取到 ${aiModels.length} 个模型` : '模型列表从当前 API 地址读取，也可以手动输入模型名'}
                   </p>
+                )}
+                {connectionTestMessage && (
+                  <div className={`rounded-lg px-3 py-2 text-xs font-medium ${connectionTestMessage.type === 'success' ? 'bg-green-50 text-green-700 border border-green-100' : 'bg-red-50 text-red-700 border border-red-100'}`}>
+                    {connectionTestMessage.type === 'success' ? '✓ ' : '✗ '}{connectionTestMessage.text}
+                  </div>
                 )}
               </div>
 

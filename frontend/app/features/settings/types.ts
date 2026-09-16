@@ -20,6 +20,14 @@ export type CredentialsMessage = {
   text: string;
 } | null;
 
+/** AI 连接测试操作提示。 */
+export type ConnectionTestMessage = {
+  /** 提示类型。 */
+  type: 'success' | 'error';
+  /** 提示文本。 */
+  text: string;
+} | null;
+
 /** Settings feature 暴露的请求状态。 */
 export type SettingsRequestStatus = 'idle' | 'loading' | 'success' | 'error';
 
@@ -43,6 +51,10 @@ export type SettingsFeatureState = {
   modelError: string;
   /** 模型下拉框是否展开。 */
   modelDropdownOpen: boolean;
+  /** AI 连接测试加载状态。 */
+  connectionTestLoading: boolean;
+  /** AI 连接测试操作提示。 */
+  connectionTestMessage: ConnectionTestMessage;
   /** API Key 是否明文显示。 */
   showApiKey: boolean;
   /** 远程验证秘钥是否明文显示。 */

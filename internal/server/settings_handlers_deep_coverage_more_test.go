@@ -71,6 +71,14 @@ func (port *settingsHandlerDeepCoveragePort) ListAIModels(context.Context, int64
 	return []string{"model-a"}, nil
 }
 
+// TestAIConnection 返回测试预置的连接测试结果或错误。
+func (port *settingsHandlerDeepCoveragePort) TestAIConnection(context.Context, int64, string, string, string) (settingsapp.AIConnectionTestResult, error) {
+	if port.listErr != nil {
+		return settingsapp.AIConnectionTestResult{}, port.listErr
+	}
+	return settingsapp.AIConnectionTestResult{Model: "model-a", LatencyMS: 10, Reply: "你好"}, nil
+}
+
 // ListUser 返回测试预置的用户设置或错误。
 func (port *settingsHandlerDeepCoveragePort) ListUser(context.Context, int64) (map[string]string, error) {
 	return map[string]string{"theme": "dark"}, port.listErr

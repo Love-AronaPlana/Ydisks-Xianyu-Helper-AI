@@ -361,6 +361,7 @@ type SettingsPort interface {
 	GetAIReply(context.Context, int64, string) (settingsapp.AIReplySettings, error)
 	UpsertAIReply(context.Context, int64, string, settingsapp.AIReplySettings) error
 	ListAIModels(context.Context, int64, string, string) ([]string, error)
+	TestAIConnection(context.Context, int64, string, string, string) (settingsapp.AIConnectionTestResult, error)
 }
 
 // AdminPort 定义管理员用户与统计能力。

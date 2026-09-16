@@ -408,7 +408,7 @@ func isAPIPath(path string) bool {
 		"/cookies", "/cookie/", "/orders", "/analytics",
 		"/cards", "/automation-rules", "/items", "/keywords", "/default-replies", "/default-reply",
 		"/notification-channels", "/message-notifications",
-		"/system-settings", "/ai-reply", "/ai-models",
+		"/system-settings", "/ai-reply", "/ai-models", "/ai-test",
 		"/user-settings",
 		"/item-reply", "/itemReplays",
 		"/qr-login", "/password-login",
