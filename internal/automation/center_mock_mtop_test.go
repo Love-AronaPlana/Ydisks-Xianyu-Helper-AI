@@ -36,6 +36,10 @@ type fakeMTop struct {
 	freeShippingRet []string
 	// freeShippingUpdated 是砍价订单免拼发货调用返回的扁平 Cookie 更新。
 	freeShippingUpdated string
+	// freeShippingCookies 按调用顺序记录免拼请求使用的凭证，供会话恢复重试断言。
+	freeShippingCookies []string
+	// freeShippingResults 是按调用顺序消费的免拼结果，用于模拟恢复前后不同的平台响应。
+	freeShippingResults []fakeFreeShippingResult
 	// freeShippingCalls 统计砍价订单免拼发货调用次数。
 	freeShippingCalls int
 	// freeShippingOrderIn、freeShippingItemIn、freeShippingBuyerIn 记录免拼发货请求的三个平台标识。
@@ -74,6 +78,18 @@ type fakeConsignResult struct {
 	ret     []string
 	updated string
 	err     error
+}
+
+// fakeFreeShippingResult 是单次免拼调用的业务结果、Cookie 更新与请求错误。
+type fakeFreeShippingResult struct {
+	// ok 表示平台是否明确确认免拼成功。
+	ok bool
+	// ret 保存平台返回的业务结果码。
+	ret []string
+	// updated 保存平台响应携带的扁平 Cookie 更新。
+	updated string
+	// err 保存请求或响应解析阶段的调用错误。
+	err error
 }
 
 // fakeAdjustPriceResult 是单次订单改价调用的预置业务结果、Cookie 更新与传输错误。
@@ -142,12 +158,19 @@ func (f *fakeMTop) ConsignContextWithDelivery(_ context.Context, cookiesStr, ord
 	return f.consignOk, f.consignRet, f.consignUpdated, f.consignErr
 }
 
-// FreeShippingContext 返回测试预置的免拼发货结果并记录订单、商品和买家标识。
-func (f *fakeMTop) FreeShippingContext(_ context.Context, _ string, orderID, itemID, buyerID string) (bool, []string, string, error) {
+// FreeShippingContext 返回测试预置的免拼发货结果并记录请求的凭证、订单、商品和买家标识。
+func (f *fakeMTop) FreeShippingContext(_ context.Context, cookieStr, orderID, itemID, buyerID string) (bool, []string, string, error) {
 	f.freeShippingCalls++
+	f.freeShippingCookies = append(f.freeShippingCookies, cookieStr)
 	f.freeShippingOrderIn = orderID
 	f.freeShippingItemIn = itemID
 	f.freeShippingBuyerIn = buyerID
+	if len(f.freeShippingResults) > 0 {
+		// result 保存当前调用消费的预置免拼结果。
+		result := f.freeShippingResults[0]
+		f.freeShippingResults = f.freeShippingResults[1:]
+		return result.ok, result.ret, result.updated, result.err
+	}
 	return f.freeShippingOK, f.freeShippingRet, f.freeShippingUpdated, f.freeShippingErr
 }
 

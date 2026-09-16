@@ -37,7 +37,7 @@ func (r eventFactRecorder) record(ctx context.Context, task Task) error {
 		SpecValue:   task.SpecValue,
 		Quantity:    task.Quantity,
 		Amount:      task.Amount,
-		IsBargain:   boolPointer(task.IsBargain),
+		IsBargain:   confirmedBargainPointer(task.IsBargain),
 	}); err != nil {
 		return fmt.Errorf("记录自动化事件订单事实: %w", err)
 	}
@@ -67,8 +67,12 @@ func (r eventFactRecorder) record(ctx context.Context, task Task) error {
 	return nil
 }
 
-// boolPointer 把任务中的确定布尔事实转换为订单写入所需的可选字段。
-func boolPointer(value bool) *bool {
+// confirmedBargainPointer 只把事件明确识别出的砍价事实写回订单；普通事件不携带“非砍价”的权威结论，
+// 因而返回 nil 以保留订单同步或先前砍价事件已经持久化的保护标记。
+func confirmedBargainPointer(value bool) *bool {
+	if !value {
+		return nil
+	}
 	return &value
 }
 

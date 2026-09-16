@@ -179,6 +179,8 @@ SELECT o.order_id,o.item_id,o.buyer_id,o.spec_name,o.spec_value,o.quantity,o.amo
 WHERE o.order_status='pending_ship'
    AND o.deleted_at IS NULL
    AND COALESCE(o.chat_id,'')<>''
+   AND (o.is_bargain=0 OR EXISTS (SELECT 1 FROM bargain_free_shipping_stages bfs
+                                  WHERE bfs.order_id=o.order_id AND bfs.cookie_id=o.cookie_id AND bfs.status IN ('ready','succeeded')))
    AND r.cookie_id=o.cookie_id
    AND r.status IN ('needs_review','failed')
    AND r.attempt_count<?

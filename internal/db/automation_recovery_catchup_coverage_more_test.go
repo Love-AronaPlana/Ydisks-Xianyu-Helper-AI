@@ -263,6 +263,29 @@ func TestPendingShipResumableRunsAfterSelectsRunsOfEnabledOwnerRule(t *testing.T
 	seedCatchupOrder(t, s, "o-ownerdisabled", cookieID, "item-1", "chat-ownerdisabled", "pending_ship")
 	// ownerDisabledRunID 保存归属规则已停用的运行主键。
 	ownerDisabledRunID := seedCatchupRun(t, s, disabledOwnerRuleID, cookieID, "o-ownerdisabled")
+	// bargain 保存两个订单均为砍价订单的持久化事实；其中只有收到最终阶段事实的订单才可续跑。
+	bargain := true
+	seedCatchupOrder(t, s, "o-bargain-unconfirmed", cookieID, "item-1", "chat-bargain-unconfirmed", "pending_ship")
+	// unconfirmedBargainErr 保存无最终砍价阶段订单的砍价标记写入错误。
+	unconfirmedBargainErr := s.Orders.Upsert(ctx, "o-bargain-unconfirmed", OrderUpsertOpts{IsBargain: &bargain})
+	if unconfirmedBargainErr != nil {
+		t.Fatal(unconfirmedBargainErr)
+	}
+	// unconfirmedRunID 保存无最终阶段事实但游标已越过发卡动作的历史运行。
+	unconfirmedRunID := seedCatchupRun(t, s, fullRuleID, cookieID, "o-bargain-unconfirmed")
+	seedCatchupOrder(t, s, "o-bargain-ready", cookieID, "item-1", "chat-bargain-ready", "pending_ship")
+	// readyBargainErr 保存已收到最终砍价阶段订单的砍价标记写入错误。
+	readyBargainErr := s.Orders.Upsert(ctx, "o-bargain-ready", OrderUpsertOpts{IsBargain: &bargain})
+	if readyBargainErr != nil {
+		t.Fatal(readyBargainErr)
+	}
+	// readyStageErr 保存最终“成功小刀，待发货”阶段事实写入错误。
+	readyStageErr := s.Automation.MarkBargainReady(ctx, "o-bargain-ready", cookieID)
+	if readyStageErr != nil {
+		t.Fatal(readyStageErr)
+	}
+	// readyRunID 保存有最终阶段事实且可安全续跑的历史运行。
+	readyRunID := seedCatchupRun(t, s, fullRuleID, cookieID, "o-bargain-ready")
 	// updateRun 是夹具改造函数：把运行改成指定的状态、代次与游标。
 	updateRun := func(runID int64, status string, attempt, cursor int) {
 		// updateErr 保存运行状态改写错误。
@@ -279,6 +302,8 @@ func TestPendingShipResumableRunsAfterSelectsRunsOfEnabledOwnerRule(t *testing.T
 	updateRun(exhaustedRunID, "needs_review", 5, 1)
 	updateRun(shipOnlyRunID, "failed", 1, 0)
 	updateRun(ownerDisabledRunID, "needs_review", 1, 1)
+	updateRun(unconfirmedRunID, "needs_review", 1, 1)
+	updateRun(readyRunID, "needs_review", 1, 1)
 	// candidates 保存续跑扫描结果：running 与代次超限被排除，归属规则停用的被排除。
 	candidates, err := s.Automation.PendingShipResumableRunsAfter(ctx, "", 5, 200)
 	if err != nil {
@@ -290,8 +315,8 @@ func TestPendingShipResumableRunsAfterSelectsRunsOfEnabledOwnerRule(t *testing.T
 	for _, candidate := range candidates {
 		gotIDs[candidate.Order.OrderID] = candidate
 	}
-	if len(candidates) != 3 {
-		t.Fatalf("应选中 3 条待判定运行: %+v", candidates)
+	if len(candidates) != 4 {
+		t.Fatalf("应选中 4 条待判定运行: %+v", candidates)
 	}
 	// 下面三条断言分别锁死三类必须排除的运行：执行中、代次超限、归属规则已停用。
 	// ok 保存该订单是否进入了候选集合。
@@ -305,6 +330,13 @@ func TestPendingShipResumableRunsAfterSelectsRunsOfEnabledOwnerRule(t *testing.T
 	// ok 保存该订单是否进入了候选集合。
 	if _, ok := gotIDs["o-ownerdisabled"]; ok {
 		t.Fatalf("归属规则已停用不得进入续跑候选: %+v", gotIDs["o-ownerdisabled"])
+	}
+	// ok 保存未收到最终阶段事实的砍价订单是否被错误放入续跑集合。
+	if _, ok := gotIDs["o-bargain-unconfirmed"]; ok {
+		t.Fatalf("无最终砍价阶段事实的订单不得进入续跑候选: %+v", gotIDs["o-bargain-unconfirmed"])
+	}
+	if gotIDs["o-bargain-ready"].RunID != readyRunID {
+		t.Fatalf("已收到最终砍价阶段事实的订单应可续跑: %+v", gotIDs["o-bargain-ready"])
 	}
 	if gotIDs["o-resume"].RunID != resumableRunID || gotIDs["o-resume"].Status != "needs_review" || gotIDs["o-resume"].ActionCursor != 1 {
 		t.Fatalf("needs_review 候选回填异常: %+v", gotIDs["o-resume"])

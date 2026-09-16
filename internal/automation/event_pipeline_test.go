@@ -91,6 +91,23 @@ func TestEventFactRecorderPersistsPaidCompletedAndReviewedFacts(t *testing.T) {
 	}
 	// recorder 保存使用本地数据库的事件事实记录组件。
 	recorder := newEventFactRecorder(store)
+	// bargain 保存订单列表已经确认的砍价事实；后续普通事件不得把它降级为 false。
+	bargain := true
+	// bargainSeedErr 保存砍价订单初始事实写入错误。
+	bargainSeedErr := store.Orders.Upsert(ctx, "order-bargain-preserved", db.OrderUpsertOpts{CookieID: "account-1", ItemID: "item-bargain", OrderStatus: "pending_ship", IsBargain: &bargain})
+	if bargainSeedErr != nil {
+		t.Fatal(bargainSeedErr)
+	}
+	// plainCompletedErr 保存不携带砍价标记的普通完成事件写入错误。
+	plainCompletedErr := recorder.record(ctx, Task{AccountID: "account-1", OrderID: "order-bargain-preserved", TriggerType: TriggerOrderCompleted, OrderStatus: "completed"})
+	if plainCompletedErr != nil {
+		t.Fatalf("普通完成事件写入失败: %v", plainCompletedErr)
+	}
+	// preservedBargainOrder、preservedBargainReadErr 保存普通事件写入后的砍价保护标记。
+	preservedBargainOrder, preservedBargainReadErr := store.Orders.Get(ctx, "order-bargain-preserved")
+	if preservedBargainReadErr != nil || preservedBargainOrder.IsBargain != 1 {
+		t.Fatalf("普通事件不得清除既有砍价事实 order=%+v err=%v", preservedBargainOrder, preservedBargainReadErr)
+	}
 	// paidErr 保存付款事件事实写入错误。
 	paidErr := recorder.record(ctx, Task{AccountID: "account-1", OrderID: "order-paid", ItemID: "item-1", BuyerID: "buyer-1", ChatID: "chat-1", TriggerType: TriggerOrderPaid, OrderStatus: "paid", Quantity: "1", Amount: "2.00"})
 	if paidErr != nil {

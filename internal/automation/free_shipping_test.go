@@ -112,6 +112,36 @@ func TestBargainPendingRejectsIncompletePlatformIdentifiers(t *testing.T) {
 	}
 }
 
+// TestBargainFreeShippingRecoversExpiredSessionOnce 验证免拼收到明确 Session 失效后只恢复一次凭证，
+// 并使用恢复后的 Cookie 重试一次；这类确认未执行的失败不得被误标为结果未知。
+func TestBargainFreeShippingRecoversExpiredSessionOnce(t *testing.T) {
+	// store、cleanup 保存免拼会话恢复测试的数据库和关闭责任。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	// ctx 保存本测试的无取消上下文。
+	ctx := context.Background()
+	// client 依次模拟明确 Session 失效与凭证恢复后的免拼成功。
+	client := &fakeMTop{freeShippingResults: []fakeFreeShippingResult{
+		{ret: []string{"FAIL_SYS_SESSION_EXPIRED::Session过期"}},
+		{ok: true, ret: []string{"SUCCESS::调用成功"}},
+	}}
+	// recoverer 会在恢复回调中为测试账号写入新的有效 Cookie。
+	recoverer := &fakeCredentialRecoverer{store: store}
+	// center 保存注入免拼客户端和凭证恢复器的自动化中心。
+	center := NewWithDependencies(store, nil, nil, CenterDependencies{MTop: client, OrderDetailFetcher: recoverer})
+	// freeShipErr 保存恢复并重试后的免拼执行结果。
+	freeShipErr := center.actions.freeShipBargain(ctx, Task{AccountID: "cid", OrderID: "bargain-session", ItemID: "item", BuyerID: "buyer", IsBargain: true})
+	if freeShipErr != nil {
+		t.Fatalf("免拼 Session 恢复后应成功: %v", freeShipErr)
+	}
+	if recoverer.calls != 1 || client.freeShippingCalls != 2 {
+		t.Fatalf("recover calls=%d free shipping calls=%d，期望 1/2", recoverer.calls, client.freeShippingCalls)
+	}
+	if len(client.freeShippingCookies) != 2 || !strings.Contains(client.freeShippingCookies[1], "fresh_1") {
+		t.Fatalf("恢复后的免拼未使用新凭证: %v", client.freeShippingCookies)
+	}
+}
+
 // TestBargainPendingRunsOnlyIndependentFreeShipping 验证“待刀成”只读取自动免拼开关并调用免拼，不发卡也不确认发货。
 func TestBargainPendingRunsOnlyIndependentFreeShipping(t *testing.T) {
 	// store、cleanup 保存隔离的自动化数据库及资源释放函数。

@@ -266,47 +266,6 @@ func (e *automationActionExecutor) confirmShipmentAttempt(ctx context.Context, t
 	return nil
 }
 
-// freeShipBargain 在砍价“待刀成”阶段调用独立免拼接口；它不发送卡密、不确认发货，也不修改订单已发货状态。
-func (e *automationActionExecutor) freeShipBargain(ctx context.Context, task Task) error {
-	if task.OrderID == "" || strings.TrimSpace(task.ItemID) == "" || strings.TrimSpace(task.BuyerID) == "" {
-		return fmt.Errorf("%w: 免拼发货缺少订单ID、商品ID或买家ID", errActionNotPerformed)
-	}
-	// session 固定本次免拼请求的凭证视图，外部调用期间不持有账号凭证锁。
-	session, err := e.openShipmentConsignSession(ctx, task.AccountID)
-	if err != nil {
-		return err
-	}
-	// freeShipping、supported 保存当前 MTOP 客户端的独立免拼能力。
-	freeShipping, supported := e.mtop().(freeShippingClient)
-	if !supported {
-		return fmt.Errorf("%w: 当前 MTOP 客户端不支持免拼发货", errActionNotPerformed)
-	}
-	// succeeded、returns、updatedCookie、callErr 保存免拼接口的远端结果。
-	succeeded, returns, updatedCookie, callErr := freeShipping.FreeShippingContext(session.requestContext, session.cookieStr, task.OrderID, task.ItemID, task.BuyerID)
-	// result 统一 Cookie 持久化所需的远端调用结果。
-	result := shipmentConsignResult{succeeded: succeeded, returns: returns, updatedCookie: updatedCookie, callErr: callErr}
-	// cookiePersistence 保存响应 Cookie 的条件写回错误。
-	cookiePersistence := e.persistShipmentConsignCookies(ctx, task.AccountID, session, result)
-	if result.callErr != nil {
-		if len(cookiePersistence.errors) > 0 {
-			return uncertainAction(errors.Join(result.callErr, errors.Join(cookiePersistence.errors...)))
-		}
-		return uncertainAction(result.callErr)
-	}
-	if !result.succeeded {
-		// failure 表示平台明确拒绝免拼；该结果可由同阶段新 WS 事件重新尝试。
-		failure := fmt.Errorf("免拼发货失败: %s", strings.Join(result.returns, "; "))
-		if len(cookiePersistence.errors) > 0 {
-			return errors.Join(failure, errors.Join(cookiePersistence.errors...))
-		}
-		return failure
-	}
-	if len(cookiePersistence.errors) > 0 {
-		return uncertainAction(fmt.Errorf("闲鱼已免拼，但响应凭证保存失败: %w", errors.Join(cookiePersistence.errors...)))
-	}
-	return nil
-}
-
 // adjustPriceTransientRetryLimit 是平台明确提示暂时无法改价时允许的最大请求次数，避免短暂订单状态同步延迟直接导致自动化失败。
 const adjustPriceTransientRetryLimit = 5
 

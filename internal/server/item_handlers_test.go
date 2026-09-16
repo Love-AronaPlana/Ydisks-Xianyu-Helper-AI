@@ -688,10 +688,7 @@ func TestSyncItemsFromAccountSuccess(t *testing.T) {
 	setTestMTop(srv, withMTopTransport(roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		// body 用于本次流程后续判断的请求体
 		body := `{"ret":["SUCCESS::调用成功"],"data":{"cardList":[` +
-			`{"cardData":{"id":"it-sync-1","title":"同步商品A","priceInfo":{"price":"12.50","preText":"¥"},"picInfo":{"picUrl":"https://img.alicdn.com/a.png"},"categoryId":"9","detailParams":{"itemId":"it-sync-1"}}}]}}`
-		if req.URL.Query().Get("api") == "mtop.taobao.idle.pc.detail" {
-			body = `{"ret":["SUCCESS::调用成功"],"data":{"multiSKU":true,"skuDO":{"skuList":[{"id":"sku-a"},{"id":"sku-b"}]}}}`
-		}
+			`{"cardData":{"id":"it-sync-1","title":"同步商品A","priceInfo":{"price":"12.50","preText":"¥"},"picInfo":{"picUrl":"https://img.alicdn.com/a.png"},"categoryId":"9","detailParams":{"itemId":"it-sync-1","isSKU":true}}}]}}`
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     make(http.Header),
@@ -852,19 +849,17 @@ func TestSyncItemsFromAccountReleasesCredentialLockDuringRemoteCall(t *testing.T
 	}
 }
 
-// TestSyncItemsFromAccountDetectsMultiSpecFromDetail 封装TestSync商品列表From账号DetectsMultiSpecFromDetail业务协调。
-func TestSyncItemsFromAccountDetectsMultiSpecFromDetail(t *testing.T) {
+// TestSyncItemsFromAccountReadsMultiSpecFromList 验证商品同步只读取列表 isSKU 真值，不访问商品详情页。
+func TestSyncItemsFromAccountReadsMultiSpecFromList(t *testing.T) {
 	// srv、store、cleanup 用于本次流程后续判断的srv、store、cleanup
 	srv, store, cleanup := newTestServer(t)
 	defer cleanup()
 	setTestMTop(srv, withMTopTransport(roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		// body 用于本次流程后续判断的请求体
-		body := `{"ret":["SUCCESS::调用成功"],"data":{}}`
-		if strings.Contains(req.URL.String(), "mtop.idle.web.xyh.item.list") {
-			body = `{"ret":["SUCCESS::调用成功"],"data":{"cardList":[{"cardData":{"id":"multi-item","title":"多规格商品","detailParams":{"itemId":"multi-item"}}}]}}`
-		} else if strings.Contains(req.URL.String(), "mtop.taobao.idle.pc.detail") {
-			body = `{"ret":["SUCCESS::调用成功"],"data":{"multiSKU":true,"skuDO":{"skuList":[{"id":"a"},{"id":"b"}]}}}`
+		if !strings.Contains(req.URL.String(), "mtop.idle.web.xyh.item.list") {
+			t.Errorf("商品同步不应请求详情页: %s", req.URL.String())
 		}
+		// body 保存列表接口携带多规格真值的成功响应。
+		body := `{"ret":["SUCCESS::调用成功"],"data":{"cardList":[{"cardData":{"id":"multi-item","title":"多规格商品","detailParams":{"itemId":"multi-item","isSKU":true}}}]}}`
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
 	})))
 	// h 用于本次流程后续判断的h

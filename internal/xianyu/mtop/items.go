@@ -444,13 +444,13 @@ func parseItemList(data map[string]any) []ItemListItem {
 	return items
 }
 
-// hasItemSKUField 判断商品列表卡片的 detailParams 是否包含平台多规格标记。
-// 列表接口用 isSKU 字段的存在表示多规格商品；字段缺失表示普通单规格商品，字段值本身不参与判断。
+// hasItemSKUField 判断商品列表卡片的 detailParams 是否明确标记为多规格。
+// 平台以 isSKU 的真值表示多规格；字段缺失或显式 false 都表示普通单规格商品。
 func hasItemSKUField(detailParams map[string]any) bool {
 	if detailParams == nil {
 		return false
 	}
-	// exists 表示列表卡片是否明确携带 isSKU 字段。
-	_, exists := detailParams["isSKU"]
-	return exists
+	// rawSKU 保存列表卡片携带的多规格标记；缺失键读取为 nil，由 mtopBool 归一化为 false。
+	rawSKU := detailParams["isSKU"]
+	return mtopBool(rawSKU)
 }
