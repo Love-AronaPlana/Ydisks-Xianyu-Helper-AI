@@ -31,7 +31,7 @@ func NewChatSendingApplication(domainService *domainchat.Service, store *db.Stor
 	if domainService == nil {
 		// service 保留历史查询应用对象，但不伪造未装配的发送、订阅和刷新端口。
 		// service 是仅保留可用读取能力的聊天应用服务。
-		service := chatapp.NewWithSendingSubscriptionAndRefresh(NewChatRepository(store), nil, nil, nil, nil, nil, NewChatIdentityResolver(store, clientProvider))
+		service := chatapp.NewWithSendingSubscriptionAndRefresh(NewChatRepository(store), nil, nil, nil, nil, nil, NewChatIdentityResolver(store, clientProvider, manager))
 		return chatapp.WithPlatformReadReporter(chatapp.WithChatItemCatalog(service, NewChatItemCatalog(store, clientProvider, manager)), readReporter)
 	}
 	// service 是装配历史、发送、订阅、刷新和身份能力的聊天应用服务。
@@ -42,7 +42,7 @@ func NewChatSendingApplication(domainService *domainchat.Service, store *db.Stor
 		NewChatImageUploader(store, clientProvider, manager),
 		NewChatSubscriptionProvider(domainService),
 		NewChatRefreshProvider(domainService, manager),
-		NewChatIdentityResolver(store, clientProvider),
+		NewChatIdentityResolver(store, clientProvider, manager),
 	)
 	return chatapp.WithPlatformReadReporter(chatapp.WithChatItemCatalog(service, NewChatItemCatalog(store, clientProvider, manager)), readReporter)
 }
@@ -218,6 +218,9 @@ type chatCredentialRepository struct {
 	store *db.Store
 }
 
+// errChatCredentialChanged 表示平台调用期间账号凭证已由其他请求更新，旧请求不得覆盖新状态。
+var errChatCredentialChanged = errors.New("账号凭证已变化，请重试")
+
 // chatItemCatalog 将 MTOP 个人会话商品查询适配为应用层非敏感端口。
 type chatItemCatalog struct {
 	// clientProvider 返回当前可用的 MTOP 客户端。
@@ -324,7 +327,7 @@ func (repository chatCredentialRepository) persistCookieSession(ctx context.Cont
 		return "", false, fmt.Errorf("读取聊天商品凭证失败: %w", loadErr)
 	}
 	if latest.UserID != initial.UserID || latest.Value != initial.Value || latest.MetadataJSON != initial.MetadataJSON {
-		return "", false, errors.New("账号凭证已变化，请重试")
+		return "", false, errChatCredentialChanged
 	}
 	if session != nil {
 		// value、snapshot 和 changed 是请求会话吸收全部 Set-Cookie 后的状态。

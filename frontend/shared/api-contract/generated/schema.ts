@@ -1812,6 +1812,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/settings/ai-test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** postApiV1SettingsAiTest */
+        post: operations["postApiV1SettingsAiTest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/settings/ai-reply": {
         parameters: {
             query?: never;
@@ -2744,6 +2761,17 @@ export interface components {
         };
         AIModelsResponse: {
             models: string[];
+        };
+        AIConnectionTestRequest: {
+            base_url: string;
+            api_key?: string;
+            model?: string;
+        };
+        AIConnectionTestResponse: {
+            success: boolean;
+            model: string;
+            latency_ms: number;
+            reply: string;
         };
         SecretSettingChange: {
             /** @enum {string} */
@@ -12732,6 +12760,84 @@ export interface operations {
             };
             /** @description 统一错误响应 */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    postApiV1SettingsAiTest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AIConnectionTestRequest"];
+            };
+        };
+        responses: {
+            /** @description 成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AIConnectionTestResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description AI 上游服务或连接测试失败的统一错误响应 */
+            502: {
                 headers: {
                     [name: string]: unknown;
                 };

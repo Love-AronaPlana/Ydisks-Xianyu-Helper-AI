@@ -3,7 +3,7 @@ import { useCallback,useEffect,useRef,useState } from 'react';
 import type { SystemSettings } from './api';
 import { fetchAIModels,getSystemSettings,testAIConnection,updateLoginCredentials,updateSystemSettings,verifySession } from './api';
 import { DEFAULT_AI_API_URL } from './constants';
-import { buildPersistableSettings,createCredentials,createCredentialsMessage,isCurrentSettingsRequest,isSettingsAbortError,settingsErrorMessage,validateCredentials } from './state';
+import { buildPersistableSettings,createCredentials,createCredentialsMessage,isCurrentAIConnectionTest,isCurrentSettingsRequest,isSettingsAbortError,settingsErrorMessage,validateCredentials } from './state';
 import type { ConnectionTestMessage,CredentialsForm,CredentialsMessage,SettingsFeatureState,SettingsRequestStatus } from './types';
 
 /** Settings feature 的 Hook 返回值。 */
@@ -170,23 +170,33 @@ export const useSettings = (): UseSettingsResult => {
   }, [beginModelRequest]);
 
   // testConnection 发送一次最小对话请求验证 AI API 可用性。
-  const testConnection = useCallback(async () => {
+  const testConnection = useCallback(/* 当前回调由用户点击触发，使用取消器与配置快照拒绝旧测试结果。 */ async () => {
+    // current 是用户点击按钮时的配置草稿，后续响应必须与其保持一致才可显示。
     const current = settingsRef.current;
     if (!current || connectionTestLoading) return;
+    // snapshot 绑定本次连接测试的端点、密钥和模型，避免编辑后仍展示旧配置结果。
     const baseUrl = current.ai_api_url || current.ai_base_url || DEFAULT_AI_API_URL;
+    // apiKey 是本次连接测试使用的临时或已保存 API Key；它只进入请求作用域。
+    const apiKey = current.ai_api_key || '';
+    // model 是本次连接测试使用的模型名称，空值交由服务端回退默认模型。
     const model = current.ai_model || '';
+    // snapshot 用于在响应到达时确认当前配置没有被编辑。
+    const snapshot = { baseURL: baseUrl, apiKey, model };
     testRequestController.current?.abort();
+    // controller 只管理本次连接测试，组件卸载或后续测试会取消它。
     const controller = new AbortController();
     testRequestController.current = controller;
     testRequestSequence.current += 1;
+    // sequence 隔离连续点击或卸载后的旧响应。
     const sequence = testRequestSequence.current;
     setConnectionTestLoading(true);
     setConnectionTestMessage(null);
     try {
-      const result = await testAIConnection(baseUrl, current.ai_api_key || '', model, { signal: controller.signal });
-      if (testRequestSequence.current !== sequence) return;
+      // result 是服务端确认实际完成一次 chat completion 后返回的诊断摘要。
+      const result = await testAIConnection(baseUrl, apiKey, model, { signal: controller.signal });
+      if (testRequestSequence.current !== sequence || !isCurrentAIConnectionTest(settingsRef.current, snapshot, DEFAULT_AI_API_URL)) return;
       setConnectionTestMessage({ type: 'success', text: `连接正常 · 模型 ${result.model} · 耗时 ${(result.latency_ms / 1000).toFixed(1)}s · 回复：${result.reply}` });
-    } catch (error) {
+    } catch (/* error 是连接测试的上游、网络或取消错误；过期和主动取消请求不展示提示。 */ error) {
       if (testRequestSequence.current !== sequence || isSettingsAbortError(error)) return;
       setConnectionTestMessage({ type: 'error', text: settingsErrorMessage(error, '连接失败') });
     } finally {
@@ -198,6 +208,12 @@ export const useSettings = (): UseSettingsResult => {
   const loadSettings = useCallback(/* 当前回调封装可复用的交互处理逻辑。 */ () => {
     // request 是本次设置读取的代次与控制器。
     const { controller, sequence } = beginRequest();
+    // testSequence 使重新读取设置前尚未完成的连接测试结果失效。
+    testRequestSequence.current += 1;
+    testRequestController.current?.abort();
+    testRequestController.current = null;
+    setConnectionTestLoading(false);
+    setConnectionTestMessage(null);
     cancelModelRequest();
     setLoading(true);
     setRequestStatus('loading');
@@ -246,6 +262,12 @@ export const useSettings = (): UseSettingsResult => {
   const handleSave = useCallback(/* 当前回调封装可复用的交互处理逻辑。 */ async () => {
     // handleSave 提交当前配置草稿并保护过期响应。
     if (!settings || saving) return;
+    // testSequence 使保存前基于旧草稿发出的连接测试不再影响新的已保存配置。
+    testRequestSequence.current += 1;
+    testRequestController.current?.abort();
+    testRequestController.current = null;
+    setConnectionTestLoading(false);
+    setConnectionTestMessage(null);
     cancelModelRequest();
     setAiModels([]);
     setModelsLoading(false);
@@ -306,7 +328,7 @@ export const useSettings = (): UseSettingsResult => {
   return {
     settings, loading, loadError, saving, saveError, aiModels, modelsLoading, modelError, modelDropdownOpen,
     showApiKey, showCaptchaSecret, showCurrentPassword, showNewPassword, credentialsSaving, credentialsMessage,
-    credentials, requestStatus, modelPickerRef, loadSettings, loadAIModels: (source, openAfterLoad) => void loadAIModels(source, openAfterLoad),
+    credentials, requestStatus, modelPickerRef, loadSettings, loadAIModels: /* source 是可选设置快照；openAfterLoad 指定成功后是否展开下拉列表。 */ (source, openAfterLoad) => void loadAIModels(source, openAfterLoad),
     testConnection, connectionTestLoading, connectionTestMessage, handleSave, handleCredentialsSave,
     setSettings, setModelDropdownOpen, setShowApiKey, setShowCaptchaSecret,
     setShowCurrentPassword, setShowNewPassword, setCredentials, setCredentialsMessage,

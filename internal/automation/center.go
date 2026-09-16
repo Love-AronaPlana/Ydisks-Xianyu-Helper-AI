@@ -430,12 +430,32 @@ func (c *Center) handleBargainPending(ctx context.Context, task Task) (bool, err
 	}
 	// finishErr 保存免拼阶段终态写入错误，避免远端成功后丢失兜底资格。
 	if finishErr := c.store.Automation.FinishBargainFreeShipping(ctx, task.OrderID, task.AccountID, status); finishErr != nil {
+		// reviewReason 说明阶段收口失败后为何不能再次自动免拼。
+		reviewReason := "免拼请求已经执行，但本地阶段状态保存失败，禁止自动重试，请核对平台订单状态：" + finishErr.Error()
+		if actionErr != nil {
+			reviewReason = "免拼请求结果和本地阶段状态均无法确认，禁止自动重试，请核对平台订单状态：" + errors.Join(actionErr, finishErr).Error()
+		}
+		// notifyCtx 保证原始请求取消后，人工处理通知仍有独立的短时入队预算。
+		notifyCtx, notifyCancel := newAutomationRunCompensationContext(ctx)
+		c.notifications.notifyManualIntervention(notifyCtx, task, "二人小刀免拼", reviewReason, bargainManualInterventionKey(task))
+		notifyCancel()
 		if actionErr != nil {
 			return false, errors.Join(actionErr, fmt.Errorf("收口免拼阶段: %w", finishErr))
 		}
 		return false, uncertainAction(fmt.Errorf("闲鱼已免拼，但本地阶段保存失败: %w", finishErr))
 	}
+	if status == "needs_review" {
+		// notifyCtx 保证免拼结果不确定时的人工处理通知不受平台调用上下文取消影响。
+		notifyCtx, notifyCancel := newAutomationRunCompensationContext(ctx)
+		c.notifications.notifyManualIntervention(notifyCtx, task, "二人小刀免拼", actionErr.Error(), bargainManualInterventionKey(task))
+		notifyCancel()
+	}
 	return false, actionErr
+}
+
+// bargainManualInterventionKey 返回同一账号、订单、免拼阶段共享的通知幂等键，重复 WS 不会制造重复告警。
+func bargainManualInterventionKey(task Task) string {
+	return fmt.Sprintf("manual-intervention:bargain-free-shipping:%s:%s", task.AccountID, task.OrderID)
 }
 
 // taskAutomationRunID 封装任务自动化运行ID业务协调。

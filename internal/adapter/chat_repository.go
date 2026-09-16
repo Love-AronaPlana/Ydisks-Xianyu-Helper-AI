@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"xianyu-go/internal/account"
 	chatapp "xianyu-go/internal/application/chat"
 	"xianyu-go/internal/db"
 	"xianyu-go/internal/xianyu/mtop"
@@ -207,24 +208,41 @@ type chatIdentityResolver struct {
 	store *db.Store
 	// clientProvider 返回当前可注入的 MTOP 客户端，便于运行时替换和测试。
 	clientProvider func() mtop.Client
+	// credentials 在适配器内完成响应 Cookie 的版本复核和持久化，不向应用层泄露凭证。
+	credentials chatCredentialRepository
+	// manager 用于把已经持久化的新 Cookie 同步到当前在线账号实例；为空时仅更新数据库。
+	manager *account.Manager
 }
 
 // NewChatIdentityResolver 创建聊天身份查询适配器。
-func NewChatIdentityResolver(store *db.Store, clientProvider func() mtop.Client) chatapp.IdentityResolver {
+func NewChatIdentityResolver(store *db.Store, clientProvider func() mtop.Client, manager *account.Manager) chatapp.IdentityResolver {
 	if store == nil || store.Cookies == nil || clientProvider == nil {
 		return nil
 	}
-	return chatIdentityResolver{store: store, clientProvider: clientProvider}
+	return chatIdentityResolver{store: store, clientProvider: clientProvider, credentials: chatCredentialRepository{store: store}, manager: manager}
 }
 
 // Resolve 查询聊天对端展示身份；Cookie 和平台客户端均不会离开适配器。
 func (r chatIdentityResolver) Resolve(ctx context.Context, accountID, chatID string) (chatapp.Identity, error) {
-	// cookies 和 err 保存平台调用需要的短暂凭证及读取错误，不得写入日志或响应。
-	cookies, err := r.store.Cookies.GetValue(ctx, accountID)
-	if err != nil {
-		return chatapp.Identity{}, err
+	if r.store == nil || r.store.Cookies == nil {
+		return chatapp.Identity{}, chatapp.ErrUnavailable
 	}
-	// client 保存当前 MTOP 客户端。
+	// credentialUnlock 保护本次请求的权威凭证快照读取；平台 I/O 开始前必须释放。
+	credentialUnlock := r.store.LockAccountCredentials(accountID)
+	// initial 和 credentialErr 保存本次身份查询使用的 Cookie 与 metadata 快照；不得进入日志或应用层返回值。
+	initial, credentialErr := r.store.Cookies.GetCookiePlatformRuntimeData(ctx, accountID)
+	if credentialErr != nil {
+		credentialUnlock()
+		return chatapp.Identity{}, credentialErr
+	}
+	if !hasStoredCredential(initial) {
+		credentialUnlock()
+		return chatapp.Identity{}, errors.New("账号凭证不可用")
+	}
+	// requestContext 和 cookieSession 吸收本次身份查询的全部响应 Cookie，包含 Token 过期响应中的换签 Cookie。
+	requestContext, cookieSession := withCookieSnapshot(ctx, initial)
+	credentialUnlock()
+	// client 保存当前注入的 MTOP 客户端。
 	client := r.clientProvider()
 	// fetcher 和 supported 保存身份查询能力及接口支持情况。
 	fetcher, supported := client.(interface {
@@ -233,15 +251,53 @@ func (r chatIdentityResolver) Resolve(ctx context.Context, accountID, chatID str
 	if !supported {
 		return chatapp.Identity{}, errors.New("当前 MTOP 客户端不支持聊天身份查询")
 	}
-	// info 和 err 保存平台返回的非敏感身份及查询错误。
-	info, err := fetcher.FetchChatUserInfo(ctx, cookies, chatID)
-	if err != nil {
-		return chatapp.Identity{}, err
+	// info 和 fetchErr 保存平台返回的展示身份与调用错误；即使 fetchErr 非空也必须先收口已收到的响应 Cookie。
+	info, fetchErr := fetcher.FetchChatUserInfo(requestContext, initial.Value, chatID)
+	// updatedCookies 兼容没有 CookieSession 的历史 MTOP 实现；当前实现优先从 cookieSession 读取完整 Cookie Jar。
+	updatedCookies := ""
+	if info != nil {
+		updatedCookies = info.UpdatedCookies
+	}
+	// runtimeCookie、syncRuntime 和 persistErr 保存凭证版本复核后的写回结果；旧请求不得覆盖并发更新的新凭证。
+	runtimeCookie, syncRuntime, persistErr := r.credentials.persistCookieSession(ctx, initial, cookieSession, updatedCookies)
+	if errors.Is(persistErr, errChatCredentialChanged) {
+		// 身份展示结果不依赖旧 Cookie；并发请求已经写入较新凭证时丢弃本次旧响应即可。
+		persistErr = nil
+	}
+	if persistErr != nil {
+		if fetchErr != nil {
+			return chatapp.Identity{}, errors.Join(fetchErr, persistErr)
+		}
+		return chatapp.Identity{}, persistErr
+	}
+	if syncRuntime {
+		r.updateRuntimeCookie(ctx, accountID, runtimeCookie)
+	}
+	if fetchErr != nil {
+		return chatapp.Identity{}, fetchErr
 	}
 	if info == nil {
 		return chatapp.Identity{}, nil
 	}
 	return chatapp.Identity{PeerName: info.Nickname, PeerAvatar: info.AvatarURL}, nil
+}
+
+// updateRuntimeCookie 将已完成版本复核并写入数据库的身份查询 Cookie 同步到在线账号实例。
+func (r chatIdentityResolver) updateRuntimeCookie(ctx context.Context, accountID, value string) {
+	if r.manager == nil || value == "" {
+		return
+	}
+	// runtime 和 runtimeOK 保存当前账号实例及其存在性；账号未运行时数据库写回已经足够。
+	runtime, runtimeOK := r.manager.GetInstance(accountID)
+	if !runtimeOK || runtime == nil {
+		return
+	}
+	// contextualUpdater 和 supported 优先让同步操作继承 HTTP 请求的取消边界。
+	if contextualUpdater, supported := runtime.(contextualCookieUpdater); supported {
+		_ = contextualUpdater.UpdateCookieContext(ctx, value)
+		return
+	}
+	runtime.UpdateCookie(value)
 }
 
 // 确保数据库聊天适配器覆盖应用层会话端口的全部能力。

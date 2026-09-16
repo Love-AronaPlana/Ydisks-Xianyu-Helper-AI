@@ -135,6 +135,7 @@ export type NotificationEventType =
   | 'security_verification'
   | 'token_renewal'
   | 'delivery_result'
+  | 'manual_intervention_required'
   | 'system_error';
 
 /** 由当前 feature adapter 归一后的 NotificationChannel UI 模型；不直接暴露 HTTP DTO。 */

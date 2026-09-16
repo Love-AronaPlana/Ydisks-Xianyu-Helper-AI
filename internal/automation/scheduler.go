@@ -433,6 +433,14 @@ func (s *Scheduler) runRecoveryTasks(ctx context.Context) error {
 			resultErr = errors.Join(resultErr, quarantineErr)
 			continue
 		}
+		if task.AccountID != run.CookieID || task.TriggerType != run.TriggerType || run.OrderID != "" && task.OrderID != run.OrderID {
+			// reason 说明持久化快照与运行不可变身份不一致，禁止使用快照中的账号或订单执行外部动作。
+			reason := "历史运行快照与运行身份不一致，已停止自动恢复"
+			// quarantineErr 保存身份不一致运行的人工核对状态写入错误。
+			quarantineErr := s.quarantineRunForReview(ctx, run, reason)
+			resultErr = errors.Join(resultErr, quarantineErr)
+			continue
+		}
 		// allowed、err 用于本次流程后续判断的allowed、err
 		allowed, err := s.center.accountAutomationAllowed(ctx, task.AccountID)
 		if err != nil || !allowed {
@@ -441,6 +449,14 @@ func (s *Scheduler) runRecoveryTasks(ctx context.Context) error {
 				s.center.logger.Warn("延期自动化恢复任务失败", "run_id", run.ID, "err", postponeErr)
 				resultErr = errors.Join(resultErr, fmt.Errorf("延期自动化恢复任务失败: %w", postponeErr))
 			}
+			continue
+		}
+		// paidReady、paidGateErr 保存付款运行是否仍符合订单状态兜底边界及门禁处理错误。
+		paidReady, paidGateErr := s.paidRecoveryReady(ctx, task, run)
+		if paidGateErr != nil {
+			resultErr = errors.Join(resultErr, paidGateErr)
+		}
+		if !paidReady {
 			continue
 		}
 		// rule、err 用于本次流程后续判断的rule、err
@@ -550,10 +566,13 @@ func (s *Scheduler) runDeferredTasks(ctx context.Context) error {
 		var task Task
 		if // err 用于本次流程后续判断的err
 		err := json.Unmarshal([]byte(pending.TaskJSON), &task); err != nil {
+			// failureReason 是写入重试状态和人工处理通知共用的解析失败原因。
+			failureReason := "解析任务失败: " + err.Error()
 			// finishErr 表示解析失败后写入延迟任务重试或死信状态时的错误。
-			finishErr := s.center.store.Automation.FinishDeferredTask(ctx, pending.ID, pending.ClaimVersion, false, "解析任务失败: "+err.Error())
+			finishErr := s.center.store.Automation.FinishDeferredTask(ctx, pending.ID, pending.ClaimVersion, false, failureReason)
 			if finishErr != nil {
 				s.center.logger.Error("保存解析失败的暂停事件状态失败", "task_id", pending.ID, "err", finishErr)
+				s.notifyDeferredTaskNeedsReview(ctx, pending, Task{AccountID: pending.CookieID, TriggerType: pending.TriggerType}, failureReason+"；保存任务状态失败："+finishErr.Error())
 				resultErr = errors.Join(
 					resultErr,
 					errAutomationNeedsReview,
@@ -561,6 +580,9 @@ func (s *Scheduler) runDeferredTasks(ctx context.Context) error {
 				)
 			} else {
 				s.center.logger.Warn("暂停期间自动化事件重放失败", "task_id", pending.ID, "account", pending.CookieID, "err", err)
+				if pending.ClaimVersion >= 5 {
+					s.notifyDeferredTaskNeedsReview(ctx, pending, Task{AccountID: pending.CookieID, TriggerType: pending.TriggerType}, failureReason+"；已达到自动重试上限")
+				}
 			}
 			continue
 		}
@@ -579,6 +601,7 @@ func (s *Scheduler) runDeferredTasks(ctx context.Context) error {
 		finishErr := s.center.store.Automation.FinishDeferredTask(ctx, pending.ID, pending.ClaimVersion, runErr == nil, errorString(runErr))
 		if finishErr != nil {
 			s.center.logger.Warn("保存暂停事件重放结果失败", "task_id", pending.ID, "err", finishErr)
+			s.notifyDeferredTaskNeedsReview(ctx, pending, task, "暂停事件重放后无法保存任务状态："+finishErr.Error())
 			resultErr = errors.Join(resultErr, errAutomationNeedsReview, runErr, fmt.Errorf("保存暂停事件重放结果失败: %w", finishErr))
 			continue
 		}
@@ -586,9 +609,31 @@ func (s *Scheduler) runDeferredTasks(ctx context.Context) error {
 			s.center.logger.Info("暂停期间自动化事件重放成功", "task_id", pending.ID, "account", task.AccountID, "trigger", task.TriggerType)
 		} else {
 			s.center.logger.Warn("暂停期间自动化事件重放失败", "task_id", pending.ID, "account", task.AccountID, "trigger", task.TriggerType, "err", runErr)
+			if pending.ClaimVersion >= 5 {
+				s.notifyDeferredTaskNeedsReview(ctx, pending, task, "暂停事件连续重放失败并已达到自动重试上限："+runErr.Error())
+			}
 		}
 	}
 	return resultErr
+}
+
+// notifyDeferredTaskNeedsReview 为进入死信或无法安全收口的延期自动化任务发送一次人工处理通知。
+func (s *Scheduler) notifyDeferredTaskNeedsReview(ctx context.Context, pending db.DeferredAutomationTask, task Task, reason string) {
+	if s == nil || s.center == nil {
+		return
+	}
+	if task.AccountID == "" {
+		task.AccountID = pending.CookieID
+	}
+	if task.TriggerType == "" {
+		task.TriggerType = pending.TriggerType
+	}
+	// notificationKey 是同一延期任务共享的稳定人工处理通知键，重复扫描不会制造重复告警。
+	notificationKey := fmt.Sprintf("manual-intervention:deferred-task:%d", pending.ID)
+	// notifyCtx 保证任务状态写失败或原始重放预算取消后，告警仍有独立的短时入队预算。
+	notifyCtx, notifyCancel := newAutomationRunCompensationContext(ctx)
+	s.center.notifications.notifyManualIntervention(notifyCtx, task, "暂停自动化事件重放", reason, notificationKey)
+	notifyCancel()
 }
 
 // errorString 封装错误String业务协调。

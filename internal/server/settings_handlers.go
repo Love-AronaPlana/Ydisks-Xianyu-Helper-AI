@@ -488,19 +488,23 @@ func (s *Server) listAIModels(w http.ResponseWriter, r *http.Request) {
 
 // testAIConnection 发送一次最小对话请求验证 AI API 地址、密钥和模型的组合是否可用。
 func (s *Server) testAIConnection(w http.ResponseWriter, r *http.Request) {
+	// req 保存仅在本次 HTTP 请求作用域使用的 AI 连接测试参数。
 	var req aiConnectionTestRequest
-	if err := decodeJSON(r, &req); err != nil {
+	// decodeErr 表示请求正文无法解析为具名连接测试 DTO 的错误。
+	if decodeErr := decodeJSON(r, &req); decodeErr != nil {
 		writeErr(w, http.StatusBadRequest, "请求格式错误")
 		return
 	}
+	// sess 保存已通过管理员中间件验证的会话，用于受控读取或审计 API Key。
 	sess := authSess(r)
 	if sess == nil {
 		writeErr(w, http.StatusInternalServerError, "审计失败")
 		return
 	}
-	result, err := s.settingsApplication().TestAIConnection(r.Context(), sess.UserID, req.BaseURL, req.APIKey, req.Model)
-	if err != nil {
-		writeErr(w, http.StatusBadGateway, err.Error())
+	// result、testErr 分别保存非敏感诊断结果和应用服务或上游请求错误。
+	result, testErr := s.settingsApplication().TestAIConnection(r.Context(), sess.UserID, req.BaseURL, req.APIKey, req.Model)
+	if testErr != nil {
+		writeErr(w, http.StatusBadGateway, testErr.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, aiConnectionTestResponse{

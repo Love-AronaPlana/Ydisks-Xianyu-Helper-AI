@@ -53,6 +53,7 @@ export type NotificationEventType =
   | 'automation_buyer_reviewed'
   | 'automation_review_missing_timeout'
   | 'manual_delivery_result'
+  | 'manual_intervention_required'
   | 'system_error';
 
 /** automationNotificationEventTypes 是四类自动化任务使用的独立通知开关编码。 */
@@ -71,7 +72,7 @@ export const normalizeNotificationEventTypes = (events: NotificationEventType[])
     // event 是当前事件集合中的编码；旧版统一交易编码需要替换成细分集合。
     event => event !== 'delivery_result',
   );
-  return Array.from(new Set([...normalizedEvents, ...automationNotificationEventTypes, 'manual_delivery_result']));
+  return Array.from(new Set([...normalizedEvents, ...automationNotificationEventTypes, 'manual_delivery_result', 'manual_intervention_required']));
 };
 
 /** 由当前 feature adapter 归一后的 NotificationChannel UI 模型；不直接暴露 HTTP DTO。 */

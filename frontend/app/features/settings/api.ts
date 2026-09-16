@@ -1,7 +1,7 @@
 import type { OperationResponse,SystemSettings } from './models';
 import { contractClient, runContractRequest } from '../../../shared/api-contract/client';
 import { normalizeSystemSettingsUpdate,SENSITIVE_SYSTEM_SETTING_KEYS } from '../../../shared/api-contract/settings';
-import { post, type RequestControlOptions } from '../../../shared/http/client';
+import { type RequestControlOptions } from '../../../shared/http/client';
 import type { SystemSettingsUpdate } from '../../../shared/api-contract/settings';
 export type * from './models';
 export { normalizeSystemSettingsUpdate } from '../../../shared/api-contract/settings';
@@ -88,8 +88,14 @@ export interface AIConnectionTestResult {
 }
 
 /** 发送一次最小对话请求验证 AI API 地址、密钥和模型的组合是否可用。 */
-export const testAIConnection = async (baseURL: string, apiKey: string, model: string, options?: RequestControlOptions): Promise<AIConnectionTestResult> =>
-  post<AIConnectionTestResult>('/api/v1/settings/ai-test', { base_url: baseURL, api_key: apiKey, model }, { timeoutMs: 60_000, ...options });
+export const testAIConnection = async (baseURL: string, apiKey: string, model: string, options?: RequestControlOptions): Promise<AIConnectionTestResult> => {
+  // response 是由版本化 OpenAPI operation 校验后的非敏感连接诊断结果。
+  const response = await runContractRequest(/* signal 是本次长时连接测试的超时与取消控制信号。 */ signal => contractClient.POST('/api/v1/settings/ai-test', {
+    body: { base_url: baseURL, api_key: apiKey, model },
+    signal,
+  }), { timeoutMs: 60_000, ...options });
+  return response;
+};
 
 /** 在保存登录凭据前读取当前会话状态。 */
 export const verifySession = async (options?: RequestControlOptions): Promise<SettingsSessionStatusResponse> =>

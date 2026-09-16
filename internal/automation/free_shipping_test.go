@@ -8,7 +8,7 @@ import (
 	"xianyu-go/internal/db"
 )
 
-// TestPaidDeliveryUsesNormalConsignForBargainReadyOrder 验证成功小刀后的付款自动发货先发卡，再走普通确认发货而非免拼。
+// TestPaidDeliveryUsesNormalConsignForBargainReadyOrder 验证开启免拼后的两段 WebSocket 严格按免拼、发卡、普通确认发货顺序执行。
 func TestPaidDeliveryUsesNormalConsignForBargainReadyOrder(t *testing.T) {
 	// store、cleanup 保存付款自动发货主链路使用的测试数据库及其清理函数。
 	store, cleanup := newAutomationTestStore(t)
@@ -23,7 +23,7 @@ func TestPaidDeliveryUsesNormalConsignForBargainReadyOrder(t *testing.T) {
 	// enabled 是同时打开付款自动发货和订单状态确认开关的设置值。
 	enabled := true
 	// _, settingsErr 保存账号自动化开关写入结果。
-	_, settingsErr := store.Cookies.UpdateSettings(ctx, "cid", db.AccountSettingsUpdate{UserID: admin.ID, AutoConfirm: &enabled, AutoConsign: &enabled})
+	_, settingsErr := store.Cookies.UpdateSettings(ctx, "cid", db.AccountSettingsUpdate{UserID: admin.ID, AutoConfirm: &enabled, AutoConsign: &enabled, AutoBargain: &enabled})
 	if settingsErr != nil {
 		t.Fatal(settingsErr)
 	}
@@ -45,17 +45,25 @@ func TestPaidDeliveryUsesNormalConsignForBargainReadyOrder(t *testing.T) {
 		t.Fatal(ruleErr)
 	}
 	// client 是断言最终阶段使用普通确认发货端点的 MTOP 内存替身。
-	client := &fakeMTop{consignOk: true, consignRet: []string{"SUCCESS::调用成功"}}
+	client := &fakeMTop{consignOk: true, consignRet: []string{"SUCCESS::调用成功"}, freeShippingOK: true, freeShippingRet: []string{"SUCCESS::调用成功"}}
 	// sender 是接收测试卡密内容的在线消息发送替身。
 	sender := &testSender{}
 	// center 是注入免拼替身与在线发送器的自动化中心。
 	center := NewWithDependencies(store, testSenderProvider{sender: sender}, nil, CenterDependencies{MTop: client})
+	// pendingErr 保存第一段“待刀成”WebSocket 的免拼执行结果。
+	pendingErr := center.HandleTask(ctx, Task{Source: "ws", AccountID: "cid", TriggerType: TriggerBargainPending, OrderID: "paid-bargain-order", ItemID: "10001", BuyerID: "20002", ChatID: "chat-1", IsBargain: true})
+	if pendingErr != nil {
+		t.Fatalf("砍价待刀成免拼失败: %v", pendingErr)
+	}
+	if client.freeShippingCalls != 1 || client.consignCalls != 0 || len(sender.texts) != 0 {
+		t.Fatalf("最终待发货消息到达前发生发卡或确认抢跑: free=%d consign=%d messages=%+v", client.freeShippingCalls, client.consignCalls, sender.texts)
+	}
 	// handleErr 保存付款自动发货执行结果。
-	handleErr := center.HandleTask(ctx, Task{AccountID: "cid", TriggerType: TriggerOrderPaid, OrderID: "paid-bargain-order", ItemID: "10001", BuyerID: "20002", ChatID: "chat-1"})
+	handleErr := center.HandleTask(ctx, Task{Source: "ws", AccountID: "cid", TriggerType: TriggerOrderPaid, OrderID: "paid-bargain-order", ItemID: "10001", BuyerID: "20002", ChatID: "chat-1", IsBargain: true})
 	if handleErr != nil {
 		t.Fatalf("砍价付款自动发货失败: %v", handleErr)
 	}
-	if len(sender.texts) != 1 || client.freeShippingCalls != 0 || client.consignCalls != 1 {
+	if len(sender.texts) != 1 || client.freeShippingCalls != 1 || client.consignCalls != 1 {
 		t.Fatalf("成功小刀后发卡和普通确认发货顺序异常: messages=%+v free=%d consign=%d", sender.texts, client.freeShippingCalls, client.consignCalls)
 	}
 }
@@ -135,6 +143,31 @@ func TestBargainPendingRunsOnlyIndependentFreeShipping(t *testing.T) {
 	}
 	if client.freeShippingCalls != 1 || client.consignCalls != 0 || len(sender.texts) != 0 {
 		t.Fatalf("待刀成阶段发生发卡或确认发货抢跑: free=%d consign=%d messages=%+v", client.freeShippingCalls, client.consignCalls, sender.texts)
+	}
+}
+
+// TestBargainPendingRequiresWebSocketAndIndependentSwitch 验证二人小刀普通发货不会因待刀成消息或计划任务误触发免拼。
+func TestBargainPendingRequiresWebSocketAndIndependentSwitch(t *testing.T) {
+	// store、cleanup 保存默认关闭自动免拼的测试数据库及关闭责任。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	// client 是若边界失效就会记录免拼调用的 MTOP 替身。
+	client := &fakeMTop{freeShippingOK: true, freeShippingRet: []string{"SUCCESS::调用成功"}}
+	// center 是使用默认关闭自动免拼账号设置的自动化中心。
+	center := NewWithDependencies(store, nil, nil, CenterDependencies{MTop: client})
+	// wsTask 是关闭自动免拼时收到的真实待刀成 WebSocket 阶段。
+	wsTask := Task{Source: "ws", AccountID: "cid", TriggerType: TriggerBargainPending, OrderID: "bargain-normal", ItemID: "item", BuyerID: "buyer", IsBargain: true}
+	if /* handleErr 保存关闭免拼时处理待刀成消息的错误。 */ handleErr := center.HandleTask(context.Background(), wsTask); handleErr != nil {
+		t.Fatalf("关闭免拼时处理待刀成消息失败: %v", handleErr)
+	}
+	// schedulerTask 模拟兜底任务错误构造免拼阶段，中心必须在平台调用前拒绝。
+	schedulerTask := wsTask
+	schedulerTask.Source = "scheduler"
+	if /* handleErr 保存拒绝计划任务免拼阶段时的处理错误。 */ handleErr := center.HandleTask(context.Background(), schedulerTask); handleErr != nil {
+		t.Fatalf("拒绝计划任务免拼阶段不应报错: %v", handleErr)
+	}
+	if client.freeShippingCalls != 0 || client.consignCalls != 0 {
+		t.Fatalf("二人小刀普通发货或兜底任务误触发免拼: free=%d consign=%d", client.freeShippingCalls, client.consignCalls)
 	}
 }
 

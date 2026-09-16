@@ -120,11 +120,11 @@ func TestChatRepositoryRejectsUnavailableDependencies(t *testing.T) {
 		t.Fatal("缺少聊天存储时不应构造聊天仓储")
 	}
 	// resolver 保存缺少平台客户端提供函数时的身份适配器构造结果。
-	if resolver := NewChatIdentityResolver(store, nil); resolver != nil {
+	if resolver := NewChatIdentityResolver(store, nil, nil); resolver != nil {
 		t.Fatal("缺少客户端提供函数时不应构造身份适配器")
 	}
 	// unsupportedResolver 保存客户端不具备聊天身份能力时的适配器。
-	unsupportedResolver := NewChatIdentityResolver(store, func() mtop.Client { return nil })
+	unsupportedResolver := NewChatIdentityResolver(store, func() mtop.Client { return nil }, nil)
 	// err 保存平台能力缺失时的稳定错误。
 	_, err := unsupportedResolver.Resolve(context.Background(), "cid", "chat-cover")
 	if err == nil || errors.Is(err, context.Canceled) {

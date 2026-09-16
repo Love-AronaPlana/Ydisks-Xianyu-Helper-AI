@@ -6676,6 +6676,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: AI 上游服务或连接测试失败的统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   "/api/v1/settings/ai-reply":
     get:
       operationId: getApiV1SettingsAiReply

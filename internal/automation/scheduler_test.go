@@ -132,8 +132,10 @@ func TestSchedulerDeferredFinishWriteFailureUsesNeedsReviewError(t *testing.T) {
 		BEGIN SELECT RAISE(ABORT, 'forced scheduler deferred finish failure'); END`); triggerErr != nil {
 		t.Fatal(triggerErr)
 	}
+	// notifier 记录延期任务状态无法收口时发送的人工处理告警。
+	notifier := &triggerAwareNotificationProbe{}
 	// scheduler 负责扫描并返回延迟任务状态写失败。
-	scheduler := &Scheduler{center: New(store, testSenderProvider{sender: &testSender{}}, nil)}
+	scheduler := &Scheduler{center: NewWithDependencies(store, testSenderProvider{sender: &testSender{}}, nil, CenterDependencies{Notifier: notifier})}
 	// runErr 保存统一收口错误，避免状态写失败被当作已处理。
 	runErr := scheduler.runDeferredTasks(ctx)
 	if runErr == nil || !errors.Is(runErr, errAutomationNeedsReview) {
@@ -141,6 +143,40 @@ func TestSchedulerDeferredFinishWriteFailureUsesNeedsReviewError(t *testing.T) {
 	}
 	if !strings.Contains(runErr.Error(), "保存解析失败的暂停事件状态失败") {
 		t.Fatalf("runErr=%v 缺少延迟任务状态写失败上下文", runErr)
+	}
+	if notifier.manualCalls != 1 || notifier.manualAction != "暂停自动化事件重放" {
+		t.Fatalf("延期任务状态收口失败未发送人工处理通知: calls=%d action=%q", notifier.manualCalls, notifier.manualAction)
+	}
+}
+
+// TestSchedulerDeferredDeadLetterSendsManualNotification 验证延期自动化达到重试上限后进入死信并通知用户处理。
+func TestSchedulerDeferredDeadLetterSendsManualNotification(t *testing.T) {
+	// store、cleanup 保存本测试使用的 SQLite 自动化存储及关闭责任。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	// ctx 是延期任务写入、扫描和状态读取共用的上下文。
+	ctx := context.Background()
+	// insertErr 保存预置第四次失败的非法延期任务时的数据库错误。
+	_, insertErr := store.DB.ExecContext(ctx, `INSERT INTO automation_pending_tasks
+		(task_key,cookie_id,trigger_type,task_json,due_at,status,attempt_count,lease_expires_at,error_message)
+		VALUES ('cid:scheduler-dead-letter','cid',?,'{"broken',0,'pending',4,0,'')`, TriggerOrderPaid)
+	if insertErr != nil {
+		t.Fatal(insertErr)
+	}
+	// notifier 记录第五次失败进入死信后的人工处理通知。
+	notifier := &triggerAwareNotificationProbe{}
+	// scheduler 是注入通知替身的延期任务调度器。
+	scheduler := &Scheduler{center: NewWithDependencies(store, nil, nil, CenterDependencies{Notifier: notifier})}
+	if /* runErr 保存第五次延期重放的扫描错误。 */ runErr := scheduler.runDeferredTasks(ctx); runErr != nil {
+		t.Fatalf("延期任务进入死信失败: %v", runErr)
+	}
+	// status 保存第五次失败后的延期任务状态。
+	var status string
+	if /* statusErr 保存死信任务状态的读取错误。 */ statusErr := store.DB.QueryRowContext(ctx, `SELECT status FROM automation_pending_tasks WHERE task_key='cid:scheduler-dead-letter'`).Scan(&status); statusErr != nil {
+		t.Fatal(statusErr)
+	}
+	if status != "dead_letter" || notifier.manualCalls != 1 || notifier.manualKey != "manual-intervention:deferred-task:1" {
+		t.Fatalf("死信人工处理结果异常: status=%q calls=%d key=%q", status, notifier.manualCalls, notifier.manualKey)
 	}
 }
 

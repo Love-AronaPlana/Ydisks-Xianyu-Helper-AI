@@ -1,13 +1,14 @@
 // @vitest-environment jsdom
 import { act,renderHook,waitFor } from '@testing-library/react';
 import { beforeEach,describe,expect,test,vi } from 'vitest';
-import type { OperationResponse,SystemSettings } from './api';
-import { fetchAIModels,getSystemSettings,updateLoginCredentials,updateSystemSettings,verifySession } from './api';
+import type { AIConnectionTestResult,OperationResponse,SystemSettings } from './api';
+import { fetchAIModels,getSystemSettings,testAIConnection,updateLoginCredentials,updateSystemSettings,verifySession } from './api';
 import { useSettings } from './hooks';
 
 vi.mock('./api', /* settingsApiMockFactory 提供设置 Hook 的确定性 API 替身。 */ () => ({
   fetchAIModels: vi.fn(),
   getSystemSettings: vi.fn(),
+  testAIConnection: vi.fn(),
   updateLoginCredentials: vi.fn(),
   updateSystemSettings: vi.fn(),
   verifySession: vi.fn(),
@@ -17,6 +18,8 @@ vi.mock('./api', /* settingsApiMockFactory 提供设置 Hook 的确定性 API �
 const fetchModelsMock = vi.mocked(fetchAIModels);
 // getSettingsMock 是系统设置读取请求的可控替身。
 const getSettingsMock = vi.mocked(getSystemSettings);
+// testConnectionMock 是 AI chat completion 连通性测试请求的可控替身。
+const testConnectionMock = vi.mocked(testAIConnection);
 // updateCredentialsMock 是登录凭据更新请求的可控替身。
 const updateCredentialsMock = vi.mocked(updateLoginCredentials);
 // updateSettingsMock 是系统设置保存请求的可控替身。
@@ -37,6 +40,7 @@ describe('useSettings', /* 当前回调处理系统设置、模型和凭据请�
     getSettingsMock.mockResolvedValue(settingsFixture);
     verifySessionMock.mockResolvedValue({ authenticated: true, username: 'admin' });
     fetchModelsMock.mockResolvedValue(['model-a', 'model-b']);
+    testConnectionMock.mockResolvedValue({ success: true, model: 'model-a', latency_ms: 42, reply: '你好' });
     updateSettingsMock.mockResolvedValue({ success: true });
     updateCredentialsMock.mockResolvedValue({ success: true, message: '凭据已更新' });
     vi.spyOn(window, 'alert').mockImplementation(
@@ -80,6 +84,55 @@ describe('useSettings', /* 当前回调处理系统设置、模型和凭据请�
     expect(hook.result.current.aiModels).toEqual([]);
     expect(hook.result.current.modelDropdownOpen).toBe(false);
     expect(hook.result.current.modelError).toBe('模型服务不可用');
+  });
+
+  test('连接测试展示真实模型回复并使用当前未保存配置', /* 当前回调验证 AI 连接测试与设置草稿使用相同的端点、密钥和模型。 */ async () => {
+    // hook 是连接测试成功场景的设置 Hook 渲染结果。
+    const hook = renderHook(renderSettingsHook);
+    await waitFor(
+      // statusAssertion 等待初始设置和自动模型选择完成。
+      () => expect(hook.result.current.settings?.ai_model).toBe('model-a'),
+    );
+    await act(
+      // testAction 发起一次真实功能等价的连接测试操作。
+      async () => hook.result.current.testConnection(),
+    );
+    expect(testConnectionMock).toHaveBeenCalledWith('https://ai.example.com', 'secret', 'model-a', expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    expect(hook.result.current.connectionTestMessage).toEqual({ type: 'success', text: '连接正常 · 模型 model-a · 耗时 0.0s · 回复：你好' });
+    hook.unmount();
+  });
+
+  test('配置编辑后丢弃旧连接测试结果', /* 当前回调验证慢速连接测试不能覆盖已编辑的端点、密钥或模型。 */ async () => {
+    // resolveConnection 是延迟 chat completion 请求的完成控制器。
+    let resolveConnection: (value: AIConnectionTestResult) => void = () => undefined;
+    // pendingConnection 模拟仍在等待推理模型响应的连接测试请求。
+    const pendingConnection = new Promise<AIConnectionTestResult>(/* connectionExecutor 保存连接测试完成函数。 */ resolve => { resolveConnection = resolve; });
+    testConnectionMock.mockReturnValueOnce(pendingConnection);
+    // hook 是连接测试与配置编辑并发场景的设置 Hook 渲染结果。
+    const hook = renderHook(renderSettingsHook);
+    await waitFor(
+      // statusAssertion 等待初始设置和默认模型选择完成。
+      () => expect(hook.result.current.settings?.ai_model).toBe('model-a'),
+    );
+    // testAction 发起尚未完成的连接测试，不等待远端结果。
+    let testAction: Promise<void> = Promise.resolve();
+    act(/* startTestAction 启动连接测试以便随后编辑配置。 */ () => { testAction = (hook.result.current.testConnection as () => Promise<void>)(); });
+    await waitFor(
+      // loadingAssertion 等待连接测试进入忙碌状态。
+      () => expect(hook.result.current.connectionTestLoading).toBe(true),
+    );
+    await act(
+      // editSettingsAction 更换模型，令旧测试结果不再对应当前草稿。
+      () => hook.result.current.setSettings(/* previous 是编辑前的设置草稿，仅替换本次测试关联的模型字段。 */ previous => previous ? { ...previous, ai_model: 'new-model' } : previous),
+    );
+    resolveConnection({ success: true, model: 'model-a', latency_ms: 42, reply: '旧回复' });
+    await act(
+      // completeTestAction 完成已过期连接测试请求。
+      async () => testAction,
+    );
+    expect(hook.result.current.connectionTestMessage).toBeNull();
+    expect(hook.result.current.connectionTestLoading).toBe(false);
+    hook.unmount();
   });
 
   test('凭据校验失败和服务拒绝都写入错误提示', /* 当前回调验证登录凭据校验和后端拒绝路径。 */ async () => {

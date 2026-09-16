@@ -3,6 +3,7 @@ package automation
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -10,6 +11,74 @@ import (
 
 	"xianyu-go/internal/db"
 )
+
+// paidRecoveryReady 重新核对付款运行的来源、最新订单状态和自动发货总开关。
+// 它只允许恢复 WebSocket 已创建或待发货兜底已创建的运行，绝不从历史运行推断砍价阶段或绕过账号开关。
+func (s *Scheduler) paidRecoveryReady(ctx context.Context, task Task, run db.AutomationRun) (bool, error) {
+	if task.TriggerType != TriggerOrderPaid {
+		return true, nil
+	}
+	if task.Source != "ws" && task.Source != "scheduler" {
+		// reason 说明旧版或人工来源付款运行不能被计划任务静默续跑。
+		reason := "付款运行缺少可信的 WebSocket 或待发货兜底来源，已停止自动恢复"
+		return false, s.quarantineRunForReview(ctx, run, reason)
+	}
+	// order、orderErr 保存计划任务执行前读取到的最新订单事实。
+	order, orderErr := s.center.store.Orders.Get(ctx, run.OrderID)
+	if errors.Is(orderErr, db.ErrNotFound) {
+		// reason 说明没有订单事实时无法证明买家仍已付款且等待发货。
+		reason := "本地缺少订单状态，无法确认订单仍为待发货，已停止自动恢复"
+		return false, s.quarantineRunForReview(ctx, run, reason)
+	}
+	if orderErr != nil {
+		// postponeErr 保存订单事实暂时不可读时的恢复延期结果，避免数据库瞬时错误触发外部动作。
+		postponeErr := s.center.store.Automation.PostponeRecoveryRun(ctx, run.ID, run.AttemptCount, time.Now().UTC().Add(defaultReviewRequestScanInterval).Unix())
+		if postponeErr != nil {
+			return false, errors.Join(fmt.Errorf("读取付款恢复订单状态失败: %w", orderErr), fmt.Errorf("延期付款恢复运行失败: %w", postponeErr))
+		}
+		s.center.logger.Warn("读取付款恢复订单状态失败，已延期等待下次核对", "run_id", run.ID, "account", run.CookieID, "order_id", run.OrderID, "err", orderErr)
+		return false, nil
+	}
+	if order.CookieID != run.CookieID {
+		// reason 说明订单归属变化后不能继续使用原运行的账号凭证或会话。
+		reason := "订单归属账号与付款运行不一致，已停止自动恢复"
+		return false, s.quarantineRunForReview(ctx, run, reason)
+	}
+	if order.OrderStatus != "pending_ship" || order.SystemShipped {
+		// reason 记录自动取消原因；订单已取消、完成或发货时无需用户再次处理。
+		reason := fmt.Sprintf("订单当前状态为 %s，不再需要自动发货恢复", firstNonEmpty(order.OrderStatus, "未知"))
+		// canceled、cancelErr 保存过期运行是否仍与扫描快照一致并已安全取消。
+		canceled, cancelErr := s.center.store.Automation.CancelObsoletePaidRecoveryRun(ctx, run, reason)
+		if cancelErr != nil {
+			return false, fmt.Errorf("取消已失效付款恢复运行: %w", cancelErr)
+		}
+		if canceled {
+			s.center.logger.Info("订单已不再待发货，取消历史付款恢复运行", "run_id", run.ID, "account", run.CookieID, "order_id", run.OrderID, "order_status", order.OrderStatus, "system_shipped", order.SystemShipped)
+		}
+		return false, nil
+	}
+	// enabled、settingsErr 保存账号当前自动发货总开关及读取错误。
+	enabled, settingsErr := s.center.paidDeliveryAutoConfirmEnabled(ctx, run.CookieID)
+	if settingsErr != nil {
+		// postponeErr 保存设置暂时不可读时的恢复延期结果，禁止失败开放。
+		postponeErr := s.center.store.Automation.PostponeRecoveryRun(ctx, run.ID, run.AttemptCount, time.Now().UTC().Add(defaultReviewRequestScanInterval).Unix())
+		if postponeErr != nil {
+			return false, errors.Join(fmt.Errorf("读取付款恢复自动发货开关失败: %w", settingsErr), fmt.Errorf("延期付款恢复运行失败: %w", postponeErr))
+		}
+		s.center.logger.Warn("读取付款恢复自动发货开关失败，已延期等待下次核对", "run_id", run.ID, "account", run.CookieID, "order_id", run.OrderID, "err", settingsErr)
+		return false, nil
+	}
+	if !enabled {
+		// postponeErr 保存用户关闭自动发货后把历史运行移出当前扫描窗口的结果。
+		postponeErr := s.center.store.Automation.PostponeRecoveryRun(ctx, run.ID, run.AttemptCount, time.Now().UTC().Add(10*time.Minute).Unix())
+		if postponeErr != nil {
+			return false, fmt.Errorf("自动发货已关闭，延期付款恢复运行失败: %w", postponeErr)
+		}
+		s.center.logger.Info("账号已关闭自动发货，付款恢复运行等待用户重新开启", "run_id", run.ID, "account", run.CookieID, "order_id", run.OrderID)
+		return false, nil
+	}
+	return true, nil
+}
 
 // scanPendingShipDeliveries 兜底扫描没有付款运行的待发货订单并补触发自动发货。
 func (s *Scheduler) scanPendingShipDeliveries(ctx context.Context) {

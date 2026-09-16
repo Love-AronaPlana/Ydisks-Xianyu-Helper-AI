@@ -24,8 +24,8 @@ test('通知事件摘要为空时表示订阅全部事件',
     expect(notificationEventSummary(['account_offline', 'system_error'])).toBe('掉线通知、系统错误');
   });
 
-test('旧版统一交易开关归一为四类自动化开关',
-  // 兼容测试验证旧渠道编辑后会展开四个自动化事件。
+test('旧版统一交易开关归一为自动化与人工处理开关',
+  // 兼容测试验证旧渠道编辑后会展开四个自动化事件及人工处理事件。
   () => {
   // legacyChannel 是保存过旧版交易事件编码的渠道摘要。
   const legacyChannel = { id: 'legacy-channel', ...createForm({ event_types: ['delivery_result'] }) } as NotificationChannel;
@@ -33,11 +33,13 @@ test('旧版统一交易开关归一为四类自动化开关',
   const normalized = normalizeNotificationForm(legacyChannel, {});
   expect(normalized.event_types).toEqual(expect.arrayContaining([
     'automation_order_created', 'automation_order_paid', 'automation_buyer_reviewed', 'automation_review_missing_timeout',
+    'manual_delivery_result', 'manual_intervention_required',
   ]));
   expect(notificationEvents.filter(
     // event 是当前通知事件定义，用于统计自动化任务类别数量。
     event => event.value.startsWith('automation_'),
   )).toHaveLength(4);
+  expect(notificationEventSummary(['manual_intervention_required'])).toBe('需要人工处理');
   });
 
 test('通知请求代次拒绝过期响应',

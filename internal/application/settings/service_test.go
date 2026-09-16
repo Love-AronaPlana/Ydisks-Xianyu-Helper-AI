@@ -187,8 +187,14 @@ func (r *settingsRepositoryFake) HasEnabledAdjustPriceRule(context.Context, stri
 
 // modelClientFake 是 AI 模型客户端测试替身。
 type modelClientFake struct {
-	// calls 保存收到的端点和密钥，测试只比较是否传递，不输出秘密。
+	// calls 保存所有模型发现和连接测试调用次数。
 	calls int
+	// testBaseURL 保存连接测试实际收到的端点地址。
+	testBaseURL string
+	// testAPIKey 保存连接测试收到的临时或受控密钥，仅在内存断言中使用且不输出。
+	testAPIKey string
+	// testModel 保存连接测试实际收到的模型名称。
+	testModel string
 }
 
 // Fetch 返回固定模型列表并记录调用次数。
@@ -197,9 +203,12 @@ func (c *modelClientFake) Fetch(context.Context, string, string) ([]string, erro
 	return []string{"qwen-plus"}, nil
 }
 
-// TestConnection 返回固定连接测试结果并记录调用次数。
-func (c *modelClientFake) TestConnection(context.Context, string, string, string) (AIConnectionTestResult, error) {
+// TestConnection 返回固定连接测试结果并记录实际转交参数，不记录或输出 API Key。
+func (c *modelClientFake) TestConnection(_ context.Context, baseURL, apiKey, model string) (AIConnectionTestResult, error) {
 	c.calls++
+	c.testBaseURL = baseURL
+	c.testAPIKey = apiKey
+	c.testModel = model
 	return AIConnectionTestResult{Model: "qwen-plus", LatencyMS: 42, Reply: "你好"}, nil
 }
 
@@ -307,6 +316,35 @@ func TestServiceListAIModelsFailsClosedWhenAuditUnavailable(t *testing.T) {
 	models, err := service.ListAIModels(context.Background(), 7, "https://example.test/v1", "provided-secret")
 	if err == nil || models != nil || client.calls != 0 {
 		t.Fatalf("audit failure should stop model request: models=%v err=%v calls=%d", models, err, client.calls)
+	}
+}
+
+// TestServiceTestAIConnectionAuditsByPurpose 验证连接测试使用独立审计资源，并按空字段回退保存的端点、密钥和模型。
+func TestServiceTestAIConnectionAuditsByPurpose(t *testing.T) {
+	// repository 保存连接测试需要回退读取的系统设置和敏感键声明。
+	repository := &settingsRepositoryFake{systemValues: map[string]string{"ai_api_url": "https://configured.test/v1", "ai_model": "configured-model"}, sensitiveKeys: []string{"ai_api_key"}}
+	// client 记录应用服务最终转交给连接测试 Port 的参数。
+	client := &modelClientFake{}
+	// service 是待验证的设置应用服务。
+	service := NewService(repository, client)
+	// result、testErr 分别保存连接测试结果和应用服务返回的错误。
+	result, testErr := service.TestAIConnection(context.Background(), 7, "", "", "")
+	if testErr != nil || result.Model != "qwen-plus" {
+		t.Fatalf("result=%+v err=%v", result, testErr)
+	}
+	if client.testBaseURL != "https://configured.test/v1" || client.testAPIKey != "stored-secret" || client.testModel != "configured-model" {
+		t.Fatalf("connection inputs are not normalized correctly")
+	}
+
+	// explicitResult、explicitErr 分别保存临时密钥场景的结果与错误。
+	explicitResult, explicitErr := service.TestAIConnection(context.Background(), 7, "https://temporary.test/v1", "temporary-secret", "temporary-model")
+	if explicitErr != nil || explicitResult.Model != "qwen-plus" {
+		t.Fatalf("explicit result=%+v err=%v", explicitResult, explicitErr)
+	}
+	// audit 是临时密钥出站前必须写入的独立用途审计记录。
+	audit := repository.audits[len(repository.audits)-1]
+	if audit.Action != "settings.use" || audit.Resource != "ai_connection_test" || len(audit.Keys) != 1 || audit.Keys[0] != "ai_api_key" {
+		t.Fatalf("unexpected audit=%+v", audit)
 	}
 }
 

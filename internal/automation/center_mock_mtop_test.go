@@ -281,7 +281,7 @@ type fakeCredentialRecoverer struct {
 
 // FetchOrderDetail 封装Fetch订单Detail业务协调。
 func (f *fakeCredentialRecoverer) FetchOrderDetail(context.Context, string, string, string, string, string) (*OrderDetail, error) {
-	return &OrderDetail{Quantity: "1", Amount: "9.9"}, nil
+	return &OrderDetail{Quantity: "1", Amount: "9.9", OrderStatus: "pending_ship"}, nil
 }
 
 // RecoverExpiredCredential 封装RecoverExpiredCredential业务协调。
@@ -340,7 +340,7 @@ func TestConfirmShipmentRetriesFromCheckpointWithoutResendingCard(t *testing.T) 
 		OrderDetailFetcher: recoverer,
 	})
 	// task 用于本次流程后续判断的任务
-	task := Task{AccountID: "cid", TriggerType: TriggerOrderPaid, OrderID: "checkpoint-order",
+	task := Task{Source: "ws", AccountID: "cid", TriggerType: TriggerOrderPaid, OrderID: "checkpoint-order",
 		ItemID: "checkpoint-item", BuyerID: "buyer", ChatID: "chat", Quantity: "1", Amount: "9.9"}
 	if // err 用于本次流程后续判断的err
 	err := center.HandleTask(ctx, task); err == nil {
@@ -440,7 +440,7 @@ func TestConfirmShipmentRetriesFromCheckpointWithoutResendingTemplate(t *testing
 	// center 保存模板恢复测试使用的自动化中心。
 	center := NewWithDependencies(store, testSenderProvider{sender: sender}, nil, CenterDependencies{MTop: mtopMock, OrderDetailFetcher: recoverer})
 	// task 保存模板恢复测试的订单任务。
-	task := Task{AccountID: "cid", TriggerType: TriggerOrderPaid, OrderID: "template-recovery-order", ItemID: "template-recovery-item", BuyerID: "buyer", ChatID: "chat", Quantity: "1"}
+	task := Task{Source: "ws", AccountID: "cid", TriggerType: TriggerOrderPaid, OrderID: "template-recovery-order", ItemID: "template-recovery-item", BuyerID: "buyer", ChatID: "chat", Quantity: "1"}
 	// firstErr 保存首次确认发货因凭证恢复失败而返回的错误。
 	firstErr := center.HandleTask(ctx, task)
 	if firstErr == nil {

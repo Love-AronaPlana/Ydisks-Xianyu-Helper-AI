@@ -28,6 +28,27 @@ export const isCurrentSettingsRequest = (currentSequence: number, requestSequenc
   currentSequence === requestSequence && !signal.aborted
 );
 
+/** AI 连接测试快照绑定一次出站请求所使用的端点、密钥和模型，不持久化也不展示密钥。 */
+export type AIConnectionTestSnapshot = {
+  /** baseURL 是实际提交给后端的 AI 服务基础地址。 */
+  baseURL: string;
+  /** apiKey 是仅在本次请求内转交后端的明文密钥。 */
+  apiKey: string;
+  /** model 是本次实际验证的模型名称。 */
+  model: string;
+};
+
+/** isCurrentAIConnectionTest 判断页面当前 AI 配置是否仍与开始测试时的快照一致。 */
+export const isCurrentAIConnectionTest = (settings: SystemSettings | null, snapshot: AIConnectionTestSnapshot, defaultBaseURL: string): boolean => {
+  // currentBaseURL 保存当前草稿实际用于测试的端点，缺省时与 Hook 使用同一默认地址。
+  const currentBaseURL = settings?.ai_api_url || settings?.ai_base_url || defaultBaseURL;
+  // currentAPIKey 保存当前草稿的临时密钥；空值表示服务端应读取已保存密钥。
+  const currentAPIKey = settings?.ai_api_key || '';
+  // currentModel 保存当前草稿的模型名称；空值表示服务端应读取默认模型。
+  const currentModel = settings?.ai_model || '';
+  return currentBaseURL === snapshot.baseURL && currentAPIKey === snapshot.apiKey && currentModel === snapshot.model;
+};
+
 /** 判断错误是否来自主动取消。 */
 export const isSettingsAbortError = (error: unknown): boolean => error instanceof Error && error.message === '请求已取消';
 

@@ -2,6 +2,7 @@ package adapter
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -64,5 +65,88 @@ func TestAIModelParsingAndErrorFormatting(t *testing.T) {
 	long := truncateAIModelBody("1234567890", 5)
 	if short != "short" || long != "12345" {
 		t.Fatalf("body=%q/%q", short, long)
+	}
+}
+
+// TestAIModelClientTestConnection 验证连接测试使用独立长时客户端、正确的 chat 请求形状和兼容回复解析。
+func TestAIModelClientTestConnection(t *testing.T) {
+	// server 是断言实际请求路径、认证头和 JSON 载荷的本地 OpenAI 兼容端点。
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost || request.URL.Path != "/chat/completions" {
+			t.Errorf("unexpected request=%s %s", request.Method, request.URL.Path)
+		}
+		if request.Header.Get("Authorization") != "Bearer test-secret" {
+			t.Error("authorization header was not forwarded")
+		}
+		// payload 保存解码后的最小诊断请求，避免通过字符串比较遗漏 JSON 转义问题。
+		var payload aiConnectionTestRequest
+		// decodeErr 表示本地替身未收到符合约定的 JSON 请求正文。
+		if decodeErr := json.NewDecoder(request.Body).Decode(&payload); decodeErr != nil {
+			t.Fatalf("decode payload: %v", decodeErr)
+		}
+		if payload.Model != "reasoning-model" || payload.MaxTokens != AIConnectionTestMaxTokens || len(payload.Messages) != 1 || payload.Messages[0].Role != "user" || payload.Messages[0].Content != "你好" {
+			t.Fatalf("unexpected payload=%+v", payload)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":[{"type":"text","text":"连接成功"}]}}]}`))
+	}))
+	defer server.Close()
+	// client 仅装配测试连接客户端，验证 TestConnection 不错误依赖模型目录客户端工厂。
+	client := &AIModelClient{newTestHTTPClient: func(string) (*http.Client, error) { return server.Client(), nil }}
+	// result、testErr 分别保存连接测试的非敏感结果及失败原因。
+	result, testErr := client.TestConnection(context.Background(), server.URL+"/", "test-secret", " reasoning-model ")
+	if testErr != nil {
+		t.Fatalf("test connection: %v", testErr)
+	}
+	if result.Model != "reasoning-model" || result.Reply != "连接成功" || result.LatencyMS < 0 {
+		t.Fatalf("unexpected result=%+v", result)
+	}
+}
+
+// TestAIModelClientTestConnectionClassifiesErrors 验证上游失败不会把远端正文返回给管理员页面，并保留可操作的分类提示。
+func TestAIModelClientTestConnectionClassifiesErrors(t *testing.T) {
+	// cases 保存不同 HTTP 状态对应的用户可见诊断分类。
+	cases := []struct {
+		// name 是当前上游失败场景的稳定名称。
+		name string
+		// status 是本地替身返回的 HTTP 状态码。
+		status int
+		// want 是结果错误文本必须包含的分类提示。
+		want string
+	}{
+		{name: "authentication", status: http.StatusUnauthorized, want: "认证失败"},
+		{name: "not-found", status: http.StatusNotFound, want: "模型不存在"},
+		{name: "rate-limited", status: http.StatusTooManyRequests, want: "额度或请求频率受限"},
+		{name: "upstream", status: http.StatusBadGateway, want: "AI 服务请求失败"},
+	}
+	// testCase 是当前正在验证的上游失败分类。
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			// server 是返回秘密样式正文的上游替身，用于确认错误响应不会被转发。
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				writer.WriteHeader(testCase.status)
+				_, _ = writer.Write([]byte("upstream-secret-body"))
+			}))
+			defer server.Close()
+			// client 使用本地替身的 HTTP 客户端，避免触发真实外部服务。
+			client := &AIModelClient{newTestHTTPClient: func(string) (*http.Client, error) { return server.Client(), nil }}
+			// result、testErr 分别保存失败测试返回的诊断信息和错误。
+			result, testErr := client.TestConnection(context.Background(), server.URL, "test-secret", "test-model")
+			if testErr == nil || !strings.Contains(testErr.Error(), testCase.want) || strings.Contains(testErr.Error(), "upstream-secret-body") {
+				t.Fatalf("result=%+v err=%v", result, testErr)
+			}
+			if result.Model != "test-model" || result.LatencyMS < 0 {
+				t.Fatalf("unexpected result=%+v", result)
+			}
+		})
+	}
+}
+
+// TestExtractChatReplyAcceptsReasoningOnlyResponse 验证推理模型在尚未给出可显示正文时仍被识别为有效 chat completion。
+func TestExtractChatReplyAcceptsReasoningOnlyResponse(t *testing.T) {
+	// reply、replyErr 分别保存仅含 reasoning_content 的兼容响应解析结果及错误。
+	reply, replyErr := extractChatReply([]byte(`{"choices":[{"message":{"reasoning_content":"正在推理"}}]}`))
+	if replyErr != nil || reply != "模型已返回推理结果" {
+		t.Fatalf("reply=%q err=%v", reply, replyErr)
 	}
 }

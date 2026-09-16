@@ -22,6 +22,12 @@ type triggerAwareNotifier interface {
 	NotifyAutomationRunForTrigger(ctx context.Context, triggerType string, runID int64, accountID, buyerID, itemID, status, message, chatID string)
 }
 
+// manualInterventionNotifier 定义没有自动化运行主键的阶段异常通知能力。
+type manualInterventionNotifier interface {
+	// NotifyManualIntervention 按稳定业务键发送一条必须人工处理的通知。
+	NotifyManualIntervention(ctx context.Context, triggerType, accountID, orderID, itemID, buyerID, action, reason, chatID, idempotencyKey string)
+}
+
 // notifyResult 根据规则执行终态发送通知；只要运行进入 success，就通知自动化已完成，避免 sent_count 为零时静默丢失结果。
 // runID 与 status 会传给持久化 outbox，防止恢复扫描对同一运行重复排队。
 func (n deliveryNotifier) notifyResult(ctx context.Context, task Task, runID int64, status string, sent int, errMsg string) {
@@ -81,4 +87,25 @@ func (n deliveryNotifier) notifyRunNeedsReview(ctx context.Context, run db.Autom
 		TriggerType: run.TriggerType,
 	}
 	n.notifyResult(ctx, task, run.ID, "needs_review", run.SentCount, "需要人工核对："+reason)
+}
+
+// notifyManualIntervention 通知没有运行主键的自动化阶段已经停止，需要用户人工处理。
+func (n deliveryNotifier) notifyManualIntervention(ctx context.Context, task Task, action, reason, idempotencyKey string) {
+	// notifier 是当前可选通知器；旧兼容实现不具备独立人工处理入口时只记录中文告警。
+	notifier := n.current()
+	if notifier == nil {
+		if n.logger != nil {
+			n.logger.Warn("人工处理通知未触发：通知器未注入", "account", task.AccountID, "order_id", task.OrderID, "action", action)
+		}
+		return
+	}
+	// capable 表示通知器是否支持不依赖自动化运行主键的人工处理事件。
+	capable, ok := notifier.(manualInterventionNotifier)
+	if !ok {
+		if n.logger != nil {
+			n.logger.Warn("人工处理通知未触发：通知器不支持阶段告警", "account", task.AccountID, "order_id", task.OrderID, "action", action)
+		}
+		return
+	}
+	capable.NotifyManualIntervention(ctx, task.TriggerType, task.AccountID, task.OrderID, task.ItemID, task.BuyerID, action, reason, task.ChatID, idempotencyKey)
 }

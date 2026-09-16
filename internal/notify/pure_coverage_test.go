@@ -24,7 +24,8 @@ func TestNotificationPureMappings(t *testing.T) {
 		EventSecurityVerification: "风控验证", EventTokenRenewal: "续期通知", EventDeliveryResult: "交易通知",
 		EventAutomationOrderCreated: "拍下改价", EventAutomationOrderPaid: "付款发货", EventAutomationBuyerReviewed: "评价赠品",
 		EventAutomationReviewMissingTimeout: "求评价", EventManualDeliveryResult: "手动发货结果",
-		EventSystemError: "系统错误", "": "通知", "custom": "custom",
+		EventManualInterventionRequired: "需要人工处理",
+		EventSystemError:                "系统错误", "": "通知", "custom": "custom",
 	}
 	// event、want 表示当前事件及预期展示标签。
 	for event, want := range eventCases {
@@ -55,6 +56,37 @@ func TestNotificationPureMappings(t *testing.T) {
 		got := classifyAccountAlertEvent(alertCase.title, alertCase.body)
 		if got != alertCase.want {
 			t.Fatalf("告警分类错误 title=%q body=%q got=%q want=%q", alertCase.title, alertCase.body, got, alertCase.want)
+		}
+	}
+}
+
+// TestEventAllowedWithFallbacksPreservesAutomationSubscriptions 验证独立人工处理类别兼容原自动化类别和旧交易总开关。
+func TestEventAllowedWithFallbacksPreservesAutomationSubscriptions(t *testing.T) {
+	if /* got 保存免拼阶段映射到的兼容自动化通知类别。 */ got := automationEventType("bargain_pending"); got != EventAutomationOrderPaid {
+		t.Fatalf("免拼阶段人工处理来源类别=%q want %q", got, EventAutomationOrderPaid)
+	}
+	// cases 保存订阅配置、兼容来源和预期放行结果。
+	cases := []struct {
+		// name 是当前兼容订阅场景名称。
+		name string
+		// raw 是渠道持久化的事件订阅 JSON。
+		raw string
+		// fallbacks 是人工处理事件的来源类别。
+		fallbacks []string
+		// want 是预期放行结果。
+		want bool
+	}{
+		{name: "独立人工处理", raw: `["manual_intervention_required"]`, want: true},
+		{name: "原付款发货", raw: `["automation_order_paid"]`, fallbacks: []string{EventAutomationOrderPaid}, want: true},
+		{name: "旧交易总开关", raw: `["delivery_result"]`, want: true},
+		{name: "无关事件", raw: `["account_offline"]`, fallbacks: []string{EventAutomationOrderPaid}, want: false},
+	}
+	// testCase 表示当前兼容订阅场景。
+	for _, testCase := range cases {
+		// allowed、allowErr 保存当前订阅配置的放行结果和解析错误。
+		allowed, allowErr := eventAllowedWithFallbacks(testCase.raw, EventManualInterventionRequired, testCase.fallbacks)
+		if allowErr != nil || allowed != testCase.want {
+			t.Fatalf("%s allowed=%v want=%v err=%v", testCase.name, allowed, testCase.want, allowErr)
 		}
 	}
 }

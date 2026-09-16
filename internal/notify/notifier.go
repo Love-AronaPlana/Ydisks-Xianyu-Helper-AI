@@ -40,7 +40,9 @@ const (
 	EventAutomationReviewMissingTimeout = "automation_review_missing_timeout"
 	// EventManualDeliveryResult 表示人工发货结果通知；它与四种自动化任务分开筛选。
 	EventManualDeliveryResult = "manual_delivery_result"
-	EventSystemError          = "system_error"
+	// EventManualInterventionRequired 表示自动化已停止且必须由用户人工判断或处理。
+	EventManualInterventionRequired = "manual_intervention_required"
+	EventSystemError                = "system_error"
 	// legacyNotifierOperationTimeout 是兼容无 Context 通知与等待入口的最长数据库或网络预算。
 	legacyNotifierOperationTimeout = 10 * time.Second
 )
@@ -54,6 +56,8 @@ type NotificationEvent struct {
 	Body      string
 	Fields    map[string]string
 	Time      time.Time
+	// SubscriptionFallbackTypes 保存兼容旧订阅配置的候选类别；只参与渠道过滤，不改变实际入队类别和通知展示。
+	SubscriptionFallbackTypes []string
 }
 
 // Notifier 通知发送器。
@@ -186,11 +190,19 @@ func (n *Notifier) notifyAutomationRun(ctx context.Context, eventType string, ru
 	}
 	// idempotencyKey 绑定自动化运行主键与终态，避免恢复扫描或状态收口重试创建新 outbox 消息。
 	idempotencyKey := fmt.Sprintf("automation-run:%d:%s", runID, strings.TrimSpace(status))
+	// notificationType、notificationLevel、notificationTitle 和 fallbackTypes 共同区分普通终态与必须人工介入的终态。
+	notificationType, notificationLevel, notificationTitle := eventType, "info", "自动化运行通知"
+	// fallbackTypes 保存人工处理终态原本所属的自动化类别，兼容现有渠道订阅。
+	var fallbackTypes []string
+	if strings.TrimSpace(status) == "needs_review" {
+		notificationType, notificationLevel, notificationTitle = EventManualInterventionRequired, "critical", "自动化需要人工处理"
+		fallbackTypes = []string{eventType}
+	}
 	n.notifyEvent(ctx, NotificationEvent{
 		AccountID: accountID,
-		Type:      eventType,
-		Level:     "info",
-		Title:     "自动化运行通知",
+		Type:      notificationType,
+		Level:     notificationLevel,
+		Title:     notificationTitle,
 		Body:      message,
 		Fields: map[string]string{
 			"买家":   fmt.Sprintf("(ID: %s)", buyerID),
@@ -198,7 +210,36 @@ func (n *Notifier) notifyAutomationRun(ctx context.Context, eventType string, ru
 			"聊天ID": fallback(chatID, "未知"),
 			"结果":   message,
 		},
+		SubscriptionFallbackTypes: fallbackTypes,
 	}, idempotencyKey)
+}
+
+// NotifyManualIntervention 将没有 automation_run 主键的自动化异常按稳定业务键写入人工处理通知。
+// triggerType 标识原自动化类别，action 描述需要人工处理的环节；idempotencyKey 必须由订单和阶段等稳定事实构成，禁止使用随机值。
+func (n *Notifier) NotifyManualIntervention(ctx context.Context, triggerType, accountID, orderID, itemID, buyerID, action, reason, chatID, idempotencyKey string) {
+	if n == nil || strings.TrimSpace(accountID) == "" || strings.TrimSpace(idempotencyKey) == "" {
+		return
+	}
+	// message 汇总人工处理环节与原因，避免用户只看到系统错误却不知道应检查哪个订单。
+	message := fmt.Sprintf("%s（订单 %s）需要人工处理：%s", fallback(action, "自动化任务"), fallback(orderID, "未知"), fallback(reason, "执行结果无法确认"))
+	// sourceEventType 保存该人工处理事件原本所属的自动化类别，兼容用户已有的细分类别订阅。
+	sourceEventType := automationEventType(triggerType)
+	n.notifyEvent(ctx, NotificationEvent{
+		AccountID: accountID,
+		Type:      EventManualInterventionRequired,
+		Level:     "critical",
+		Title:     "自动化需要人工处理",
+		Body:      message,
+		Fields: map[string]string{
+			"订单ID": orderID,
+			"商品ID": itemID,
+			"买家ID": buyerID,
+			"聊天ID": fallback(chatID, "未知"),
+			"处理环节": fallback(action, "自动化任务"),
+			"原因":   fallback(reason, "执行结果无法确认"),
+		},
+		SubscriptionFallbackTypes: []string{sourceEventType},
+	}, strings.TrimSpace(idempotencyKey))
 }
 
 // automationEventType 将自动化触发编码转换为通知筛选编码。
@@ -206,7 +247,7 @@ func automationEventType(triggerType string) string {
 	switch strings.TrimSpace(triggerType) {
 	case "order_created":
 		return EventAutomationOrderCreated
-	case "order_paid":
+	case "order_paid", "bargain_pending":
 		return EventAutomationOrderPaid
 	case "buyer_reviewed":
 		return EventAutomationBuyerReviewed
@@ -275,7 +316,7 @@ func (n *Notifier) notifyEvent(ctx context.Context, ev NotificationEvent, idempo
 	// ch 表示当前遍历过程中的ch
 	for _, ch := range channels {
 		// allowed、err 用于本次流程后续判断的allowed、err
-		allowed, err := eventAllowed(ch.EventTypes, ev.Type)
+		allowed, err := eventAllowedWithFallbacks(ch.EventTypes, ev.Type, ev.SubscriptionFallbackTypes)
 		if err != nil {
 			n.logger.Warn("通知事件订阅配置无效，跳过渠道", "channel", ch.ID, "event_types", ch.EventTypes, "err", err)
 			continue
@@ -493,6 +534,8 @@ func eventLabel(eventType string) string {
 		return "求评价"
 	case EventManualDeliveryResult:
 		return "手动发货结果"
+	case EventManualInterventionRequired:
+		return "需要人工处理"
 	case EventSystemError:
 		return "系统错误"
 	default:
@@ -600,9 +643,26 @@ func eventAllowed(raw, eventType string) (bool, error) {
 	if events[eventType] {
 		return true, nil
 	}
-	// delivery_result 是旧版统一交易开关；保留它对新四类自动化事件和人工发货结果的兼容放行。
-	if events[EventDeliveryResult] && (isAutomationEventType(eventType) || eventType == EventManualDeliveryResult) {
+	// delivery_result 是旧版统一交易开关；保留它对新四类自动化事件、人工发货结果和人工处理告警的兼容放行。
+	if events[EventDeliveryResult] && (isAutomationEventType(eventType) || eventType == EventManualDeliveryResult || eventType == EventManualInterventionRequired) {
 		return true, nil
+	}
+	return false, nil
+}
+
+// eventAllowedWithFallbacks 先匹配事件实际类别，再匹配来源类别，保证新增人工处理分类不会切断旧自动化订阅。
+func eventAllowedWithFallbacks(raw, eventType string, fallbackTypes []string) (bool, error) {
+	// allowed、err 保存实际事件类别的订阅判断结果。
+	allowed, err := eventAllowed(raw, eventType)
+	if err != nil || allowed {
+		return allowed, err
+	}
+	// fallbackType 表示当前兼容检查的来源事件类别。
+	for _, fallbackType := range fallbackTypes {
+		allowed, err = eventAllowed(raw, fallbackType)
+		if err != nil || allowed {
+			return allowed, err
+		}
 	}
 	return false, nil
 }

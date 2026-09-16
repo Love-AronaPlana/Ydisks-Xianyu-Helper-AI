@@ -118,7 +118,7 @@ func (r automationRunCoordinator) executeRule(ctx context.Context, task Task, ru
 	}
 	if errors.Is(actionErr, errAutomationNeedsReview) {
 		finish = false
-		if r.hasNotifier() && !errors.Is(actionErr, errAutomationQuarantine) {
+		if r.hasNotifier() {
 			// notifyCtx 保证人工核对通知在动作预算取消后仍能进入持久化通知链路。
 			notifyCtx, notifyCancel := newAutomationRunCompensationContext(ctx)
 			r.notifyResult(notifyCtx, task, run.ID, "needs_review", sent, actionErr.Error())
