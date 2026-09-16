@@ -58,6 +58,8 @@ type textSent struct {
 type imageSent struct {
 	chatID, toUserID, url string
 	cardID                int64
+	// width 和 height 保存交给 WebSocket 的图片像素尺寸。
+	width, height int
 }
 
 // SendText 封装Send文本业务协调。
@@ -105,13 +107,26 @@ func TestReplyOnceMarksDefiniteFailureWithIndependentContext(t *testing.T) {
 	}
 }
 
-// SendImage 封装Send图片业务协调。
-func (r *recordingSender) SendImage(_ context.Context, chatID, toUserID, url string, cardID int64, _, _ int) error {
+// SendImage 记录聊天图片地址、关联卡密和像素尺寸，供回复投递测试断言。
+// ctx 是发送上下文；chatID/toUserID/url/cardID 标识消息身份；width/height 是发送协议中的图片像素尺寸。
+func (r *recordingSender) SendImage(_ context.Context, chatID, toUserID, url string, cardID int64, width, height int) error {
 	if r.imageErr != nil {
 		return r.imageErr
 	}
-	r.images = append(r.images, imageSent{chatID, toUserID, url, cardID})
+	r.images = append(r.images, imageSent{chatID: chatID, toUserID: toUserID, url: url, cardID: cardID, width: width, height: height})
 	return nil
+}
+
+// fixedReplyImageDimensions 返回固定宽高，隔离自动回复参数透传测试与外部图片服务。
+// ctx 和 imageURL 是解析器输入但在该替身中不使用；宽高以像素返回且无解析错误。
+func fixedReplyImageDimensions(context.Context, string) (int, int, error) {
+	return 1920, 1080, nil
+}
+
+// failedReplyImageDimensions 模拟图片元数据不可读取，以验证回复继续沿用协议默认尺寸。
+// ctx 和 imageURL 是解析器输入但在该替身中不使用；返回零宽高和读取错误。
+func failedReplyImageDimensions(context.Context, string) (int, int, error) {
+	return 0, 0, errors.New("image metadata unavailable")
 }
 
 // TestAIQuoteSavedOnlyAfterTextDelivery 验证 AI 报价只有在回复发送成功后才成为可执行报价。
@@ -165,6 +180,7 @@ func TestReplyOnceRetriesOnlyFailedParts(t *testing.T) {
 	firstSender := &recordingSender{textErr: textFailure}
 	// service 用于本次流程后续判断的service
 	service := NewReplyService("cid", s, firstSender, nil, nil, nil)
+	service.imageDimensions = fixedReplyImageDimensions
 	if // err 用于本次流程后续判断的err
 	err := service.Handle(ctx, chatMsg("在吗", "", "chat-retry")); !errors.Is(err, textFailure) {
 		t.Fatalf("first error=%v want text failure", err)
@@ -181,6 +197,7 @@ func TestReplyOnceRetriesOnlyFailedParts(t *testing.T) {
 	// secondSender 用于本次流程后续判断的secondSender
 	secondSender := &recordingSender{}
 	service = NewReplyService("cid", s, secondSender, nil, nil, nil)
+	service.imageDimensions = fixedReplyImageDimensions
 	if // err 用于本次流程后续判断的err
 	err := service.Handle(ctx, chatMsg("再问", "", "chat-retry")); err != nil {
 		t.Fatal(err)
@@ -397,7 +414,7 @@ func TestReply_ImageKeyword(t *testing.T) {
 	}
 }
 
-// TestReply_HandleSendsImageThenText Handle 先发图片后发文本；Skip 不发送。
+// TestReply_HandleSendsImageThenText 验证 Handle 先发带原始宽高的图片后发文本，且 Skip 不发送；t 管理本测试。
 func TestReply_HandleSendsImageThenText(t *testing.T) {
 	// s、cleanup 用于本次流程后续判断的s、cleanup
 	s, cleanup := newReplyStore(t)
@@ -410,11 +427,12 @@ func TestReply_HandleSendsImageThenText(t *testing.T) {
 	sender := &recordingSender{}
 	// r 用于本次流程后续判断的r
 	r := NewReplyService("cid", s, sender, nil, nil, nil)
+	r.imageDimensions = fixedReplyImageDimensions
 	if // err 用于本次流程后续判断的err
 	err := r.Handle(ctx, chatMsg("在吗", "", "chat9")); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
-	if len(sender.images) != 1 || sender.images[0].url != "http://img/y.png" {
+	if len(sender.images) != 1 || sender.images[0].url != "http://img/y.png" || sender.images[0].width != 1920 || sender.images[0].height != 1080 {
 		t.Fatalf("应先发图片，got %+v", sender.images)
 	}
 	if len(sender.texts) != 1 || sender.texts[0].text != "文字" {
@@ -433,6 +451,32 @@ func TestReply_HandleSendsImageThenText(t *testing.T) {
 	}
 	if len(sender2.texts) != 0 || len(sender2.images) != 0 {
 		t.Fatalf("Skip 不应发送，got texts=%+v images=%+v", sender2.texts, sender2.images)
+	}
+}
+
+// TestReply_HandleUsesProtocolDefaultWhenImageDimensionsCannotBeRead 验证元数据失败仍会投递图片；t 管理本测试。
+func TestReply_HandleUsesProtocolDefaultWhenImageDimensionsCannotBeRead(t *testing.T) {
+	// store 和 cleanup 保存当前测试独占的回复数据库及关闭责任。
+	store, cleanup := newReplyStore(t)
+	defer cleanup()
+	// ctx 是当前测试回复读取和投递使用的无截止上下文。
+	ctx := context.Background()
+	// setupErr 保存图片关键词回复配置写入结果。
+	_, setupErr := store.DB.ExecContext(ctx, `INSERT INTO keywords (cookie_id,keyword,reply,image_url,type) VALUES ('cid','照片','','https://images.example/photo.png','image')`)
+	if setupErr != nil {
+		t.Fatal(setupErr)
+	}
+	// sender 记录解析失败后的实际图片发送尺寸。
+	sender := &recordingSender{}
+	// reply 使用元数据失败替身确认兼容路径仍发送图片。
+	reply := NewReplyService("cid", store, sender, nil, nil, nil)
+	reply.imageDimensions = failedReplyImageDimensions
+	// sendErr 保存元数据读取失败后继续投递图片的结果。
+	if sendErr := reply.Handle(ctx, chatMsg("给我照片", "", "chat-image-dimensions-fallback")); sendErr != nil {
+		t.Fatalf("元数据读取失败不应阻断图片回复: %v", sendErr)
+	}
+	if len(sender.images) != 1 || sender.images[0].width != 0 || sender.images[0].height != 0 {
+		t.Fatalf("元数据失败应保留协议默认尺寸，实际发送=%+v", sender.images)
 	}
 }
 
