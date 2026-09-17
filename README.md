@@ -54,10 +54,10 @@ links and view data.
 
 - Unified online status and message management for multiple Xianyu accounts
 - Automated delivery of digital goods, redemption codes, links, or images
-- Paid delivery, review gifts, overdue review reminders, and unpaid-order price changes
-- Product and order synchronization, single- or multi-variant publishing, and CSV/XLSX/TSV bulk listing with optional
-  ZIP images
-- Controlled AI customer service through OpenAI-compatible endpoints
+- Paid delivery, staged bargain free shipping, review gifts, overdue review reminders, and unpaid-order price changes
+- Product and order synchronization, list-based single- or multi-variant detection and publishing, and CSV/XLSX/TSV
+  bulk listing with optional ZIP images
+- Controlled AI customer service through OpenAI-compatible endpoints, with an end-to-end connection test
 
 ### Community
 
@@ -70,13 +70,13 @@ links and view data.
 | Account management | Multi-account start/stop, QR login, profile refresh, online status, login audit, and notes. |
 | Credential renewal | Scheduled Cookie/token renewal, WebSocket credential updates, recovery, cooldowns, and failure disabling. |
 | Instant messaging | Account-isolated chat, history, Xianyu emoji, text/images, official system-message recognition, keyword/default replies, and one-reply limits. |
-| Automation center | Unpaid-order price changes, paid delivery, review gifts, review reminders, failure recovery, and idempotency checkpoints. |
-| Account tasks | Automatic reviews, daily product refresh, manual execution, execution records, and idempotency protection. |
+| Automation center | Unpaid-order price changes, paid delivery, staged bargain free shipping, review gifts, review reminders, failure recovery, manual-intervention notifications, and idempotency checkpoints. |
+| Account tasks | Event-driven automatic reviews based on locally recorded buyer-confirmed-receipt events, daily product refresh, manual execution, execution records, and idempotency protection. |
 | Card inventory | Text, batch cards, images, and API delivery, with batch import, quantity, and delay settings. |
-| Product management | Synchronization, manual association, single- or multi-variant publishing, image ordering, category lookup, and bulk listing. |
+| Product management | Synchronization, manual association, list-card `isSKU`-based single- or multi-variant detection (missing or `false` means single-variant), publishing, image ordering, category lookup, and bulk listing. |
 | Delivery templates | Ordered multi-message delivery and order, buyer, card, and custom variables. |
 | Orders | Synchronization, editing, platform delivery, card resending, and exception handling. |
-| AI replies | OpenAI-compatible APIs, model discovery, custom prompts, bargaining rounds, and discount limits. |
+| AI replies | OpenAI-compatible APIs, model discovery, end-to-end connection testing, custom prompts, bargaining rounds, and discount limits. |
 | Notifications | Bark, DingTalk, Feishu, WeCom, Telegram, email, and custom Webhooks. |
 | Storage and security | SQLite/MySQL/PostgreSQL, embedded Goose migrations, AES-256-GCM sensitive-field encryption, log redaction, and outbound-address validation. |
 | Container deployment | PostgreSQL 17, health checks, persistent volumes, and multi-architecture GHCR images. |
@@ -230,7 +230,7 @@ will then be unavailable.
 5. Create delivery content in Card Inventory.
 6. Associate products, cards, specifications, and triggers in Automation.
 7. Use Chat to inspect history and test text, emoji, or image messages.
-8. Configure automatic reviews and daily refresh under Account Management.
+8. Configure automatic reviews and daily refresh under Account Management; if needed, enable the independent bargain free-shipping switch for the “bargain pending” stage (it does not replace automatic delivery or shipment confirmation).
 9. Configure keyword replies, default replies, AI replies, and notifications as needed.
 
 The Go client currently supports QR login only. Do not share Cookies, passwords, QR codes, or verification URLs.
@@ -262,6 +262,8 @@ Important environment variables:
 | CAPTCHA_BROWSER_PROXY | Empty | Credential-free http(s), socks4, or socks5 proxy for token CAPTCHA Chromium. |
 | CAPTCHA_IGNORE_CERT_ERRORS | false | Use true only in a controlled TLS-inspection environment. |
 | TZ | System timezone; Asia/Shanghai in Docker | Container and log timezone. |
+| XIANYU_PENDING_SHIP_CATCHUP | enabled | Stop pending-shipment catch-up and checkpoint-resume scans by setting it to `0`. |
+| XIANYU_CONTINUE_AFTER_UNCERTAIN | enabled | Allow idempotent state actions after an uncertain message action; set it to `0` to keep the circuit breaker closed. |
 
 Docker Compose also supports COMPOSE_PROJECT_NAME, POSTGRES_IMAGE, POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD,
 XIANYU_IMAGE, XIANYU_BIND_ADDRESS, and XIANYU_HTTP_PORT. Pin XIANYU_IMAGE to a release or SHA tag in production.
