@@ -452,10 +452,6 @@ func (s *Server) setAIReply(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "AI 回复模式无效")
 		return
 	}
-	if len([]rune(req.FullPrompt)) > settingsapp.MaxAIReplyPromptLength {
-		writeErr(w, http.StatusBadRequest, "完全模式提示词过长")
-		return
-	}
 	if req.HumanHandoffMinutes < 0 || req.HumanHandoffMinutes > 1440 {
 		writeErr(w, http.StatusBadRequest, "人工接管暂停分钟数必须在 0 到 1440 之间")
 		return
@@ -472,7 +468,7 @@ func (s *Server) setAIReply(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusConflict, err.Error())
 			return
 		}
-		if errors.Is(err, settingsapp.ErrInvalidAIReplyMode) || errors.Is(err, settingsapp.ErrAIReplyPromptTooLong) {
+		if errors.Is(err, settingsapp.ErrInvalidAIReplyMode) {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
 		}

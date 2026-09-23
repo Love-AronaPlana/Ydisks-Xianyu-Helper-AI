@@ -7765,7 +7765,7 @@ components:
         ai_enabled: {type: boolean}
         auto_adjust_price_enabled: {type: boolean}
         ai_reply_mode: {type: string, enum: [bargain, keyword_first, full], default: bargain}
-        ai_full_prompt: {type: string, maxLength: 8000, default: ''}
+        ai_full_prompt: {type: string, default: ''}
         human_handoff_minutes: {type: integer, minimum: 0, maximum: 1440, default: 0}
         ai_vision_enabled:
           type: boolean
@@ -7781,7 +7781,7 @@ components:
         ai_enabled: {type: boolean}
         auto_adjust_price_enabled: {type: boolean}
         ai_reply_mode: {type: string, enum: [bargain, keyword_first, full], default: bargain}
-        ai_full_prompt: {type: string, maxLength: 8000, default: ''}
+        ai_full_prompt: {type: string, default: ''}
         human_handoff_minutes: {type: integer, minimum: 0, maximum: 1440, default: 0}
         ai_vision_enabled:
           type: boolean

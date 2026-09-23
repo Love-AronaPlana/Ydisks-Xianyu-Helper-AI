@@ -197,7 +197,7 @@ func TestMigrate_ExistingAutomationRunsReceiveEmptyDeliveryProof(t *testing.T) {
 	}
 	// finalVersion、versionErr 验证升级已包含账号验证码模式与买家图片识别迁移，不能仅证明旧 delivery_proof 列存在。
 	finalVersion, versionErr := goose.GetDBVersion(rawDB)
-	if versionErr != nil || finalVersion != 56 {
+	if versionErr != nil || finalVersion != 57 {
 		t.Fatalf("final migration version=%d err=%v", finalVersion, versionErr)
 	}
 	if !tableExists(t, rawDB, "order_ownership_repairs") {
@@ -286,13 +286,13 @@ func TestMigrate_UpgradesDatabaseWithMainChatVersions(t *testing.T) {
 	if !columnExists(t, rawDB, "automation_rule_actions", "delivery_template_id") {
 		t.Fatal("automation_rule_actions should reference delivery templates")
 	}
-	// finalVersion、versionErr 验证迁移账本已推进到买家图片识别的 00056，或记录读取失败。
+	// finalVersion、versionErr 验证迁移账本已推进到提示词不限长的 00057，或记录读取失败。
 	finalVersion, versionErr := goose.GetDBVersion(rawDB)
 	if versionErr != nil {
 		t.Fatalf("read final migration version: %v", versionErr)
 	}
-	if finalVersion != 56 {
-		t.Fatalf("final migration version=%d, want 56", finalVersion)
+	if finalVersion != 57 {
+		t.Fatalf("final migration version=%d, want 57", finalVersion)
 	}
 	if !tableExists(t, rawDB, "item_ai_prompts") || !tableExists(t, rawDB, "ai_human_handoffs") {
 		t.Fatal("最新迁移必须创建商品级 AI 提示词和人工接管暂停表")

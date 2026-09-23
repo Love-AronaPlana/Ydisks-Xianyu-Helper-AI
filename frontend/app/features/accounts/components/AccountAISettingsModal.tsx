@@ -92,7 +92,7 @@ export const AccountAISettingsModal: React.FC<AccountAISettingsModalProps> = ({ 
             </div>
           </div>
 
-          {settings.ai_reply_mode !== 'bargain' && <div><label className="block text-sm font-bold text-gray-700 mb-2">完全模式提示词（可选）</label><textarea value={settings.ai_full_prompt} onChange={handleFullPromptChange} placeholder="可使用 {item_title}、{item_price}、{item_description} 占位符；留空使用默认提示词" maxLength={8000} className="w-full ios-input px-4 py-3 rounded-xl h-32 resize-none" /></div>}
+          {settings.ai_reply_mode !== 'bargain' && <div><label className="block text-sm font-bold text-gray-700 mb-2">完全模式提示词（可选）</label><textarea value={settings.ai_full_prompt} onChange={handleFullPromptChange} placeholder="可使用 {item_title}、{item_price}、{item_description} 占位符；留空使用默认提示词" className="w-full ios-input px-4 py-3 rounded-xl h-32 resize-none" /></div>}
 
           <div className="border-t border-gray-200 pt-6">
             <h3 className="text-lg font-bold text-gray-900 mb-4">砍价策略</h3>

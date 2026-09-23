@@ -666,3 +666,30 @@ func TestServicePropagatesSettingsPortErrors(t *testing.T) {
 }
 
 var _ ModelClient = (*modelClientFake)(nil)
+
+// TestUpsertAIReplyAcceptsUnlimitedPromptLength 验证完全模式提示词不再有长度上限。
+func TestUpsertAIReplyAcceptsUnlimitedPromptLength(t *testing.T) {
+	// ctx 是 AI 设置写入的请求上下文。
+	ctx := context.Background()
+	// repository 是只做归属校验的内存设置端口。
+	repository := &settingsRepositoryFake{ownerID: 7, aiSettings: map[string]AIReplySettings{"acc-1": {CookieID: "acc-1"}}}
+	// service 是待验证的设置应用服务。
+	service := NewService(repository, &modelClientFake{}, &outboundPolicyFake{})
+	// longPrompt 是远超旧上限（8000 字符）的提示词，用于确认长度不再被拒绝。
+	longPrompt := strings.Repeat("提示词内容", 60000)
+	if len([]rune(longPrompt)) <= 100000 {
+		t.Fatalf("测试提示词长度不足: %d", len([]rune(longPrompt)))
+	}
+	// err 是超长提示词的写入结果；不允许再出现长度相关的拒绝。
+	if err := service.UpsertAIReply(ctx, 7, "acc-1", AIReplySettings{ReplyMode: "full", FullPrompt: longPrompt, MaxBargainRounds: 3}); err != nil {
+		t.Fatalf("超长提示词应被接受: %v", err)
+	}
+	// stored 是保存后的账号 AI 设置，提示词必须原样保留。
+	stored, readErr := service.GetAIReply(ctx, 7, "acc-1")
+	if readErr != nil {
+		t.Fatalf("读取账号 AI 设置失败: %v", readErr)
+	}
+	if len([]rune(stored.FullPrompt)) != len([]rune(longPrompt)) {
+		t.Fatalf("提示词被截断: 写入 %d 字符，读回 %d 字符", len([]rune(longPrompt)), len([]rune(stored.FullPrompt)))
+	}
+}

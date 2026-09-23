@@ -27,15 +27,11 @@ var ErrPricingModeConflict = errors.New("AI 议价与自动化规则改价不能
 // ErrInvalidAIReplyMode 表示请求的 AI 回复模式不在受支持枚举内。
 var ErrInvalidAIReplyMode = errors.New("AI 回复模式无效")
 
-// ErrAIReplyPromptTooLong 表示完全模式提示词超出允许长度。
-var ErrAIReplyPromptTooLong = errors.New("完全模式提示词过长")
-
 // ErrInvalidHumanHandoffMinutes 表示人工接管暂停分钟数超出 0 到 1440 的范围。
 var ErrInvalidHumanHandoffMinutes = errors.New("人工接管暂停分钟数必须在 0 到 1440 之间")
 
-// MaxAIReplyPromptLength 是完全模式提示词允许的最大字符数，防止提示词膨胀
-// 拖垮每次 AI 调用的上下文开销。
-const MaxAIReplyPromptLength = 8000
+// 完全模式提示词不设长度上限：可用长度由模型上下文窗口决定，超出时模型调用本身会失败。
+// 存储层的实际容量由迁移 00057 保证（MySQL 使用 LONGTEXT，SQLite/PostgreSQL 的 TEXT 本就不限长）。
 
 // SecretChange 描述敏感系统设置的显式三态变更命令。
 type SecretChange struct {
@@ -350,9 +346,6 @@ func (s *Service) UpsertAIReply(ctx context.Context, userID int64, cookieID stri
 	case "bargain", "keyword_first", "full":
 	default:
 		return ErrInvalidAIReplyMode
-	}
-	if len([]rune(settings.FullPrompt)) > MaxAIReplyPromptLength {
-		return ErrAIReplyPromptTooLong
 	}
 	if settings.AIEnabled {
 		// conflict 表示当前账号是否已有启用的固定价格规则；conflictErr 是查询错误。
