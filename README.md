@@ -116,10 +116,6 @@ Core responsibilities:
 
 ## Screenshots
 
-![Account management](https://raw.githubusercontent.com/Christ9038/Ydisks-Xianyu-Helper/main/docs/img/preview_account.png)
-
-![Instant messaging](https://raw.githubusercontent.com/Christ9038/Ydisks-Xianyu-Helper/main/docs/img/preview_im.png)
-
 ![Automation](https://raw.githubusercontent.com/Christ9038/Ydisks-Xianyu-Helper/main/docs/img/preview_auto.png)
 
 ## Quick start

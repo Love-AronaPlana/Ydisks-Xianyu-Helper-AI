@@ -118,10 +118,6 @@ flowchart LR
 
 ## 页面预览
 
-![Ydisks闲鱼助手预览](https://raw.githubusercontent.com/Christ9038/Ydisks-Xianyu-Helper/main/docs/img/preview_account.png)
-
-![Ydisks闲鱼助手预览](https://raw.githubusercontent.com/Christ9038/Ydisks-Xianyu-Helper/main/docs/img/preview_im.png)
-
 
 ![Ydisks闲鱼助手预览](https://raw.githubusercontent.com/Christ9038/Ydisks-Xianyu-Helper/main/docs/img/preview_auto.png)
 
