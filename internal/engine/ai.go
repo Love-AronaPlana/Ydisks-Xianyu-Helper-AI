@@ -196,6 +196,10 @@ func (a *AIReplierImpl) Reply(ctx context.Context, m ChatMessage) (*ReplyResult,
 		resp, err = callModel(messages)
 	}
 	if err != nil {
+		// 限流、5xx 与超时属于瞬时故障；上游通常几秒后自愈，重试一次避免直接丢掉这次回复。
+		resp, err = a.retryTransientAICall(ctx, messages, callModel, err)
+	}
+	if err != nil {
 		return nil, fmt.Errorf("AI 调用失败: %w", err)
 	}
 	if len(resp.Choices) == 0 {
