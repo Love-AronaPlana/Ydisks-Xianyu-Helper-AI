@@ -1,5 +1,10 @@
 # Ydisks闲鱼助手（中文）
 
+> [!NOTE]
+> 本仓库是从 [Christ9038/Ydisks-Xianyu-Helper](https://github.com/Christ9038/Ydisks-Xianyu-Helper) 二改而来：
+> 原项目的代码、文档与版权归原作者所有，本仓库在其基础上追加了商品级 AI 提示词、买家图片识别、
+> 人工接管 AI 回复等增强功能。上游地址：<https://github.com/Christ9038/Ydisks-Xianyu-Helper>
+
 基于 Go 与 React 构建的闲鱼多账号管理、消息回复与自动发货系统
 
 [![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](go.mod)

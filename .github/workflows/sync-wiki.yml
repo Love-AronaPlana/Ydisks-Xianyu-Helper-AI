@@ -24,14 +24,28 @@ jobs:
           ref: main
 
       - name: 克隆 GitHub Wiki 仓库
+        id: wiki
         env:
-          WIKI_REPOSITORY: https://x-access-token:${{ github.token }}@github.com/Christ9038/Ydisks-Xianyu-Helper.wiki.git
-        run: git clone "$WIKI_REPOSITORY" wiki
+          # 固定使用当前仓库自身的 Wiki，仓库被镜像或改名后不会误连原仓库。
+          WIKI_REPOSITORY: https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.wiki.git
+        run: |
+          if git clone "$WIKI_REPOSITORY" wiki 2>wiki-clone-error.log; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          elif grep -qi "not found" wiki-clone-error.log; then
+            # GitHub 只在网页端创建第一页后才生成 <仓库>.wiki.git，未初始化时跳过而不是失败。
+            echo "::warning::当前仓库的 Wiki 尚未初始化（${{ github.repository }}.wiki.git 不存在），本次跳过同步。请在网页端打开 Wiki 页面创建第一页，之后本工作流会自动同步 docs/wiki。"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            sed -e "s#$WIKI_REPOSITORY#<wiki-repository>#g" wiki-clone-error.log >&2
+            exit 1
+          fi
 
       - name: 镜像 Wiki 页面
+        if: steps.wiki.outputs.ready == 'true'
         run: rsync -a --delete --exclude='.git' docs/wiki/ wiki/
 
       - name: 提交并推送 Wiki
+        if: steps.wiki.outputs.ready == 'true'
         working-directory: wiki
         env:
           GIT_AUTHOR_NAME: github-actions[bot]

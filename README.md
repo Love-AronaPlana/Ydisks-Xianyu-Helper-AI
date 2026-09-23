@@ -1,5 +1,12 @@
 # Ydisks Xianyu Helper
 
+> [!NOTE]
+> This repository is a modified fork of
+> [Christ9038/Ydisks-Xianyu-Helper](https://github.com/Christ9038/Ydisks-Xianyu-Helper). The original code,
+> documentation, and copyright belong to the upstream author; this fork adds item-level AI prompts, buyer image
+> recognition, and manual AI-reply handoff on top of it. Upstream:
+> <https://github.com/Christ9038/Ydisks-Xianyu-Helper>
+
 An Xianyu multi-account management, messaging, and automated-delivery system built with Go and React.
 
 ![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)
