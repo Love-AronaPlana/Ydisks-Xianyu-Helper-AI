@@ -26,7 +26,7 @@ type ItemAIPrompt struct {
 	ItemID string `json:"item_id"`
 	// Strategy 是提示词策略：inherit、append 或 override。
 	Strategy string `json:"strategy"`
-	// Prompt 是商品级提示词正文，最多 8000 个 Unicode 字符。
+	// Prompt 是商品级提示词正文；长度不设上限，可用长度由模型上下文窗口决定。
 	Prompt string `json:"prompt"`
 	// CustomVariables 是供提示词渲染使用的自定义变量。
 	CustomVariables map[string]string `json:"custom_variables"`
@@ -157,9 +157,6 @@ func validateAIPromptTarget(userID int64, cookieID, itemID string) (string, stri
 func validateAIPromptInput(prompt ItemAIPrompt) error {
 	if prompt.Strategy != "inherit" && prompt.Strategy != "append" && prompt.Strategy != "override" {
 		return fmt.Errorf("%w：strategy 必须是 inherit、append 或 override", ErrAIPromptInvalid)
-	}
-	if utf8.RuneCountInString(prompt.Prompt) > 8000 {
-		return fmt.Errorf("%w：prompt 不能超过 8000 个字符", ErrAIPromptInvalid)
 	}
 	if len(prompt.CustomVariables) > 32 {
 		return fmt.Errorf("%w：自定义变量最多 32 个", ErrAIPromptInvalid)

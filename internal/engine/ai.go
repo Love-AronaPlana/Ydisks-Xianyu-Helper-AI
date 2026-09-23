@@ -130,6 +130,8 @@ func (a *AIReplierImpl) Reply(ctx context.Context, m ChatMessage) (*ReplyResult,
 	if !withinBargainLimit {
 		systemPrompt += "\n当前买家已经超过最大砍价轮次。不得继续降价，只能礼貌说明价格不再优惠。"
 	}
+	// 人工客服回复会进入历史，必须让模型理解该前缀，避免重复或反驳真人已经给出的答复。
+	systemPrompt += humanReplyPromptHint
 
 	// 调 OpenAI 兼容接口。
 	clientCfg := openai.DefaultConfig(aiCfg.APIKey)
@@ -254,6 +256,16 @@ func (a *AIReplierImpl) Reply(ctx context.Context, m ChatMessage) (*ReplyResult,
 	return &ReplyResult{Text: reply, AutoPriceQuote: quote}, nil
 }
 
+// HumanReplyContentPrefix 是人工客服回复写入 AI 记忆时的内容前缀，让模型知道这句话由真人发出。
+const HumanReplyContentPrefix = "【人工客服】"
+
+// aiConversationRows 是送入模型的历史消息条数：30 轮问答（每轮买家消息 + 回复）。
+const aiConversationRows = 60
+
+// humanReplyPromptHint 向模型解释人工客服前缀的含义，避免它重复或反驳真人已经给出的答复。
+const humanReplyPromptHint = "\n对话历史中带" + HumanReplyContentPrefix + "前缀的消息由真人客服发送，" +
+	"属于已经给出的答复：不要与之矛盾，也不要重复回答已经答复过的内容。"
+
 // conversationContext 封装conversation上下文业务协调。
 func (a *AIReplierImpl) conversationContext(ctx context.Context, m ChatMessage) ([]db.AIConversationMessage, int, bool, error) {
 	// isBargain 用于本次流程后续判断的isBargain
@@ -262,7 +274,7 @@ func (a *AIReplierImpl) conversationContext(ctx context.Context, m ChatMessage) 
 		return nil, 0, isBargain, nil
 	}
 	// history、err 用于本次流程后续判断的history、err
-	history, err := a.store.AIReply.ConversationHistory(ctx, a.cookieID, m.ChatID, m.ItemID, 10)
+	history, err := a.store.AIReply.ConversationHistory(ctx, a.cookieID, m.ChatID, m.ItemID, aiConversationRows)
 	if err != nil {
 		return nil, 0, isBargain, err
 	}

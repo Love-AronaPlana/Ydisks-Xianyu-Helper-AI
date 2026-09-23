@@ -8165,7 +8165,7 @@ components:
       required: [strategy, prompt, custom_variables]
       properties:
         strategy: {type: string, enum: [inherit, append, override]}
-        prompt: {type: string, maxLength: 8000}
+        prompt: {type: string}
         custom_variables:
           type: object
           additionalProperties: {type: string, maxLength: 1000}
@@ -8177,7 +8177,7 @@ components:
         cookie_id: {type: string}
         item_id: {type: string}
         strategy: {type: string, enum: [inherit, append, override]}
-        prompt: {type: string, maxLength: 8000}
+        prompt: {type: string}
         custom_variables:
           type: object
           additionalProperties: {type: string, maxLength: 1000}

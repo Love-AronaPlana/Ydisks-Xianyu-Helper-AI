@@ -200,7 +200,7 @@ func (s *Server) sendChatImage(w http.ResponseWriter, r *http.Request) {
 		PeerName: r.FormValue("peer_name"), PeerAvatar: r.FormValue("peer_avatar_url"),
 		ItemID: r.FormValue("item_id"), ItemTitle: r.FormValue("item_title")}
 	// sent、err 用于本次流程后续判断的sent、err
-	sent, err := s.chatApplication().SendImage(r.Context(), chatapp.ImageInput{Session: session, Filename: header.Filename, ContentType: contentType, Data: data})
+	sent, err := s.chatApplication().SendImage(r.Context(), chatapp.ImageInput{Session: session, Filename: header.Filename, ContentType: contentType, Data: data, HumanReply: true})
 	if err != nil {
 		if errors.Is(err, chatapp.ErrUnavailable) {
 			writeErr(w, http.StatusServiceUnavailable, "图片上传服务未启用")
@@ -330,7 +330,7 @@ func (s *Server) sendChatMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// sent、err 保存应用层发送结果及错误；应用层返回的消息不含凭证。
-	sent, err := s.chatApplication().SendText(r.Context(), chatapp.OutgoingInput{Session: chatapp.Session{AccountID: input.AccountID, ChatID: input.ChatID, PeerUserID: input.PeerUserID, PeerName: input.PeerName, ItemID: input.ItemID, ItemTitle: input.ItemTitle}, Text: input.Text})
+	sent, err := s.chatApplication().SendText(r.Context(), chatapp.OutgoingInput{Session: chatapp.Session{AccountID: input.AccountID, ChatID: input.ChatID, PeerUserID: input.PeerUserID, PeerName: input.PeerName, ItemID: input.ItemID, ItemTitle: input.ItemTitle}, Text: input.Text, HumanReply: true})
 	if err != nil {
 		if errors.Is(err, chatapp.ErrUnavailable) {
 			writeErr(w, http.StatusServiceUnavailable, "聊天服务未启用")

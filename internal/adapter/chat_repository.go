@@ -247,6 +247,21 @@ func (r chatRepository) GetHumanHandoff(ctx context.Context, accountID, buyerID 
 	return r.store.AIReply.GetHumanHandoff(ctx, accountID, buyerID)
 }
 
+// RecordHumanReply 把人工客服回复写入 AI 记忆，并加上引擎约定的人工客服前缀。
+// 前缀让模型知道这句话由真人发出，从而避免重复或反驳真人已经给出的答复。
+func (r chatRepository) RecordHumanReply(ctx context.Context, accountID, chatID, itemID, content string) error {
+	if r.store == nil || r.store.AIReply == nil {
+		return errors.New("AI 会话存储未初始化")
+	}
+	// trimmed 是去掉首尾空白后的回复正文；空内容不写入。
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return nil
+	}
+	return r.store.AIReply.AddAIConversationMessage(ctx, accountID, chatID, "", itemID,
+		db.AIConversationMessage{Role: "assistant", Content: engine.HumanReplyContentPrefix + trimmed, Intent: "human"})
+}
+
 // chatIdentityResolver 在适配器内读取 Cookie 并调用平台身份查询接口。
 type chatIdentityResolver struct {
 	// store 提供账号凭证读取能力，明文只在本次平台调用期间存在。
@@ -356,6 +371,9 @@ var _ chatapp.MetadataRepository = chatRepository{}
 
 // 确保数据库聊天适配器覆盖人工接管的买家解析与读写端口；缺少该断言时接口不匹配只会在运行期暴露。
 var _ chatapp.HumanHandoffRepository = chatRepository{}
+
+// 确保数据库聊天适配器覆盖人工客服回复写入 AI 上下文的端口。
+var _ chatapp.AIConversationRecorder = chatRepository{}
 
 // 确保聊天身份适配器覆盖应用层平台身份端口。
 var _ chatapp.IdentityResolver = chatIdentityResolver{}

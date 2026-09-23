@@ -417,10 +417,27 @@ func nullableAIString(value string) any {
 	return value
 }
 
+// maxAIConversationRows 是单次读取会话消息的硬上限，防止上下文随历史无限增长。
+const maxAIConversationRows = 200
+
+// defaultAIConversationRows 是调用方未给出合法条数时的默认值：30 轮问答（每轮两条消息）。
+const defaultAIConversationRows = 60
+
+// AddAIConversationMessage 追加一条会话消息到 AI 记忆，供人工客服回复等非 AI 生成的内容进入上下文。
+// 只写入单条记录，不参与砍价计数；调用方负责内容脱敏与长度。
+func (a *AIReply) AddAIConversationMessage(ctx context.Context, cookieID, chatID, userID, itemID string, message AIConversationMessage) error {
+	// err 是写入会话消息的数据库错误。
+	_, err := a.DB.ExecContext(ctx, `INSERT INTO ai_conversations
+		(cookie_id,chat_id,user_id,item_id,role,content,intent,bargain_count)
+		VALUES (?,?,?,?,?,?,?,?)`,
+		cookieID, chatID, userID, itemID, message.Role, message.Content, message.Intent, message.BargainCount)
+	return err
+}
+
 // ConversationHistory 返回最近的会话消息，结果按时间正序排列。
 func (a *AIReply) ConversationHistory(ctx context.Context, cookieID, chatID, itemID string, limit int) ([]AIConversationMessage, error) {
-	if limit <= 0 || limit > 20 {
-		limit = 10
+	if limit <= 0 || limit > maxAIConversationRows {
+		limit = defaultAIConversationRows
 	}
 	// rows、err 用于本次流程后续判断的rows、err
 	rows, err := a.DB.QueryContext(ctx, `

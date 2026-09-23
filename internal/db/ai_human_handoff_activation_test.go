@@ -74,3 +74,44 @@ func TestActivateHumanHandoffUpsertSemantics(t *testing.T) {
 		t.Fatalf("到期后应结束接管: active=%v err=%v", activeAfter, afterErr)
 	}
 }
+
+// TestConversationHistoryLimitsAndHumanReplyInsert 验证会话历史的条数上限与单条人工回复写入。
+func TestConversationHistoryLimitsAndHumanReplyInsert(t *testing.T) {
+	// store、ctx、cleanup 是隔离数据库、共享上下文与释放函数。
+	store, ctx, cleanup := newHandoffStore(t)
+	defer cleanup()
+	// 写入 40 轮问答（80 条消息），超过 30 轮上限后只能读回最近 60 条。
+	for i := 0; i < 40; i++ {
+		// err 是写入第 i 轮对话的失败原因。
+		if err := store.AIReply.AddConversationExchange(ctx, "cid", "chat-1", "buyer-1", "item-1",
+			AIConversationMessage{Role: "user", Content: "买家消息"},
+			AIConversationMessage{Role: "assistant", Content: "AI 回复"},
+		); err != nil {
+			t.Fatalf("写入历史失败: %v", err)
+		}
+	}
+	// rows、err 是 30 轮上限读回的会话消息与读取错误。
+	rows, err := store.AIReply.ConversationHistory(ctx, "cid", "chat-1", "item-1", 60)
+	if err != nil || len(rows) != 60 {
+		t.Fatalf("默认上限读回 %d 条，期望 60（err=%v）", len(rows), err)
+	}
+	// 超出硬上限的请求回落到默认值，而不是无限读取。
+	if oversized, oversizedErr := store.AIReply.ConversationHistory(ctx, "cid", "chat-1", "item-1", 100000); oversizedErr != nil || len(oversized) != 60 {
+		t.Fatalf("超限请求应回落默认值，实际 %d 条（err=%v）", len(oversized), oversizedErr)
+	}
+	// 人工客服回复以单条助手消息写入，并能被同一上下文读到。
+	if insertErr := store.AIReply.AddAIConversationMessage(ctx, "cid", "chat-1", "", "item-1",
+		AIConversationMessage{Role: "assistant", Content: "【人工客服】已经帮您处理了", Intent: "human"}); insertErr != nil {
+		t.Fatalf("写入人工回复失败: %v", insertErr)
+	}
+	// refreshed、refreshErr 是写入人工回复后读回的消息。
+	refreshed, refreshErr := store.AIReply.ConversationHistory(ctx, "cid", "chat-1", "item-1", 60)
+	if refreshErr != nil || len(refreshed) == 0 {
+		t.Fatalf("读回人工回复失败: %d 条 err=%v", len(refreshed), refreshErr)
+	}
+	// last 是最后一条消息，必须就是刚写入的人工客服回复。
+	last := refreshed[len(refreshed)-1]
+	if last.Role != "assistant" || last.Content != "【人工客服】已经帮您处理了" {
+		t.Fatalf("最后一条消息异常: %+v", last)
+	}
+}

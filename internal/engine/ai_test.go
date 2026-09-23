@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -570,8 +571,8 @@ func TestAIReplyTracksBargainRoundsAndBlocksUnsafePrice(t *testing.T) {
 	}
 }
 
-// TestAIReplySendsLastTenConversationMessages 验证 AI 请求携带的上下文恰好是最近 10 条会话消息。
-func TestAIReplySendsLastTenConversationMessages(t *testing.T) {
+// TestAIReplySendsThirtyExchangeContext 验证 AI 请求携带的上下文是最近 30 轮问答（60 条消息）。
+func TestAIReplySendsThirtyExchangeContext(t *testing.T) {
 	// store、cleanup 是 AI 上下文测试仓储及清理函数。
 	store, cleanup := newAIStore(t)
 	defer cleanup()
@@ -597,12 +598,12 @@ func TestAIReplySendsLastTenConversationMessages(t *testing.T) {
 	store.DB.ExecContext(ctx, `INSERT INTO ai_reply_settings (cookie_id, ai_enabled, ai_reply_mode, custom_prompts) VALUES ('cid', 1, 'full', '')`)
 	store.Settings.Set(ctx, "ai_api_key", "sk-test")
 	store.Settings.Set(ctx, "ai_api_url", srv.URL)
-	// 写入 8 轮对话（16 条消息），超过上限后请求里只能保留最近的 10 条。
-	for i := 0; i < 8; i++ {
+	// 写入 40 轮对话（80 条消息），超过 30 轮上限后只能保留最近 60 条。
+	for i := 0; i < 40; i++ {
 		// historyErr 是写入第 i 轮对话的失败原因。
 		if historyErr := store.AIReply.AddConversationExchange(ctx, "cid", "chat1", "buyer1", "item1",
-			db.AIConversationMessage{Role: "user", Content: "买家第" + string(rune('0'+i)) + "条"},
-			db.AIConversationMessage{Role: "assistant", Content: "回复第" + string(rune('0'+i)) + "条"},
+			db.AIConversationMessage{Role: "user", Content: fmt.Sprintf("买家第%d条", i)},
+			db.AIConversationMessage{Role: "assistant", Content: fmt.Sprintf("回复第%d条", i)},
 		); historyErr != nil {
 			t.Fatalf("写入历史失败: %v", historyErr)
 		}
@@ -613,20 +614,24 @@ func TestAIReplySendsLastTenConversationMessages(t *testing.T) {
 	if _, replyErr := replier.Reply(ctx, chatMsg("现在多少钱", "item1", "chat1")); replyErr != nil {
 		t.Fatalf("模型调用失败: %v", replyErr)
 	}
-	// 期望请求为 1 条 system + 10 条历史 + 1 条当前消息。
-	if len(captured) != 12 {
-		t.Fatalf("请求消息数=%d，期望 12（system + 10 条历史 + 当前消息）", len(captured))
+	// 期望请求为 1 条 system + 60 条历史 + 1 条当前消息。
+	if len(captured) != 62 {
+		t.Fatalf("请求消息数=%d，期望 62（system + 60 条历史 + 当前消息）", len(captured))
 	}
-	// 最近的 10 条即第 3 轮买家消息开始的 10 条，必须按时间正序排列。
-	if first := captured[1]["content"]; first != "买家第3条" {
-		t.Fatalf("历史起始=%v，期望最新的第 3 轮买家消息", first)
+	// 最近的 60 条即第 10 轮买家消息开始的 60 条，必须按时间正序排列。
+	if first := captured[1]["content"]; first != "买家第10条" {
+		t.Fatalf("历史起始=%v，期望最新的第 10 轮买家消息", first)
 	}
-	// lastHistory 是请求里最后一条历史消息，应是第 7 轮 AI 回复。
-	if lastHistory := captured[10]["content"]; lastHistory != "回复第7条" {
-		t.Fatalf("历史末尾=%v，期望第 7 轮回复", lastHistory)
+	// lastHistory 是请求里最后一条历史消息，应是第 39 轮 AI 回复。
+	if lastHistory := captured[60]["content"]; lastHistory != "回复第39条" {
+		t.Fatalf("历史末尾=%v，期望第 39 轮回复", lastHistory)
 	}
 	// currentMessage 是请求里最后一条消息，必须是本次买家消息。
-	if currentMessage := captured[11]["content"]; currentMessage != "现在多少钱" {
+	if currentMessage := captured[61]["content"]; currentMessage != "现在多少钱" {
 		t.Fatalf("当前消息=%v，期望最后一条是本次买家消息", currentMessage)
+	}
+	// 系统提示词必须解释人工客服前缀，否则模型无法理解历史里的人工回复。
+	if system := fmt.Sprint(captured[0]["content"]); !strings.Contains(system, HumanReplyContentPrefix) {
+		t.Fatalf("系统提示词缺少人工客服前缀说明: %s", system)
 	}
 }

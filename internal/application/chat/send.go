@@ -35,6 +35,8 @@ type OutgoingInput struct {
 	Session Session
 	// Text 保存待发送的文字内容，应用层会去除首尾空白并限制长度。
 	Text string
+	// HumanReply 表示本次发送来自人工客服界面；为真时该内容会写入 AI 上下文，供 AI 恢复接话时参考。
+	HumanReply bool
 }
 
 // ImageInput 是发送图片消息的应用层输入，Data 只在当前请求生命周期内使用。
@@ -47,6 +49,8 @@ type ImageInput struct {
 	ContentType string
 	// Data 保存图片二进制内容，调用完成后不由服务长期持有。
 	Data []byte
+	// HumanReply 表示本次图片由人工客服界面发出；为真时以图片占位写入 AI 上下文。
+	HumanReply bool
 }
 
 // ImageUpload 是图片平台适配器返回的非敏感结果。
@@ -343,6 +347,10 @@ func (s *Service) SendText(ctx context.Context, input OutgoingInput) (*Message, 
 	if err != nil {
 		return messagePointer(sent, message), fmt.Errorf("%w: %v", ErrStatusSave, err)
 	}
+	if input.HumanReply {
+		// 人工客服的文字回复进入 AI 记忆，使 AI 恢复接话时能看到真人说过什么。
+		s.recordHumanReply(ctx, session, text)
+	}
 	return messagePointer(sent, message), nil
 }
 
@@ -404,6 +412,10 @@ func (s *Service) SendImage(ctx context.Context, input ImageInput) (*Message, er
 	statusCancel()
 	if err != nil {
 		return messagePointer(sent, message), fmt.Errorf("%w: %v", ErrStatusSave, err)
+	}
+	if input.HumanReply {
+		// 人工客服发送的图片以占位文本进入 AI 记忆，避免模型把这条历史当作买家发来的图片。
+		s.recordHumanReply(ctx, session, "[图片]")
 	}
 	return messagePointer(sent, message), nil
 }
