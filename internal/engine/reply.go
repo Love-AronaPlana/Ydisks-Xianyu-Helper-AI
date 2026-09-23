@@ -284,6 +284,13 @@ func (r *ReplyService) resolve(ctx context.Context, m ChatMessage) *ReplyResult 
 	return r.defaultReply(ctx, m)
 }
 
+// NormalizeHumanHandoffBuyerID 把平台发送者标识归一为人工接管隔离键。
+// 入站消息有时带 “@goofish” 后缀、有时不带，会话页面对端标识与消息发送者必须落到同一个键，
+// 否则同一个买家会被拆成两个隔离目标，出现接管不生效或无法提前结束的情况。
+func NormalizeHumanHandoffBuyerID(raw string) string {
+	return strings.TrimSuffix(strings.TrimSpace(raw), "@goofish")
+}
+
 // humanHandoffBlocksAI 处理人工关键词的接管激活和当前买家状态查询。
 // 接管仅按账号与买家标识隔离；状态读写失败时阻止 AI，且日志不记录消息正文。
 func (r *ReplyService) humanHandoffBlocksAI(ctx context.Context, m ChatMessage) bool {
@@ -292,6 +299,10 @@ func (r *ReplyService) humanHandoffBlocksAI(ctx context.Context, m ChatMessage) 
 	if r.now != nil {
 		now = r.now
 	}
+	// nowUnix 是本次判定使用的时间基准，供激活窗口与到期判定共用。
+	nowUnix := now().UTC().Unix()
+	// buyerKey 是人工接管的隔离键；空值表示本条消息无法确定买家身份。
+	buyerKey := NormalizeHumanHandoffBuyerID(m.SenderUserID)
 	// hasHandoffKeyword 表示当前消息是否要求人工接管；只检查固定业务关键词，不记录正文。
 	hasHandoffKeyword := strings.Contains(m.Text, "人工")
 	if hasHandoffKeyword {
@@ -306,35 +317,51 @@ func (r *ReplyService) humanHandoffBlocksAI(ctx context.Context, m ChatMessage) 
 			return r.ai != nil
 		}
 		if settings != nil && settings.HumanHandoffMinutes > 0 {
-			if m.SenderUserID == "" {
+			if buyerKey == "" {
 				r.logger.Error("人工接管消息缺少买家标识")
 				return r.ai != nil
 			}
 			// until 是人工接管截止时间的 Unix 秒；分钟值来自账号设置并按秒换算。
 			until := now().UTC().Add(time.Duration(settings.HumanHandoffMinutes) * time.Minute).Unix()
 			// activateErr 是写入人工接管记录失败的错误；失败时仅记录日志并继续，不影响后续 API 与关键词回复。
-			if activateErr := r.store.AIReply.ActivateHumanHandoff(ctx, r.cookieID, m.SenderUserID, until); activateErr != nil {
+			if activateErr := r.store.AIReply.ActivateHumanHandoff(ctx, r.cookieID, buyerKey, until); activateErr != nil {
 				r.logger.Error("激活人工接管失败", "err", activateErr)
 				return r.ai != nil
 			}
+			// 记录接管窗口的截止时刻，便于运营在日志中确认 AI 何时恢复（不记录买家消息正文）。
+			r.logger.Info("人工接管已生效", "buyer", buyerKey,
+				"minutes", settings.HumanHandoffMinutes, "until", time.Unix(until, 0).Format(time.RFC3339))
 			// 当前触发消息也不能调用 AI；API 和关键词优先级仍在本函数返回后继续执行。
 			return true
 		}
 	}
-	if m.SenderUserID == "" {
+	if buyerKey == "" {
 		return false
 	}
 	if r.store == nil || r.store.AIReply == nil {
 		r.logger.Error("人工接管依赖未初始化")
 		return r.ai != nil
 	}
-	// active、activeErr 保存当前账号与买家的接管状态；数据库读取失败必须按接管处理。
-	active, activeErr := r.store.AIReply.IsHumanHandoffActive(ctx, r.cookieID, m.SenderUserID, now().UTC().Unix())
-	if activeErr != nil {
-		r.logger.Error("读取人工接管状态失败", "err", activeErr)
+	// pausedUntil、found、readErr 保存当前账号与买家的接管截止时间、存在状态与读取错误。
+	pausedUntil, found, readErr := r.store.AIReply.GetHumanHandoff(ctx, r.cookieID, buyerKey)
+	if readErr != nil {
+		// 数据库读取失败必须按接管处理，宁可少回也不在人工接管期间抢答。
+		r.logger.Error("读取人工接管状态失败", "err", readErr)
 		return r.ai != nil
 	}
-	return active
+	if !found {
+		return false
+	}
+	if pausedUntil > nowUnix {
+		return true
+	}
+	// 已到期：清理记录并记录一次恢复日志，既避免过期记录无限累积，也让运营能直接看到 AI 恢复时刻。
+	if _, clearErr := r.store.AIReply.ClearHumanHandoff(ctx, r.cookieID, buyerKey); clearErr != nil {
+		r.logger.Warn("清理过期人工接管记录失败", "buyer", buyerKey, "err", clearErr)
+	}
+	r.logger.Info("人工接管已到期，恢复 AI 回复", "buyer", buyerKey,
+		"expired_at", time.Unix(pausedUntil, 0).Format(time.RFC3339))
+	return false
 }
 
 // aiTakesOverAll 判断 AI 是否配置为完全接管模式（full）。

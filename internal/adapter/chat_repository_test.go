@@ -463,3 +463,38 @@ func TestChatImageUploaderRejectsStaleCookieWriteback(t *testing.T) {
 
 var _ chatapp.SessionRepository = chatRepository{}
 var _ chatapp.IdentityResolver = chatIdentityResolver{}
+
+// TestChatRepositoryNormalizesHandoffBuyer 验证会话对端标识会被归一为与引擎一致的人工接管隔离键。
+func TestChatRepositoryNormalizesHandoffBuyer(t *testing.T) {
+	// store 是使用临时 SQLite 数据库的测试存储。
+	store, cleanup := newAdapterTestStore(t)
+	defer cleanup()
+	// ctx 是本测试数据库操作使用的非取消上下文。
+	ctx := context.Background()
+	// owner 是测试账号的所有者，用于账号归属校验。
+	owner, ownerErr := store.Users.GetByUsername(ctx, "admin")
+	if ownerErr != nil {
+		t.Fatal(ownerErr)
+	}
+	// session 的买家标识带平台后缀，模拟平台展示扩展里常见的形态。
+	session := db.ChatSession{CookieID: "cid", ChatID: "chat-suffix", BuyerID: "buyer-1@goofish", BuyerName: "买家", LastMessage: "在吗", LastMessageAt: 10}
+	// saveErr 表示写入测试会话时的数据库错误。
+	if saveErr := store.Chats.UpsertSession(ctx, session); saveErr != nil {
+		t.Fatal(saveErr)
+	}
+	// port 是经类型断言确认的人工接管仓储端口。
+	port, ok := NewChatRepository(store).(chatapp.HumanHandoffRepository)
+	if !ok {
+		t.Fatal("聊天适配器未覆盖 HumanHandoffRepository")
+	}
+	// buyerID、findErr 保存归一后的人工接管隔离键与查询错误。
+	buyerID, findErr := port.FindSessionBuyer(ctx, owner.ID, "cid", "chat-suffix")
+	if findErr != nil || buyerID != "buyer-1" {
+		t.Fatalf("会话对端标识归一异常 buyer=%q err=%v", buyerID, findErr)
+	}
+	// 缺失会话必须返回空标识而不是错误，调用方据此返回会话不存在。
+	missing, missingErr := port.FindSessionBuyer(ctx, owner.ID, "cid", "chat-missing")
+	if missingErr != nil || missing != "" {
+		t.Fatalf("缺失会话应返回空标识 missing=%q err=%v", missing, missingErr)
+	}
+}

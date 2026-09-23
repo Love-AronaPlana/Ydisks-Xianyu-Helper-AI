@@ -8,6 +8,7 @@ import (
 	"xianyu-go/internal/account"
 	chatapp "xianyu-go/internal/application/chat"
 	"xianyu-go/internal/db"
+	"xianyu-go/internal/engine"
 	"xianyu-go/internal/xianyu/mtop"
 )
 
@@ -206,6 +207,7 @@ func (r chatRepository) SaveBuyerNote(ctx context.Context, note chatapp.BuyerNot
 // FindSessionBuyer 返回会话对端的平台标识，作为人工接管的隔离键。
 // 引擎按入站消息发送者（即会话对端）判断接管，因此这里同样使用对端标识：
 // 同一买家在不同会话中会被识别为同一个接管目标，而不同买家互不影响。
+// 返回值经 engine.NormalizeHumanHandoffBuyerID 归一，与会话页面按钮写入的键保持一致。
 func (r chatRepository) FindSessionBuyer(ctx context.Context, userID int64, accountID, chatID string) (string, error) {
 	// sessions、listErr 保存该账号对当前用户可见的会话列表及查询错误。
 	sessions, listErr := r.store.Chats.ListSessions(ctx, userID, accountID, 500)
@@ -215,7 +217,7 @@ func (r chatRepository) FindSessionBuyer(ctx context.Context, userID int64, acco
 	// candidate 表示当前遍历到的会话记录；数据库字段 BuyerID 承载的正是对外契约的 peer_user_id。
 	for _, candidate := range sessions {
 		if candidate.ChatID == strings.TrimSpace(chatID) {
-			return candidate.BuyerID, nil
+			return engine.NormalizeHumanHandoffBuyerID(candidate.BuyerID), nil
 		}
 	}
 	return "", nil
@@ -351,6 +353,9 @@ var _ chatapp.SessionDeletionRepository = chatRepository{}
 
 // 确保数据库聊天适配器覆盖快捷回复和买家备注的应用层端口。
 var _ chatapp.MetadataRepository = chatRepository{}
+
+// 确保数据库聊天适配器覆盖人工接管的买家解析与读写端口；缺少该断言时接口不匹配只会在运行期暴露。
+var _ chatapp.HumanHandoffRepository = chatRepository{}
 
 // 确保聊天身份适配器覆盖应用层平台身份端口。
 var _ chatapp.IdentityResolver = chatIdentityResolver{}

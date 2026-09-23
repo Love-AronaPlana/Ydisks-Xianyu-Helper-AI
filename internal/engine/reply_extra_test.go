@@ -134,6 +134,7 @@ func TestReply_ManualHumanHandoffBlocksAIAndClearResumes(t *testing.T) {
 }
 
 // TestReply_HumanHandoffExpiresAndAIResumes 验证截止时间相等及超过后均恢复 AI 回复。
+// TestReply_HumanHandoffExpiresAndAIResumes 验证人工接管到期后 AI 恢复，并清理过期记录。
 func TestReply_HumanHandoffExpiresAndAIResumes(t *testing.T) {
 	// store、cleanup 提供本测试独占的人工接管状态。
 	store, cleanup := newReplyStore(t)
@@ -152,8 +153,19 @@ func TestReply_HumanHandoffExpiresAndAIResumes(t *testing.T) {
 	ai := &fakeAIReplier{result: &ReplyResult{Text: "AI恢复"}}
 	// reply 使用截止时间边界前后的固定时钟。
 	reply := NewReplyService("cid", store, nil, nil, ai, nil)
+	// reply.now 先停在截止时间之前，验证严格大于 now 才算仍在接管期内。
+	reply.now = func() time.Time { return time.Unix(2_059, 0).UTC() }
+	// beforeExpiryMessage 是接管窗口内的普通买家消息。
+	beforeExpiryMessage := chatMsg("普通问题", "", "chat-expire-2")
+	beforeExpiryMessage.SenderUserID = "buyer-a"
+	// beforeExpiry 是仍在接管窗口内（严格小于截止秒）时的解析结果，此时必须跳过 AI 并返回空结果。
+	beforeExpiry := reply.resolve(ctx, beforeExpiryMessage)
+	if beforeExpiry != nil || ai.called != 0 {
+		t.Fatalf("截止前应跳过 AI 并继续默认空结果: result=%+v calls=%d", beforeExpiry, ai.called)
+	}
+	// reply.now 推到截止秒，验证边界相等时暂停已结束。
 	reply.now = func() time.Time { return time.Unix(2_060, 0).UTC() }
-	// atBoundary 保存截止秒相等时的结果；按约定此时暂停已结束。
+	// atBoundaryMessage 是截止秒之后的买家消息。
 	atBoundaryMessage := chatMsg("普通问题", "", "chat-expire")
 	atBoundaryMessage.SenderUserID = "buyer-a"
 	// atBoundary 是截止秒恰好相等时的解析结果，此时暂停已结束必须恢复 AI 回复。
@@ -161,15 +173,72 @@ func TestReply_HumanHandoffExpiresAndAIResumes(t *testing.T) {
 	if atBoundary == nil || atBoundary.Source != "AI" || ai.called != 1 {
 		t.Fatalf("截止时间相等应恢复 AI: result=%+v calls=%d", atBoundary, ai.called)
 	}
-	// reply.now 改为截止时间之前，验证严格大于 now 才算活动。
-	reply.now = func() time.Time { return time.Unix(2_059, 0).UTC() }
-	// beforeExpiry 保存仍在接管窗口内的结果。
-	beforeExpiryMessage := chatMsg("普通问题", "", "chat-expire-2")
-	beforeExpiryMessage.SenderUserID = "buyer-a"
-	// beforeExpiry 是仍在接管窗口内（严格小于截止秒）时的解析结果，此时必须跳过 AI 并返回空结果。
-	beforeExpiry := reply.resolve(ctx, beforeExpiryMessage)
-	if beforeExpiry != nil || ai.called != 1 {
-		t.Fatalf("截止前应跳过 AI 并继续默认空结果: result=%+v calls=%d", beforeExpiry, ai.called)
+	// 到期放行 AI 的同时必须清理过期记录，避免历史接管行无限累积并让恢复时刻在日志中可见。
+	if _, found, readErr := store.AIReply.GetHumanHandoff(ctx, "cid", "buyer-a"); readErr != nil || found {
+		t.Fatalf("过期接管记录应被清理 found=%v err=%v", found, readErr)
+	}
+}
+
+// TestReply_HumanHandoffNormalizesBuyerIdentity 验证同一个买家的带后缀与不带后缀标识共享同一个人工接管窗口。
+func TestReply_HumanHandoffNormalizesBuyerIdentity(t *testing.T) {
+	// store、cleanup 提供本测试独占的人工接管状态。
+	store, cleanup := newReplyStore(t)
+	defer cleanup()
+	// ctx 是状态写入和回复解析共用的测试上下文。
+	ctx := context.Background()
+	// setupErr 保存二十分钟人工接管配置的写入结果。
+	if setupErr := store.AIReply.UpsertSettings(ctx, "cid", db.AIReplySettings{AIEnabled: true, HumanHandoffMinutes: 20}); setupErr != nil {
+		t.Fatal(setupErr)
+	}
+	// ai 记录被错误调用的次数，接管期间必须保持为零。
+	ai := &fakeAIReplier{result: &ReplyResult{Text: "不应调用 AI"}}
+	// reply 使用固定时钟，避免依赖真实时间流逝。
+	reply := NewReplyService("cid", store, nil, nil, ai, nil)
+	reply.now = func() time.Time { return time.Unix(5_000, 0).UTC() }
+	// trigger 的发送者带平台后缀，代表平台展示扩展中的常见形态。
+	trigger := chatMsg("请转人工", "", "chat-suffix")
+	trigger.SenderUserID = "buyer-a@goofish"
+	// resolve 触发人工接管；该消息本身仍走默认空结果。
+	// triggerResult 是人工触发消息的解析结果，必须为空且不调用 AI。
+	if triggerResult := reply.resolve(ctx, trigger); triggerResult != nil || ai.called != 0 {
+		t.Fatalf("触发消息不应调用 AI: result=%+v calls=%d", triggerResult, ai.called)
+	}
+	// 同一买家后续消息不带后缀时，必须命中同一个接管窗口并被跳过 AI。
+	followUp := chatMsg("在吗", "", "chat-suffix")
+	followUp.SenderUserID = "buyer-a"
+	// followUpResult 是归一后同一买家消息的解析结果，必须同样被跳过。
+	if followUpResult := reply.resolve(ctx, followUp); followUpResult != nil || ai.called != 0 {
+		t.Fatalf("归一后应命中同一接管窗口: result=%+v calls=%d", followUpResult, ai.called)
+	}
+	// 会话页面按不带后缀的对端标识读取接管状态时，也必须看到同一个窗口。
+	// pausedUntil、found、readErr 是归一键读到的截止时间、存在状态与查询错误。
+	if pausedUntil, found, readErr := store.AIReply.GetHumanHandoff(ctx, "cid", "buyer-a"); readErr != nil || !found || pausedUntil <= 5_000 {
+		t.Fatalf("归一后的接管窗口=(%d,%v,%v)", pausedUntil, found, readErr)
+	}
+}
+
+// TestNormalizeHumanHandoffBuyerID 验证人工接管隔离键会去掉空白与平台后缀。
+func TestNormalizeHumanHandoffBuyerID(t *testing.T) {
+	// cases 覆盖平台可能出现的标识形态。
+	cases := []struct {
+		// raw 是平台返回的原始发送者标识。
+		raw string
+		// want 是归一后用于人工接管的隔离键。
+		want string
+	}{
+		{raw: "buyer-a", want: "buyer-a"},
+		{raw: "buyer-a@goofish", want: "buyer-a"},
+		{raw: "  buyer-a@goofish  ", want: "buyer-a"},
+		{raw: "3000000000001", want: "3000000000001"},
+		{raw: "", want: ""},
+		{raw: "@goofish", want: ""},
+	}
+	// current 是当前待校验的标识形态。
+	for _, current := range cases {
+		// normalized 是归一后的隔离键，必须与期望值一致。
+		if normalized := NormalizeHumanHandoffBuyerID(current.raw); normalized != current.want {
+			t.Fatalf("归一化 %q=%q，期望 %q", current.raw, normalized, current.want)
+		}
 	}
 }
 
