@@ -36,6 +36,14 @@ type aiReplySettingsUpdateRequest struct {
 	AIEnabled bool `json:"ai_enabled"`
 	// AutoAdjustPriceEnabled 是把 AI 有效报价自动应用到待付款订单的显式开关。
 	AutoAdjustPriceEnabled bool `json:"auto_adjust_price_enabled"`
+	// ReplyMode 是 AI 回复模式：bargain、keyword_first 或 full。
+	ReplyMode string `json:"ai_reply_mode"`
+	// FullPrompt 是完全模式独立系统提示词。
+	FullPrompt string `json:"ai_full_prompt"`
+	// HumanHandoffMinutes 是人工接管时暂停买家的分钟数，零表示关闭自动暂停。
+	HumanHandoffMinutes int `json:"human_handoff_minutes"`
+	// VisionEnabled 表示是否把买家图片随消息发送给多模态模型；省略该字段时保留账号当前值。
+	VisionEnabled *bool `json:"ai_vision_enabled"`
 	// MaxDiscountPercent 是允许自动接受的最大折扣百分比。
 	MaxDiscountPercent int `json:"max_discount_percent"`
 	// MaxDiscountAmount 是允许自动让价的最大金额。
@@ -343,7 +351,9 @@ func (s *Server) listAIReply(w http.ResponseWriter, r *http.Request) {
 	// row 表示当前遍历过程中的row
 	for _, row := range rows {
 		result[row.CookieID] = aiReplySettingsResponse{
-			CookieID: row.CookieID, AIEnabled: row.AIEnabled, AutoAdjustPriceEnabled: row.AutoAdjustPriceEnabled, MaxDiscountPercent: row.MaxDiscountPercent,
+			CookieID: row.CookieID, AIEnabled: row.AIEnabled, AutoAdjustPriceEnabled: row.AutoAdjustPriceEnabled,
+			ReplyMode: row.ReplyMode, FullPrompt: row.FullPrompt, HumanHandoffMinutes: row.HumanHandoffMinutes, VisionEnabled: row.VisionEnabled, MaxDiscountPercent: row.MaxDiscountPercent,
+
 			MaxDiscountAmount: row.MaxDiscountAmount, MaxBargainRounds: row.MaxBargainRounds, CustomPrompts: row.CustomPrompts,
 			// 账号标识和五项配置字段保持旧 JSON 名称。
 			// 布尔值继续由数据库整数转换得到。
@@ -369,7 +379,7 @@ func (s *Server) getAIReply(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, settingsapp.ErrConfigNotFound) {
 			// 未保存配置使用与旧接口一致的默认值。
-			writeJSON(w, http.StatusOK, aiReplySettingsResponse{AIEnabled: false, AutoAdjustPriceEnabled: false, MaxDiscountPercent: 10, MaxDiscountAmount: 100, MaxBargainRounds: 3, CustomPrompts: ""})
+			writeJSON(w, http.StatusOK, aiReplySettingsResponse{AIEnabled: false, AutoAdjustPriceEnabled: false, ReplyMode: "bargain", FullPrompt: "", HumanHandoffMinutes: 0, VisionEnabled: true, MaxDiscountPercent: 10, MaxDiscountAmount: 100, MaxBargainRounds: 3, CustomPrompts: ""})
 			return
 		}
 		if writeSettingsAccountError(w, err) {
@@ -385,7 +395,7 @@ func (s *Server) getAIReply(w http.ResponseWriter, r *http.Request) {
 	// CustomPrompts 仍返回原始提示词文本。
 	// 该响应仅静态化 JSON 结构，不改变存储或校验逻辑。
 	// 旧客户端可以继续直接读取这些字段。
-	writeJSON(w, http.StatusOK, aiReplySettingsResponse{CookieID: cfg.CookieID, AIEnabled: cfg.AIEnabled, AutoAdjustPriceEnabled: cfg.AutoAdjustPriceEnabled, MaxDiscountPercent: cfg.MaxDiscountPercent, MaxDiscountAmount: cfg.MaxDiscountAmount, MaxBargainRounds: cfg.MaxBargainRounds, CustomPrompts: cfg.CustomPrompts})
+	writeJSON(w, http.StatusOK, aiReplySettingsResponse{CookieID: cfg.CookieID, AIEnabled: cfg.AIEnabled, AutoAdjustPriceEnabled: cfg.AutoAdjustPriceEnabled, ReplyMode: cfg.ReplyMode, FullPrompt: cfg.FullPrompt, HumanHandoffMinutes: cfg.HumanHandoffMinutes, VisionEnabled: cfg.VisionEnabled, MaxDiscountPercent: cfg.MaxDiscountPercent, MaxDiscountAmount: cfg.MaxDiscountAmount, MaxBargainRounds: cfg.MaxBargainRounds, CustomPrompts: cfg.CustomPrompts})
 }
 
 // setAIReply 封装setAI回复业务协调。
@@ -405,13 +415,22 @@ func (s *Server) setAIReply(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, "未授权访问")
 		return
 	}
+	// current 保存账号当前已生效的 AI 设置；未配置时按默认值处理，用于保留省略字段的现值。
+	current := settingsapp.AIReplySettings{VisionEnabled: true}
 	// ownershipErr 保存账号不存在、跨用户或数据库归属查询失败的结果；未配置 AI 设置不是账号错误。
-	if _, ownershipErr := s.settingsApplication().GetAIReply(r.Context(), sess.UserID, cid); ownershipErr != nil && !errors.Is(ownershipErr, settingsapp.ErrConfigNotFound) {
+	if existing, ownershipErr := s.settingsApplication().GetAIReply(r.Context(), sess.UserID, cid); ownershipErr != nil && !errors.Is(ownershipErr, settingsapp.ErrConfigNotFound) {
 		if writeSettingsAccountError(w, ownershipErr) {
 			return
 		}
 		writeErr(w, http.StatusInternalServerError, "查询失败")
 		return
+	} else if ownershipErr == nil {
+		current = existing
+	}
+	// visionEnabled 是本次保存生效的图片识别开关；请求省略时沿用账号当前值，避免旧客户端误关闭。
+	visionEnabled := current.VisionEnabled
+	if req.VisionEnabled != nil {
+		visionEnabled = *req.VisionEnabled
 	}
 	if req.MaxDiscountPercent < 0 || req.MaxDiscountPercent > 100 {
 		writeErr(w, http.StatusBadRequest, "最大折扣比例必须在 0 到 100 之间")
@@ -429,15 +448,32 @@ func (s *Server) setAIReply(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "开启 AI 自动改价前必须先启用 AI 议价")
 		return
 	}
+	if req.ReplyMode != "" && req.ReplyMode != "bargain" && req.ReplyMode != "keyword_first" && req.ReplyMode != "full" {
+		writeErr(w, http.StatusBadRequest, "AI 回复模式无效")
+		return
+	}
+	if len([]rune(req.FullPrompt)) > settingsapp.MaxAIReplyPromptLength {
+		writeErr(w, http.StatusBadRequest, "完全模式提示词过长")
+		return
+	}
+	if req.HumanHandoffMinutes < 0 || req.HumanHandoffMinutes > 1440 {
+		writeErr(w, http.StatusBadRequest, "人工接管暂停分钟数必须在 0 到 1440 之间")
+		return
+	}
 	// err 是 AI 回复配置写入错误。
 	err := s.settingsApplication().UpsertAIReply(r.Context(), sess.UserID, cid, settingsapp.AIReplySettings{
-		CookieID: cid, AIEnabled: req.AIEnabled, AutoAdjustPriceEnabled: req.AutoAdjustPriceEnabled, MaxDiscountPercent: req.MaxDiscountPercent,
+		CookieID: cid, AIEnabled: req.AIEnabled, AutoAdjustPriceEnabled: req.AutoAdjustPriceEnabled,
+		ReplyMode: req.ReplyMode, FullPrompt: req.FullPrompt, HumanHandoffMinutes: req.HumanHandoffMinutes, VisionEnabled: visionEnabled, MaxDiscountPercent: req.MaxDiscountPercent,
 		MaxDiscountAmount: req.MaxDiscountAmount, MaxBargainRounds: req.MaxBargainRounds,
 		CustomPrompts: req.CustomPrompts,
 	})
 	if err != nil {
 		if errors.Is(err, settingsapp.ErrPricingModeConflict) {
 			writeErr(w, http.StatusConflict, err.Error())
+			return
+		}
+		if errors.Is(err, settingsapp.ErrInvalidAIReplyMode) || errors.Is(err, settingsapp.ErrAIReplyPromptTooLong) {
+			writeErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		if writeSettingsAccountError(w, err) {

@@ -128,38 +128,38 @@ func (s automationImageSender) UpdateCookie(cookieStr string) {
 	}
 }
 
-// downloadAutomationImage 从 HTTP(S) 图片 URL 读取有限大小的内存数据，拒绝内网、重定向降级和非图片响应。
+// downloadAutomationImage 提供聊天应用和自动化发货共用的公网图片下载规则。
 func downloadAutomationImage(ctx context.Context, rawURL string) ([]byte, string, string, error) {
-	// parsed、err 分别保存规范化后的来源地址和解析错误。
-	parsed, err := url.Parse(strings.TrimSpace(rawURL))
-	if err != nil || parsed.Scheme == "" || parsed.Hostname() == "" || parsed.User != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+	// parsedURL 和 parseErr 保存规范化后的来源地址及其解析错误。
+	parsedURL, parseErr := url.Parse(strings.TrimSpace(rawURL))
+	if parseErr != nil || parsedURL.Scheme == "" || parsedURL.Hostname() == "" || parsedURL.User != nil || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") {
 		return nil, "", "", fmt.Errorf("图片 URL 无效")
 	}
-	// request、err 保存绑定自动化取消上下文的下载请求及构造错误。
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
-	if err != nil {
+	// request 和 requestErr 保存绑定调用方取消边界的图片下载请求及构造错误。
+	request, requestErr := http.NewRequestWithContext(ctx, http.MethodGet, parsedURL.String(), nil)
+	if requestErr != nil {
 		return nil, "", "", fmt.Errorf("创建图片下载请求失败")
 	}
-	// client 只允许访问公网地址，并在重定向时重复校验目标，避免卡密 URL 触发 SSRF。
+	// client 只允许访问公网地址，并在重定向时重新校验目标地址，避免 URL 触发 SSRF。
 	client := netguard.ConfiguredHTTPClient(30 * time.Second)
-	// response、err 保存远程图片响应及网络访问失败原因。
-	response, err := client.Do(request)
-	if err != nil {
+	// response 和 responseErr 保存远程响应及网络访问错误。
+	response, responseErr := client.Do(request)
+	if responseErr != nil {
 		return nil, "", "", fmt.Errorf("下载图片失败")
 	}
 	defer response.Body.Close()
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return nil, "", "", fmt.Errorf("下载图片返回 HTTP %d", response.StatusCode)
 	}
-	// data、err 保存受最大体积限制的响应内容及读取错误。
-	data, err := io.ReadAll(io.LimitReader(response.Body, automationImageMaxBytes+1))
-	if err != nil {
+	// data 和 readErr 保存受大小限制的图片字节及读取错误。
+	data, readErr := io.ReadAll(io.LimitReader(response.Body, automationImageMaxBytes+1))
+	if readErr != nil {
 		return nil, "", "", fmt.Errorf("读取图片失败")
 	}
 	if len(data) == 0 || len(data) > automationImageMaxBytes {
 		return nil, "", "", fmt.Errorf("图片大小必须在 1 B 到 10 MiB 之间")
 	}
-	// contentType 保存去除参数后的响应媒体类型；缺失或通用类型时根据图片字节检测。
+	// contentType 保存响应媒体类型；缺失或通用类型时使用实际图片字节识别。
 	contentType := strings.TrimSpace(strings.Split(response.Header.Get("Content-Type"), ";")[0])
 	if contentType == "" || contentType == "application/octet-stream" {
 		contentType = http.DetectContentType(data)
@@ -167,8 +167,8 @@ func downloadAutomationImage(ctx context.Context, rawURL string) ([]byte, string
 	if !strings.HasPrefix(strings.ToLower(contentType), "image/") {
 		return nil, "", "", fmt.Errorf("远程内容不是图片")
 	}
-	// filename 保存来源路径中的展示名称；缺失名称时使用与媒体类型无关的默认值。
-	filename := filepath.Base(parsed.Path)
+	// filename 保存来源路径中的上传名称，无法提取时使用稳定默认名称。
+	filename := filepath.Base(parsedURL.Path)
 	if filename == "." || filename == "/" || filename == "" {
 		filename = "image"
 	}

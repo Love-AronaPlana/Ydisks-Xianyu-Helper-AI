@@ -287,6 +287,37 @@ func (c *Center) handleTask(ctx context.Context, task Task) (bool, error) {
 	} else {
 		task = resolvedTask
 	}
+	// unknownRoleTask 标记本次 WebSocket 交易事件是否未携带明确角色；仅该类事件需要记录本地卖家事实核验的放行日志。
+	unknownRoleTask := task.OrderRole == OrderRoleUnknown && isWebSocketSellerOrderTask(task)
+	// verifiedTask、sellerVerified、rejectReason 保存未知角色事件的本地卖家核验结果；失败时在事实写入前停止，避免把买家订单落到卖家账号。
+	verifiedTask, sellerVerified, rejectReason, roleErr := c.authorizeWebSocketSellerTask(ctx, task)
+	if roleErr != nil {
+		return false, roleErr
+	}
+	if !sellerVerified {
+		if roleVerificationRetryable(rejectReason) {
+			if isDeferredReplay(task) {
+				// 未知角色延期任务再次没有本地证据时交给统一退避；达到上限后由调度器发送人工处理通知。
+				return false, errSellerRoleEvidencePending
+			}
+			// deferErr 保存首条未知角色事件写入延期队列的错误；写入失败不能伪装成已安全处理。
+			if deferErr := c.deferUnknownRoleTask(ctx, task, rejectReason); deferErr != nil {
+				return false, deferErr
+			}
+			if c.logger != nil {
+				c.logger.Info("未知角色发货事件已保存，等待本地卖家事实", "account", task.AccountID, "order_id", task.OrderID, "trigger", task.TriggerType, "reason", rejectReason)
+			}
+			return true, nil
+		}
+		if c.logger != nil {
+			c.logger.Info("未知角色发货事件未通过本地卖家核验，未执行外部动作", "account", task.AccountID, "order_id", task.OrderID, "trigger", task.TriggerType, "reason", rejectReason)
+		}
+		return false, nil
+	}
+	if unknownRoleTask && c.logger != nil {
+		c.logger.Info("未知角色交易事件已通过本地卖家核验，继续执行自动化", "account", verifiedTask.AccountID, "order_id", verifiedTask.OrderID, "item_id", verifiedTask.ItemID, "trigger", verifiedTask.TriggerType, "source", verifiedTask.Source)
+	}
+	task = verifiedTask
 	if // err 用于本次流程后续判断的err
 	err := c.facts.record(ctx, task); err != nil {
 		if errors.Is(err, db.ErrForbidden) {
@@ -743,6 +774,12 @@ func (c *Center) cookieValue(ctx context.Context, cookieID string) (string, erro
 
 // buildTriggerKey 封装buildTriggerKey业务协调。
 func buildTriggerKey(task Task) string {
+	if task.Raw != nil {
+		// marker 是未知角色事件在订单号补齐前生成的稳定防重键；恢复时必须优先沿用它。
+		if marker, ok := task.Raw[roleVerificationTaskKeyField].(string); ok && strings.TrimSpace(marker) != "" {
+			return strings.TrimSpace(marker)
+		}
+	}
 	if task.TriggerType == TriggerReviewMissingTimeout && task.OrderID != "" {
 		if // attempt、ok 用于本次流程后续判断的attempt、ok
 		attempt, ok := task.Raw["attempt"]; ok {

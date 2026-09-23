@@ -17,7 +17,7 @@ import (
 type ItemSyncRepository struct {
 	// store 提供账号凭证和商品持久化能力。
 	store *db.Store
-	// client 返回商品列表和详情平台调用能力，允许运行时注入测试客户端。
+	// client 返回商品列表平台调用能力，允许运行时注入测试客户端。
 	client func() mtop.Client
 	// logger 记录不含凭证的同步阶段信息。
 	logger *slog.Logger

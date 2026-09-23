@@ -96,6 +96,13 @@ export default defineConfig({
           ) {
             return 'rules-safety-controls';
           }
+          // 关键词回复的商品多选与轻提示仅在回复规则交互中使用，独立分片避免挤占规则主页面预算。
+          if (
+            modulePath.includes('/app/features/rules/components/ItemMultiSelect.') ||
+            modulePath.includes('/app/features/rules/components/Toast.')
+          ) {
+            return 'rules-reply-controls';
+          }
           // 手动地点选择只在发布表单中使用，独立静态分片可控制商品页主分片预算并保留 feature 边界。
           if (
             modulePath.includes('/app/features/items/manualLocation.') ||

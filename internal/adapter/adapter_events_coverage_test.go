@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"xianyu-go/internal/chat"
+	"xianyu-go/internal/db"
 	"xianyu-go/internal/engine"
 	"xianyu-go/internal/xianyu/cookierefresh"
 	xrenew "xianyu-go/internal/xianyu/renew"
@@ -70,6 +71,31 @@ func TestAdapterEventHooksHandleNilChatAndLegacyNotifier(t *testing.T) {
 	adapter.OnAccountEvent(ctx, "cid", engine.EventSystemError, engine.AlertLevelWarn, "标题", "正文")
 	if legacyNotifier.calls != 1 {
 		t.Fatalf("旧版告警通知调用次数=%d", legacyNotifier.calls)
+	}
+}
+
+// TestAdapterItemBelongsToAccountReturnsOnlyLocalExistence 验证自动回复使用的商品归属查询只返回本地存在性，不读取敏感凭证。
+func TestAdapterItemBelongsToAccountReturnsOnlyLocalExistence(t *testing.T) {
+	// store、cleanup 提供隔离数据库和关闭责任。
+	store, cleanup := newAdapterTestStore(t)
+	defer cleanup()
+	// ctx 是本地商品归属查询共用的生命周期上下文。
+	ctx := context.Background()
+	// writeErr 保存本地商品夹具写入结果。
+	if writeErr := store.Items.Upsert(ctx, &db.ItemInfoRow{CookieID: "cid", ItemID: "owned-item", ItemTitle: "本地商品"}); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	// adapter 使用真实 SQLite 仓储实现可选的身份门禁端口。
+	adapter := New(store, nil, nil)
+	// owned、ownedErr 保存存在商品的归属结论。
+	owned, ownedErr := adapter.ItemBelongsToAccount(ctx, "cid", "owned-item")
+	if ownedErr != nil || !owned {
+		t.Fatalf("本地商品归属读取失败: owned=%t err=%v", owned, ownedErr)
+	}
+	// missing、missingErr 保存不存在商品的安全拒绝结论。
+	missing, missingErr := adapter.ItemBelongsToAccount(ctx, "cid", "missing-item")
+	if missingErr != nil || missing {
+		t.Fatalf("不存在商品不应被判定为当前账号商品: owned=%t err=%v", missing, missingErr)
 	}
 }
 

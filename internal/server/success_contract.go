@@ -326,6 +326,8 @@ type cookieDetailResponse struct {
 	Paused bool `json:"paused"`
 	// ShowBrowser 表示密码登录是否允许显示浏览器。
 	ShowBrowser bool `json:"show_browser"`
+	// CaptchaBrowserMode 是账号验证码处理模式：playwright 自动处理，system_manual 由用户在系统浏览器手动完成。
+	CaptchaBrowserMode string `json:"captcha_browser_mode"`
 	// Username 是登录用户名，不包含登录密码。
 	Username string `json:"username"`
 	// Nickname 是平台账号昵称缓存。
@@ -734,13 +736,13 @@ type orderRefreshSummary struct {
 	ListUpdated int `json:"list_updated"`
 	// SoftDeleted 是标记删除的订单数量。
 	SoftDeleted int `json:"soft_deleted"`
-	// DetailTotal 是需要补全详情的订单数量。
+	// DetailTotal 是兼容旧任务契约的详情补全数量；批量列表同步固定为零。
 	DetailTotal int `json:"detail_total"`
-	// Total 是本次处理订单总数。
+	// Total 是兼容旧任务契约的详情处理总数；批量列表同步固定为零。
 	Total int `json:"total"`
-	// Updated 是状态发生变化的订单数量。
+	// Updated 是兼容旧任务契约的详情刷新变化数量；批量列表字段变化计入 ListUpdated。
 	Updated int `json:"updated"`
-	// NoChange 是状态未发生变化的订单数量。
+	// NoChange 是兼容旧任务契约的详情刷新未变化数量；批量列表同步固定为零。
 	NoChange int `json:"no_change"`
 	// Failed 是刷新失败数量。
 	Failed int `json:"failed"`

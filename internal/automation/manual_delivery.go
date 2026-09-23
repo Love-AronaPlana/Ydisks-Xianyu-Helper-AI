@@ -75,6 +75,7 @@ func (c *Center) prepareManualDeliveryTask(ctx context.Context, order *db.Order)
 	task := Task{
 		Source:               "manual",
 		AccountID:            order.CookieID,
+		OrderRole:            OrderRoleSeller,
 		TriggerType:          TriggerOrderPaid,
 		ChatID:               order.ChatID,
 		OrderID:              order.OrderID,
@@ -175,11 +176,14 @@ func (c *Center) executeManualDeliveryRules(ctx context.Context, task Task, manu
 	}
 	// rule 保存当前候选付款发货规则。
 	for _, rule := range rules {
-		if !c.planner.hasMatchingSendCard(task, rule.Actions) {
+		// candidateTask 冻结该规则的账号级规格授权，使发卡动作匹配与后续执行使用同一份判断依据。
+		candidateTask := task
+		candidateTask.AllowAllItems = ruleAllowsAllItems(rule, task.TriggerType)
+		if !c.planner.hasMatchingSendCard(candidateTask, rule.Actions) {
 			continue
 		}
 		// sent、executeErr 保存当前规则的发货数量和执行失败原因，首个有效规则即结束人工流程。
-		sent, executeErr := c.executeManualDeliveryRule(ctx, task, rule, manualTriggerKey)
+		sent, executeErr := c.executeManualDeliveryRule(ctx, candidateTask, rule, manualTriggerKey)
 		if executeErr != nil || sent > 0 {
 			return sent, executeErr
 		}
@@ -191,6 +195,7 @@ func (c *Center) executeManualDeliveryRules(ctx context.Context, task Task, manu
 func (c *Center) executeManualDeliveryRule(ctx context.Context, task Task, rule db.AutomationRule, manualTriggerKey string) (int, error) {
 	// plannedTask 保存仅含人工即时动作的任务副本，延迟动作不得进入人工发货流程。
 	plannedTask := task
+	plannedTask.AllowAllItems = ruleAllowsAllItems(rule, task.TriggerType)
 	plannedTask.ActionPlan = c.planner.plan(task, c.planner.immediateManualActions(rule.Actions))
 	// rawTask、rawJSON、marshalErr 分别保存脱敏任务快照、其 JSON 与序列化失败原因。
 	rawTask := plannedTask

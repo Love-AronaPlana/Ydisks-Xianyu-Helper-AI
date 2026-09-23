@@ -270,7 +270,7 @@ export const APIRequestBuilder = ({
 				<span>HTTP 状态：{testState.result.status_code || '网络错误'}</span>
 				<span>响应类型：{testState.result.response_content_type || '未知'}</span>
 			  </div>
-			  <div className="mt-2 grid gap-1 text-gray-700"><span>响应字段：{testState.result.response_fields.length ? testState.result.response_fields.join('、') : '未识别 JSON 字段'}</span><span>提取结果：{testState.result.extracted_value || '未提取到内容'}</span></div>
+			  <div className="mt-2 grid gap-1 text-gray-700"><span>响应字段：{testState.result.response_fields?.join('、') || '未识别 JSON 字段'}</span><span>提取结果：{testState.result.extracted_value || '未提取到内容'}</span></div>
 			  {testState.result.response_preview && <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap rounded-lg bg-white/70 p-2 text-xs text-gray-600">{testState.result.response_preview}</pre>}
 			</div>
 		  )}

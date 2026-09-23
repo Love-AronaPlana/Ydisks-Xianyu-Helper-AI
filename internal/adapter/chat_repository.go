@@ -3,6 +3,7 @@ package adapter
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"xianyu-go/internal/account"
 	chatapp "xianyu-go/internal/application/chat"
@@ -200,6 +201,48 @@ func (r chatRepository) SaveBuyerNote(ctx context.Context, note chatapp.BuyerNot
 		return chatapp.BuyerNote{}, saveErr
 	}
 	return chatapp.BuyerNote{AccountID: row.CookieID, BuyerID: row.BuyerID, Content: row.Content, UpdatedAt: row.UpdatedAt}, nil
+}
+
+// FindSessionBuyer 返回会话对端的平台标识，作为人工接管的隔离键。
+// 引擎按入站消息发送者（即会话对端）判断接管，因此这里同样使用对端标识：
+// 同一买家在不同会话中会被识别为同一个接管目标，而不同买家互不影响。
+func (r chatRepository) FindSessionBuyer(ctx context.Context, userID int64, accountID, chatID string) (string, error) {
+	// sessions、listErr 保存该账号对当前用户可见的会话列表及查询错误。
+	sessions, listErr := r.store.Chats.ListSessions(ctx, userID, accountID, 500)
+	if listErr != nil {
+		return "", listErr
+	}
+	// candidate 表示当前遍历到的会话记录；数据库字段 BuyerID 承载的正是对外契约的 peer_user_id。
+	for _, candidate := range sessions {
+		if candidate.ChatID == strings.TrimSpace(chatID) {
+			return candidate.BuyerID, nil
+		}
+	}
+	return "", nil
+}
+
+// SetHumanHandoff 覆盖写入账号与买家的人工接管截止时间。
+func (r chatRepository) SetHumanHandoff(ctx context.Context, accountID, buyerID string, pausedUntil int64) error {
+	if r.store == nil || r.store.AIReply == nil {
+		return errors.New("人工接管存储未初始化")
+	}
+	return r.store.AIReply.SetHumanHandoff(ctx, accountID, buyerID, pausedUntil)
+}
+
+// ClearHumanHandoff 删除人工接管记录并返回是否命中。
+func (r chatRepository) ClearHumanHandoff(ctx context.Context, accountID, buyerID string) (bool, error) {
+	if r.store == nil || r.store.AIReply == nil {
+		return false, errors.New("人工接管存储未初始化")
+	}
+	return r.store.AIReply.ClearHumanHandoff(ctx, accountID, buyerID)
+}
+
+// GetHumanHandoff 读取人工接管截止时间并返回存在状态。
+func (r chatRepository) GetHumanHandoff(ctx context.Context, accountID, buyerID string) (int64, bool, error) {
+	if r.store == nil || r.store.AIReply == nil {
+		return 0, false, errors.New("人工接管存储未初始化")
+	}
+	return r.store.AIReply.GetHumanHandoff(ctx, accountID, buyerID)
 }
 
 // chatIdentityResolver 在适配器内读取 Cookie 并调用平台身份查询接口。

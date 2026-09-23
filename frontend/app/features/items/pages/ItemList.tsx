@@ -1,4 +1,4 @@
-import { ArrowRight,Box,CheckCircle2,CircleDashed,Edit,Filter,Link2,LocateFixed,PackagePlus,Plus,RefreshCw,Save,Search,ShoppingBag,Trash2,UploadCloud,User,X } from 'lucide-react';
+import { ArrowRight,Box,CheckCircle2,CircleDashed,Edit,Filter,Link2,LocateFixed,PackagePlus,Plus,RefreshCw,Save,Search,ShoppingBag,Trash2,UploadCloud,User,X,Sparkles } from 'lucide-react';
 import React,{ useCallback,useEffect,useMemo,useRef,useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { AccountDetail,Item,PublishLocation,ShippingRule } from '../api';
@@ -25,7 +25,7 @@ const formatItemPrice = (price?: string) => {
 };
 
 // ItemList 渲染商品列表组件。
-const ItemList: React.FC<ItemListProps> = ({ onConfigureDelivery, publishImagesEditor: ImagesEditor, publishSpecsEditor: SpecsEditor }) => {
+const ItemList: React.FC<ItemListProps> = ({ onConfigureDelivery, publishImagesEditor: ImagesEditor, publishSpecsEditor: SpecsEditor, itemAIPromptEditor: AIPromptEditor }) => {
   // [items, 解构得到当前 Hook 返回的状态和操作函数。
   const [items, setItems] = useState<Item[]>([]);
   // [shippingRules, 解构得到当前 Hook 返回的状态和操作函数。
@@ -40,6 +40,8 @@ const ItemList: React.FC<ItemListProps> = ({ onConfigureDelivery, publishImagesE
   const itemsRequestGeneration = useRef(0);
   // shippingRulesRequestGeneration 标识发货规则最新一次读取，旧响应不得覆盖较新的规则配置。
   const shippingRulesRequestGeneration = useRef(0);
+  // aiPromptItem 保存当前打开 AI 提示词编辑器的商品复合键对象。
+  const [aiPromptItem, setAIPromptItem] = useState<Item | null>(null);
   // loadItems 刷新商品列表，供普通操作和批量任务完成后复用。
   const loadItems = useCallback(/* 当前回调封装可复用的交互处理逻辑。 */ async () => {
     // requestGeneration 是本次商品刷新请求的单调递增代次。
@@ -328,6 +330,13 @@ const ItemList: React.FC<ItemListProps> = ({ onConfigureDelivery, publishImagesE
                         <Edit className="w-3.5 h-3.5" />
                       </button>
                       <button
+                        onClick={/* 当前回调打开当前账号与商品复合键对应的 AI 提示词编辑器。 */ () => setAIPromptItem(item)}
+                        className="p-1.5 bg-white/90 backdrop-blur rounded-lg shadow-md text-purple-600 hover:bg-purple-100 transition-colors"
+                        title="编辑 AI 提示词"
+                      >
+                        <Sparkles className="w-3.5 h-3.5" />
+                      </button>
+                      <button
                         onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => handleDelete(item)}
                         className="p-1.5 bg-white/90 backdrop-blur rounded-lg shadow-md hover:bg-red-100 text-red-500 transition-colors"
                         title="删除"
@@ -378,6 +387,8 @@ const ItemList: React.FC<ItemListProps> = ({ onConfigureDelivery, publishImagesE
              </div>
           )}
       </div>
+
+      {aiPromptItem && AIPromptEditor && <React.Suspense fallback={null}><AIPromptEditor item={aiPromptItem} onClose={/* 当前回调关闭商品 AI 提示词并清理当前复合键。 */ () => setAIPromptItem(null)} /></React.Suspense>}
 
       {showEditModal && selectedItem && createPortal(
         <div className="modal-overlay-centered">

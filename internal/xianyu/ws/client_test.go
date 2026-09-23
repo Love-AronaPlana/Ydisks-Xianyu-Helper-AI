@@ -44,20 +44,52 @@ func TestOfficialRegistrationUARecognizesHeadlessChrome(t *testing.T) {
 	}
 }
 
-// TestExtractSyncPayload 封装TestExtractSync请求载荷业务协调。
-func TestExtractSyncPayload(t *testing.T) {
-	// msg 用于本次流程后续判断的msg
+// TestExtractSyncPayloads 验证同一同步帧内的全部条目都会被提取：三条目夹具按平台顺序返回
+// 下标 0/1 的有效条目（first、second）与下标 2 的有效性失败条目（data 为非字符串 1），
+// 非对象条目单独标记失败，空帧与畸形帧返回 ok=false。
+func TestExtractSyncPayloads(t *testing.T) {
+	// msg 是本用例的同步推送帧；第三个条目的 data 为数字 1，用于触发"缺少非空字符串 data"分支。
 	msg := map[string]any{"body": map[string]any{"syncPushPackage": map[string]any{
-		"data": []any{map[string]any{"data": "payload"}},
+		"data": []any{
+			map[string]any{"data": "first"},
+			map[string]any{"data": "second"},
+			map[string]any{"data": 1},
+		},
 	}}}
-	if // got、ok 用于本次流程后续判断的got、ok
-	got, ok := extractSyncPayload(msg); !ok || got != "payload" {
-		t.Fatalf("extractSyncPayload() = %q, %v", got, ok)
+	// entries、ok 是逐条提取结果与整帧可处理标志。
+	entries, ok := extractSyncPayloads(msg)
+	if !ok {
+		t.Fatal("合法同步帧应返回 ok=true")
 	}
-	// invalid 表示当前遍历过程中的invalid
+	if len(entries) != 3 {
+		t.Fatalf("条目数 = %d，期望 3", len(entries))
+	}
+	if entries[0].index != 0 || !entries[0].valid || entries[0].data != "first" {
+		t.Fatalf("第 0 条目 = %#v", entries[0])
+	}
+	if entries[1].index != 1 || !entries[1].valid || entries[1].data != "second" {
+		t.Fatalf("第 1 条目 = %#v", entries[1])
+	}
+	if entries[2].index != 2 || entries[2].valid || entries[2].invalidReason != "缺少非空字符串 data" {
+		t.Fatalf("第 2 条目 = %#v", entries[2])
+	}
+	// mixedEntries、mixedOK 是非对象条目与有效条目混排时的提取结果；非对象条目不得影响后续条目。
+	mixedEntries, mixedOK := extractSyncPayloads(map[string]any{"body": map[string]any{"syncPushPackage": map[string]any{
+		"data": []any{"raw-not-object", map[string]any{"data": "kept"}},
+	}}})
+	if !mixedOK || len(mixedEntries) != 2 {
+		t.Fatalf("混合条目提取结果 = %#v, ok=%v", mixedEntries, mixedOK)
+	}
+	if mixedEntries[0].valid || mixedEntries[0].invalidReason != "条目不是对象" {
+		t.Fatalf("非对象条目 = %#v", mixedEntries[0])
+	}
+	if mixedEntries[1].index != 1 || !mixedEntries[1].valid || mixedEntries[1].data != "kept" {
+		t.Fatalf("非对象条目之后的条目 = %#v", mixedEntries[1])
+	}
+	// invalid 是当前待验证的非同步或畸形帧样本，均不得被当作同步推送包。
 	for _, invalid := range []map[string]any{{}, {"body": map[string]any{}}, {"body": map[string]any{"syncPushPackage": map[string]any{"data": []any{}}}}} {
-		if // ok 用于本次流程后续判断的ok
-		_, ok := extractSyncPayload(invalid); ok {
+		if // invalidOK 表示当前畸形帧是否被误判为可处理的同步推送。
+		_, invalidOK := extractSyncPayloads(invalid); invalidOK {
 			t.Fatalf("invalid payload accepted: %#v", invalid)
 		}
 	}

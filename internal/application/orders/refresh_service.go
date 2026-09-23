@@ -89,7 +89,7 @@ type RefreshCookieUpdate struct {
 	Handled bool
 }
 
-// RefreshOrderWrite 描述详情分片批量写入的一条订单记录。
+// RefreshOrderWrite 描述订单列表或详情刷新批次待批量写入的一条订单记录。
 type RefreshOrderWrite struct {
 	// OrderID 是待写入订单标识。
 	OrderID string
@@ -135,13 +135,13 @@ type RefreshSummary struct {
 	ListUpdated int
 	// SoftDeleted 是标记删除数量。
 	SoftDeleted int
-	// DetailTotal 是需要补全详情的订单数量。
+	// DetailTotal 是兼容旧任务契约的详情补全数量；批量列表同步固定为零。
 	DetailTotal int
-	// Total 是本次处理订单总数。
+	// Total 是兼容旧任务契约的详情处理总数；批量列表同步固定为零。
 	Total int
-	// Updated 是状态发生变化的订单数量。
+	// Updated 是兼容旧任务契约的详情刷新变化数量；批量列表字段变化计入 ListUpdated。
 	Updated int
-	// NoChange 是状态未发生变化的订单数量。
+	// NoChange 是兼容旧任务契约的详情刷新未变化数量；批量列表同步固定为零。
 	NoChange int
 	// Failed 是刷新失败数量。
 	Failed int
@@ -202,13 +202,13 @@ type RefreshRepository interface {
 	BatchUpsertOrders(ctx context.Context, rows []RefreshOrderWrite) error
 	// SoftDeleteMissingOrders 标记远端订单列表中缺失的本地订单。
 	SoftDeleteMissingOrders(ctx context.Context, cookieID string, activeIDs map[string]struct{}) (int, error)
-	// ListOrdersByCookieCursor 使用复合游标读取账号订单。
+	// ListOrdersByCookieCursor 保留显式详情补全的兼容读取能力；批量订单列表同步不会调用它。
 	ListOrdersByCookieCursor(ctx context.Context, cookieID string, limit int, afterCreatedAt, afterOrderID string) ([]OrderRow, error)
 }
 
 // RefreshRuntime 定义订单刷新访问平台和运行时能力的最小 Port。
 type RefreshRuntime interface {
-	// DetailAvailable 判断平台详情接口是否可用。
+	// DetailAvailable 判断单订单详情接口是否可用；批量订单列表同步不依赖该能力。
 	DetailAvailable() bool
 	// SoldAvailable 判断平台已售订单接口是否可用。
 	SoldAvailable() bool
@@ -236,7 +236,7 @@ type RefreshService struct {
 	repository RefreshRepository
 	// runtime 保存订单刷新所需的平台运行时 Port。
 	runtime RefreshRuntime
-	// detailChunkSize 是批量详情请求的单账号分片大小。
+	// detailChunkSize 是保留详情分片能力的单账号请求分片大小；批量订单列表同步不使用它。
 	detailChunkSize int
 	// discoveries 按账号保存最新调用的 *context.Context 身份；sync.Map 零值可用，兼容结构体字面量。
 	discoveries sync.Map
@@ -251,7 +251,7 @@ func NewRefreshService(repository RefreshRepository, runtime RefreshRuntime, det
 }
 
 // RefreshRuntimeAccount 在账号消息传输首次就绪后同步该账号的订单快照。
-// 它先以非敏感归属查询取得内部编排所需用户标识，再复用 Refresh 的完整发现、状态写回和详情补全流程；
+// 它先以非敏感归属查询取得内部编排所需用户标识，再复用 Refresh 的订单列表发现、状态写回和缺失清理流程；
 // cookieID 为空、账号不存在或服务未装配时均不触碰平台。
 func (s *RefreshService) RefreshRuntimeAccount(ctx context.Context, cookieID string) (RefreshResult, error) {
 	if s == nil || s.repository == nil || s.runtime == nil {
@@ -368,7 +368,9 @@ func (s *RefreshService) RefreshSingle(ctx context.Context, userID int64, orderI
 	return SingleRefreshResult{Success: true, Message: "订单刷新完成", Detail: RefreshDetail{Quantity: fetchResult.Detail.Quantity, SpecName: fetchResult.Detail.SpecName, SpecValue: fetchResult.Detail.SpecValue, OrderStatus: NormalizeOrderStatus(fetchResult.Detail.OrderStatus), Amount: fetchResult.Detail.Amount}}, nil
 }
 
-// Refresh 执行当前用户订单的发现、缺失清理和详情补全。
+// Refresh 执行当前用户订单的已售列表发现、字段写回和缺失清理。
+// status 仅为既有任务接口兼容保留，不改变已售列表的全量同步范围。
+// 批量同步不调用订单详情接口；规格等列表未提供的事实由单订单刷新或自动发货准备阶段按需补全。
 func (s *RefreshService) Refresh(ctx context.Context, userID int64, cookieID, status string) (RefreshResult, error) {
 	if s == nil || s.repository == nil || s.runtime == nil {
 		return RefreshResult{}, errors.New("订单刷新依赖未初始化")
@@ -393,10 +395,6 @@ func (s *RefreshService) Refresh(ctx context.Context, userID int64, cookieID, st
 	summary := RefreshSummary{}
 	// results 保存逐账号或逐订单结果。
 	results := make([]RefreshOrderResult, 0)
-	// newOrderIDs 保存发现的新订单标识。
-	newOrderIDs := make(map[string]struct{})
-	// sessionExpiredAccounts 保存会话过期账号标识。
-	sessionExpiredAccounts := make(map[string]struct{})
 	if s.runtime.SoldAvailable() {
 		// currentCookieID 是当前执行订单发现的账号标识。
 		for _, currentCookieID := range cookieIDs {
@@ -407,13 +405,6 @@ func (s *RefreshService) Refresh(ctx context.Context, userID int64, cookieID, st
 			summary.Restored += discoveryResult.Restored
 			summary.Reassigned += discoveryResult.Reassigned
 			results = append(results, discoveryResult.Results...)
-			// orderID 是本次发现的新订单标识。
-			for orderID := range discoveryResult.NewOrderIDs {
-				newOrderIDs[orderID] = struct{}{}
-			}
-			if discoveryResult.SessionExpired {
-				sessionExpiredAccounts[currentCookieID] = struct{}{}
-			}
 			// result 保存当前账号的订单发现结果。
 			result := RefreshOrderResult{CookieID: currentCookieID, Stage: "discover", Success: discoveryErr == nil, Discovered: discovered, Updated: updated}
 			if discoveryErr != nil {
@@ -441,92 +432,7 @@ func (s *RefreshService) Refresh(ctx context.Context, userID int64, cookieID, st
 		summary.Failed++
 		results = append(results, RefreshOrderResult{Stage: "discover", Message: "当前 MTop 客户端不支持订单列表发现"})
 	}
-	// ordersByCookie 保存待补全详情的订单目标。
-	ordersByCookie := make(map[string][]refreshTarget)
-	// currentCookieID 是当前读取详情目标的账号标识。
-	for _, currentCookieID := range cookieIDs {
-		// blocked 表示账号是否因会话过期而跳过详情。
-		if _, blocked := sessionExpiredAccounts[currentCookieID]; blocked {
-			continue
-		}
-		// afterCreatedAt、afterOrderID 保存当前账号订单扫描游标。
-		afterCreatedAt, afterOrderID := "", ""
-		for {
-			// rows、rowErr 保存当前游标页订单及错误。
-			rows, rowErr := s.repository.ListOrdersByCookieCursor(ctx, currentCookieID, 500, afterCreatedAt, afterOrderID)
-			if rowErr != nil {
-				summary.Failed++
-				results = append(results, RefreshOrderResult{CookieID: currentCookieID, Stage: "detail", Error: "读取待同步订单失败"})
-				break
-			}
-			// row 是当前游标页的本地订单行。
-			for _, row := range rows {
-				// currentStatus 保存当前订单归一化状态。
-				currentStatus := NormalizeOrderStatus(row.OrderStatus)
-				if status != "" && status != "all" && currentStatus != status {
-					continue
-				}
-				// isNewOrder 表示订单是否刚由发现阶段导入。
-				_, isNewOrder := newOrderIDs[row.OrderID]
-				if !isNewOrder && isStableRefreshStatus(currentStatus) && strings.TrimSpace(row.Amount) != "" {
-					continue
-				}
-				ordersByCookie[currentCookieID] = append(ordersByCookie[currentCookieID], refreshTarget{OrderID: row.OrderID, CurrentStatus: currentStatus})
-			}
-			if len(rows) < 500 {
-				break
-			}
-			// lastRow 保存当前游标页最后一条订单。
-			lastRow := rows[len(rows)-1]
-			if lastRow.CreatedAt == afterCreatedAt && lastRow.OrderID == afterOrderID {
-				break
-			}
-			afterCreatedAt, afterOrderID = lastRow.CreatedAt, lastRow.OrderID
-		}
-	}
-	// total 保存需要补全详情的订单总数。
-	total := 0
-	// targets 是当前账号的待补全详情目标。
-	for _, targets := range ordersByCookie {
-		total += len(targets)
-	}
-	summary.DetailTotal, summary.Total = total, total
-	if !s.runtime.DetailAvailable() {
-		// message 保存详情接口不可用时返回的说明。
-		message := "订单列表同步完成"
-		if summary.Discovered > 0 {
-			message = fmt.Sprintf("订单列表同步完成，发现并导入 %d 个新订单", summary.Discovered)
-		}
-		if total > 0 {
-			message += fmt.Sprintf("；当前 Go MTOP 客户端不支持详情接口，已跳过 %d 个订单", total)
-		}
-		return finishOrderRefresh(summary, results, message), nil
-	}
-	if total == 0 {
-		return finishOrderRefresh(summary, results, fmt.Sprintf("订单列表同步完成，发现 %d 个新订单；没有需要补全详情的订单", summary.Discovered)), nil
-	}
-	// currentCookieID、targets 保存当前账号及其详情目标。
-	for currentCookieID, targets := range ordersByCookie {
-		// accountExpired 表示当前账号是否因会话过期而停止处理。
-		accountExpired := false
-		// chunk 是当前账号的详情请求分片。
-		for _, chunk := range splitRefreshTargets(targets, s.detailChunkSize) {
-			// updated、noChange、failed、chunkResults、expired 保存分片处理统计和结果。
-			updated, noChange, failed, chunkResults, expired := s.refreshDetailChunk(ctx, userID, currentCookieID, chunk)
-			summary.Updated += updated
-			summary.NoChange += noChange
-			summary.Failed += failed
-			results = append(results, chunkResults...)
-			if expired {
-				accountExpired = true
-				break
-			}
-		}
-		if accountExpired {
-			continue
-		}
-	}
-	return finishOrderRefresh(summary, results, fmt.Sprintf("订单同步完成，发现 %d 个新订单", summary.Discovered)), nil
+	return finishOrderRefresh(summary, results, fmt.Sprintf("订单列表同步完成，发现 %d 个新订单", summary.Discovered)), nil
 }
 
 // refreshDiscoveryResult 保存单账号发现阶段的内部结果。

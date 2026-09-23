@@ -48,6 +48,8 @@ type cookieSummaryResponse struct {
 	Paused bool `json:"paused"`
 	// ShowBrowser 表示密码登录流程是否允许显示浏览器。
 	ShowBrowser bool `json:"show_browser"`
+	// CaptchaBrowserMode 是账号验证码处理模式：playwright 自动处理，system_manual 由用户在系统浏览器手动完成。
+	CaptchaBrowserMode string `json:"captcha_browser_mode"`
 	// Username 是登录用户名，不包含登录密码。
 	Username string `json:"username"`
 	// Nickname 是平台账号昵称缓存。

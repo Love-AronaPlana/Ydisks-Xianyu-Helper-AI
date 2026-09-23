@@ -26,7 +26,7 @@ describe('useAccountsData', /* 当前回调处理账号详情、AI 配置和运�
   beforeEach(/* 当前回调重置账号 API 替身和日志输出。 */ () => {
     vi.clearAllMocks();
     getDetailsMock.mockResolvedValue([accountFixture]);
-    getAISettingsMock.mockResolvedValue({ 'account-1': { ai_enabled: true, max_discount_percent: 20, max_discount_amount: 30, max_bargain_rounds: 4, custom_prompts: '提示词' } } as never);
+    getAISettingsMock.mockResolvedValue({ 'account-1': { ai_enabled: true, auto_adjust_price_enabled: false, ai_reply_mode: 'bargain', ai_full_prompt: '', human_handoff_minutes: 45, max_discount_percent: 20, max_discount_amount: 30, max_bargain_rounds: 4, custom_prompts: '提示词' } } as never);
     getRuntimeMock.mockResolvedValue({ 'account-1': { state: 'online', connected: true, failures: 0, message: '在线', updated_at: '2026-08-15T00:00:00Z' } });
     vi.spyOn(console, 'error').mockImplementation(
       // errorImplementation 屏蔽轮询失败测试中的日志输出。
@@ -48,7 +48,7 @@ describe('useAccountsData', /* 当前回调处理账号详情、AI 配置和运�
       // runtimeAssertion 等待首次运行状态轮询完成。
       () => expect(getRuntimeMock).toHaveBeenCalled(),
     );
-    expect(hook.result.current.accounts[0]).toMatchObject({ ai_enabled: true, max_discount_percent: 20, runtime_state: 'online', runtime_connected: true });
+    expect(hook.result.current.accounts[0]).toMatchObject({ ai_enabled: true, human_handoff_minutes: 45, max_discount_percent: 20, runtime_state: 'online', runtime_connected: true });
     hook.unmount();
   });
 

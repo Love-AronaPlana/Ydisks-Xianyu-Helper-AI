@@ -17,6 +17,7 @@ import { contractClient, contractMultipartBody, runContractRequest } from '../..
 import { collectionFrom } from '../../../shared/http/contract';
 import type { PublishSkuRow, PublishSpec } from './publishSpecs';
 export type * from './models';
+import type { ItemAIPrompt, ItemAIPromptInput } from './models';
 import { getPublishLocations as queryPublishLocations,type PublishLocationRequestOptions } from './amapLocation';
 
 /** 商品账号筛选器读取非敏感账号摘要。 */
@@ -242,3 +243,22 @@ export const getItemDetail = async (accountID: string, itemID: string): Promise<
   const response = await runContractRequest(/* signal 控制商品详情请求的取消和超时。 */ signal => contractClient.GET('/api/v1/items/{cookie_id}/{item_id}', { params: { path: { cookie_id: accountID, item_id: itemID } }, signal }));
   return response;
 };
+
+/** 读取指定商品的 AI 提示词配置；请求支持外部取消以隔离弹窗切换和卸载。 */
+export const getItemAIPrompt = async (cookieId: string, itemId: string, options?: RequestControlOptions): Promise<ItemAIPrompt> => runContractRequest(
+  /* signal 控制商品 AI 提示词读取的取消和超时。 */ signal => contractClient.GET('/api/v1/items/{cookie_id}/{item_id}/ai-prompt', {
+    params: { path: { cookie_id: cookieId, item_id: itemId } },
+    signal,
+  }),
+  options,
+) as unknown as Promise<ItemAIPrompt>;
+
+/** 保存指定商品的 AI 提示词配置，并把表单载荷限制在 feature adapter 边界。 */
+export const updateItemAIPrompt = async (cookieId: string, itemId: string, input: ItemAIPromptInput, options?: RequestControlOptions): Promise<ItemAIPrompt> => runContractRequest(
+  /* signal 控制商品 AI 提示词保存的取消和超时。 */ signal => contractClient.PUT('/api/v1/items/{cookie_id}/{item_id}/ai-prompt', {
+    params: { path: { cookie_id: cookieId, item_id: itemId } },
+    body: input,
+    signal,
+  }),
+  options,
+) as unknown as Promise<ItemAIPrompt>;

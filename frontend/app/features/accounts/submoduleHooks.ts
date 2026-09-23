@@ -41,7 +41,7 @@ export const useAccountSubmodules = ({ editingAccount, setEditingAccount, setAct
   // bindingsLoadError 保存通知绑定加载错误。
   const [bindingsLoadError, setBindingsLoadError] = useState('');
   // aiSettings 保存账号 AI 编辑草稿。
-  const [aiSettings, setAiSettings] = useState<AIReplySettings>({ ai_enabled: false, auto_adjust_price_enabled: false, max_discount_percent: 10, max_discount_amount: 100, max_bargain_rounds: 3, custom_prompts: '' });
+  const [aiSettings, setAiSettings] = useState<AIReplySettings>({ ai_enabled: false, auto_adjust_price_enabled: false, ai_reply_mode: 'bargain', ai_full_prompt: '', human_handoff_minutes: 0, ai_vision_enabled: true, max_discount_percent: 10, max_discount_amount: 100, max_bargain_rounds: 3, custom_prompts: '' });
   // saving 表示编辑、AI 或暂停动作是否正在保存。
   const [saving, setSaving] = useState(false);
   // passwordLoginView 保存密码登录刷新授权状态。
@@ -125,7 +125,7 @@ export const useAccountSubmodules = ({ editingAccount, setEditingAccount, setAct
     setPasswordLoginView({ sessionId: '', status: 'idle', message: '', qrCodeUrl: '' });
     setEditingAccount(account);
     // 摘要接口不会返回 Cookie 或密码明文；编辑表单只接收本次用户主动输入的秘密。
-    setEditForm({ remark: account.remark || '', cookie: '', auto_confirm: account.auto_confirm || false, auto_consign: account.auto_consign || false, auto_bargain: account.auto_bargain || false, pause_duration: account.pause_duration || 0, username: account.username || '', login_password: '', show_browser: account.show_browser || false, showLoginPassword: false, clear_password: false });
+    setEditForm({ remark: account.remark || '', cookie: '', auto_confirm: account.auto_confirm || false, auto_consign: account.auto_consign || false, auto_bargain: account.auto_bargain || false, pause_duration: account.pause_duration || 0, username: account.username || '', login_password: '', show_browser: account.show_browser || false, captcha_browser_mode: account.captcha_browser_mode || 'playwright', showLoginPassword: false, clear_password: false });
     setActiveModal('edit');
     setLongLogin({ loading: true, saving: false, canOpen: false, enabled: false, error: '' });
     // longLoginResult 保存长登录设置读取结果。
@@ -168,7 +168,7 @@ export const useAccountSubmodules = ({ editingAccount, setEditingAccount, setAct
       // settings 保存当前账号的 AI 设置。
       const settings = await getAccountAISettings(account.id, { signal: controller.signal });
       if (!isCurrentAccountRequest(sequence, aiSequence.current, account.id, account.id)) return;
-      setAiSettings({ ai_enabled: settings.ai_enabled ?? false, auto_adjust_price_enabled: settings.auto_adjust_price_enabled ?? false, max_discount_percent: settings.max_discount_percent ?? 10, max_discount_amount: settings.max_discount_amount ?? 100, max_bargain_rounds: settings.max_bargain_rounds ?? 3, custom_prompts: settings.custom_prompts ?? '' });
+      setAiSettings({ ai_enabled: settings.ai_enabled ?? false, auto_adjust_price_enabled: settings.auto_adjust_price_enabled ?? false, ai_reply_mode: settings.ai_reply_mode ?? 'bargain', ai_full_prompt: settings.ai_full_prompt ?? '', human_handoff_minutes: settings.human_handoff_minutes ?? 0, ai_vision_enabled: settings.ai_vision_enabled ?? true, max_discount_percent: settings.max_discount_percent ?? 10, max_discount_amount: settings.max_discount_amount ?? 100, max_bargain_rounds: settings.max_bargain_rounds ?? 3, custom_prompts: settings.custom_prompts ?? '' });
     } catch (/* error 保存 AI 设置读取请求的失败原因，过期请求不会更新当前界面。 */ error) {
       // error 保存 AI 设置读取失败原因。
       if (isCurrentAccountRequest(sequence, aiSequence.current, account.id, account.id)) console.error('加载 AI 设置失败:', error);
@@ -207,6 +207,8 @@ export const useAccountSubmodules = ({ editingAccount, setEditingAccount, setAct
       if (editForm.auto_consign !== (editingAccount.auto_consign || false)) payload.auto_consign = editForm.auto_consign;
       if (editForm.auto_bargain !== (editingAccount.auto_bargain || false)) payload.auto_bargain = editForm.auto_bargain;
       if (shouldUpdateAccountPause(editForm.pause_duration, editingAccount)) payload.pause_duration = editForm.pause_duration;
+      // 验证码处理模式只在用户实际切换时提交，避免每次编辑都写回默认值。
+      if (editForm.captcha_browser_mode !== (editingAccount.captcha_browser_mode || 'playwright')) payload.captcha_browser_mode = editForm.captcha_browser_mode;
       // loginInfo 保存登录字段变更补丁。
       const loginInfo = buildAccountLoginInfoUpdate(editingAccount, editForm);
       if (loginInfo) Object.assign(payload, loginInfo);

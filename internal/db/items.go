@@ -46,6 +46,22 @@ func (i *Items) GetByCookieItem(ctx context.Context, cookieID, itemID string) (I
 	return row, nil
 }
 
+// ExistsByCookieItem 判断商品是否曾经属于指定账号；包含软删除记录，供订单归属核验保留已售商品证据。
+func (i *Items) ExistsByCookieItem(ctx context.Context, cookieID, itemID string) (bool, error) {
+	// marker、err 保存商品归属存在性查询结果；不读取商品详情或账号凭证明文。
+	var marker int
+	// err 保存商品归属存在性查询或扫描错误。
+	err := i.DB.QueryRowContext(ctx,
+		`SELECT 1 FROM item_info WHERE cookie_id=? AND item_id=? LIMIT 1`, cookieID, itemID).Scan(&marker)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return marker != 0, nil
+}
+
 // ListForUser 一次查询用户范围内的全部商品，可选按账号 ID 过滤。
 func (i *Items) ListForUser(ctx context.Context, userID int64, cookieID string) ([]ItemInfoRow, error) {
 	// rows、err 保存用户范围商品查询结果及错误。

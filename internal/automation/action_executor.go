@@ -679,6 +679,11 @@ func actionMatchesOrderSpec(task Task, action db.AutomationAction) bool {
 		return false
 	}
 	if strings.TrimSpace(cfg.SpecName) == "" && strings.TrimSpace(cfg.SpecValue) == "" {
+		// 动作未限定规格时，只有规则已明确授权账号级付款动作忽略规格才可匹配任意订单规格；
+		// 否则仍要求订单本身没有规格，避免账号级规则误发到规格不确定的订单。
+		if task.AllowAllItems {
+			return true
+		}
 		return strings.TrimSpace(task.SpecName) == "" && strings.TrimSpace(task.SpecValue) == ""
 	}
 	return orderspec.Equal(task.SpecName, task.SpecValue, cfg.SpecName, cfg.SpecValue)

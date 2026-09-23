@@ -51,7 +51,7 @@ func TestPaidDeliveryUsesNormalConsignForBargainReadyOrder(t *testing.T) {
 	// center 是注入免拼替身与在线发送器的自动化中心。
 	center := NewWithDependencies(store, testSenderProvider{sender: sender}, nil, CenterDependencies{MTop: client})
 	// pendingErr 保存第一段“待刀成”WebSocket 的免拼执行结果。
-	pendingErr := center.HandleTask(ctx, Task{Source: "ws", AccountID: "cid", TriggerType: TriggerBargainPending, OrderID: "paid-bargain-order", ItemID: "10001", BuyerID: "20002", ChatID: "chat-1", IsBargain: true})
+	pendingErr := center.HandleTask(ctx, Task{Source: "ws", AccountID: "cid", OrderRole: OrderRoleSeller, TriggerType: TriggerBargainPending, OrderID: "paid-bargain-order", ItemID: "10001", BuyerID: "20002", ChatID: "chat-1", IsBargain: true})
 	if pendingErr != nil {
 		t.Fatalf("砍价待刀成免拼失败: %v", pendingErr)
 	}
@@ -59,7 +59,7 @@ func TestPaidDeliveryUsesNormalConsignForBargainReadyOrder(t *testing.T) {
 		t.Fatalf("最终待发货消息到达前发生发卡或确认抢跑: free=%d consign=%d messages=%+v", client.freeShippingCalls, client.consignCalls, sender.texts)
 	}
 	// handleErr 保存付款自动发货执行结果。
-	handleErr := center.HandleTask(ctx, Task{Source: "ws", AccountID: "cid", TriggerType: TriggerOrderPaid, OrderID: "paid-bargain-order", ItemID: "10001", BuyerID: "20002", ChatID: "chat-1", IsBargain: true})
+	handleErr := center.HandleTask(ctx, Task{Source: "ws", AccountID: "cid", OrderRole: OrderRoleSeller, TriggerType: TriggerOrderPaid, OrderID: "paid-bargain-order", ItemID: "10001", BuyerID: "20002", ChatID: "chat-1", IsBargain: true})
 	if handleErr != nil {
 		t.Fatalf("砍价付款自动发货失败: %v", handleErr)
 	}
@@ -167,7 +167,7 @@ func TestBargainPendingRunsOnlyIndependentFreeShipping(t *testing.T) {
 	// center 是待验证的自动化中心。
 	center := NewWithDependencies(store, testSenderProvider{sender: sender}, nil, CenterDependencies{MTop: client})
 	// handleErr 保存待刀成 WS 任务的执行错误。
-	handleErr := center.HandleTask(ctx, Task{Source: "ws", AccountID: "cid", TriggerType: TriggerBargainPending, OrderID: "bargain-pending", ItemID: "10001", BuyerID: "20002", ChatID: "chat"})
+	handleErr := center.HandleTask(ctx, Task{Source: "ws", AccountID: "cid", OrderRole: OrderRoleSeller, TriggerType: TriggerBargainPending, OrderID: "bargain-pending", ItemID: "10001", BuyerID: "20002", ChatID: "chat"})
 	if handleErr != nil {
 		t.Fatalf("待刀成免拼失败: %v", handleErr)
 	}
@@ -186,7 +186,7 @@ func TestBargainPendingRequiresWebSocketAndIndependentSwitch(t *testing.T) {
 	// center 是使用默认关闭自动免拼账号设置的自动化中心。
 	center := NewWithDependencies(store, nil, nil, CenterDependencies{MTop: client})
 	// wsTask 是关闭自动免拼时收到的真实待刀成 WebSocket 阶段。
-	wsTask := Task{Source: "ws", AccountID: "cid", TriggerType: TriggerBargainPending, OrderID: "bargain-normal", ItemID: "item", BuyerID: "buyer", IsBargain: true}
+	wsTask := Task{Source: "ws", AccountID: "cid", OrderRole: OrderRoleSeller, TriggerType: TriggerBargainPending, OrderID: "bargain-normal", ItemID: "item", BuyerID: "buyer", IsBargain: true}
 	if /* handleErr 保存关闭免拼时处理待刀成消息的错误。 */ handleErr := center.HandleTask(context.Background(), wsTask); handleErr != nil {
 		t.Fatalf("关闭免拼时处理待刀成消息失败: %v", handleErr)
 	}

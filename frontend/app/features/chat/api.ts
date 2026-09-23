@@ -1,6 +1,7 @@
 import {
 AccountDetail,
 ChatBuyerNote,
+ChatHumanHandoff,
 ChatItem,
 ChatItemPage,
 ChatMessage,
@@ -167,6 +168,30 @@ export const saveChatBuyerNote = async (accountId: string, buyerId: string, cont
   }), options);
   return { account_id: response.account_id, buyer_id: response.buyer_id, content: response.content, updated_at: response.updated_at };
 };
+
+/** 读取指定会话买家的人工接管状态；买家标识由服务端从会话推导。 */
+export const getChatHumanHandoff = async (accountId: string, chatId: string, options?: RequestControlOptions): Promise<ChatHumanHandoff> => runContractRequest(
+  /* signal 是本次人工接管状态查询的超时与取消控制信号。 */ signal => contractClient.GET('/api/v1/chat/human-handoff', {
+    params: { query: { account_id: accountId, chat_id: chatId } },
+    signal,
+  }), options,
+) as unknown as Promise<ChatHumanHandoff>;
+
+/** 按分钟数接管指定会话买家的 AI 回复。 */
+export const setChatHumanHandoff = async (accountId: string, chatId: string, minutes: number, options?: RequestControlOptions): Promise<ChatHumanHandoff> => runContractRequest(
+  /* signal 是本次人工接管设置请求的超时与取消控制信号。 */ signal => contractClient.PUT('/api/v1/chat/human-handoff', {
+    body: { account_id: accountId, chat_id: chatId, minutes },
+    signal,
+  }), options,
+) as unknown as Promise<ChatHumanHandoff>;
+
+/** 提前结束指定会话买家的人工接管，使 AI 立即恢复回复。 */
+export const clearChatHumanHandoff = async (accountId: string, chatId: string, options?: RequestControlOptions): Promise<ChatHumanHandoff> => runContractRequest(
+  /* signal 是本次人工接管结束请求的超时与取消控制信号。 */ signal => contractClient.DELETE('/api/v1/chat/human-handoff', {
+    params: { query: { account_id: accountId, chat_id: chatId } },
+    signal,
+  }), options,
+) as unknown as Promise<ChatHumanHandoff>;
 
 // sendChatMessage 发送聊天文本消息。
 export const sendChatMessage = async (input: {

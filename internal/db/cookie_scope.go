@@ -65,6 +65,8 @@ type CookieSummary struct {
 	AutoConsign bool
 	// AutoBargain 表示砍价“待刀成”阶段是否自动调用免拼接口。
 	AutoBargain bool
+	// CaptchaBrowserMode 表示账号 Token 风控验证码的处理模式，历史账号默认为 playwright。
+	CaptchaBrowserMode string
 	// Remark 是用户为账号设置的备注。
 	Remark string
 	// PauseDuration 是账号暂停时长，单位为分钟。
@@ -100,7 +102,7 @@ func (c *Cookies) ListSummaries(ctx context.Context, userID int64) ([]CookieSumm
 		SELECT id, user_id, auto_confirm, COALESCE(remark,''), pause_duration,
 		       COALESCE(paused_until,0), COALESCE(username,''), show_browser,
 		       COALESCE(nickname,''), COALESCE(avatar_url,''), COALESCE(last_refresh_at,0),
-		       COALESCE(login_method,''), COALESCE(last_login_at,0), COALESCE(auto_consign,0), COALESCE(auto_bargain,0), created_at
+		       COALESCE(login_method,''), COALESCE(last_login_at,0), COALESCE(auto_consign,0), COALESCE(auto_bargain,0), COALESCE(captcha_browser_mode,'playwright'), created_at
 		FROM cookies WHERE user_id=? ORDER BY created_at DESC, id DESC`, userID)
 	if err != nil {
 		return nil, err
@@ -120,7 +122,7 @@ func (c *Cookies) ListSummaries(ctx context.Context, userID int64) ([]CookieSumm
 			&summary.ID, &summary.UserID, &autoConfirm, &summary.Remark, &pauseDuration,
 			&summary.PausedUntil, &summary.Username, &showBrowser, &summary.Nickname,
 			&summary.AvatarURL, &summary.LastRefreshAt, &summary.LoginMethod,
-			&summary.LastLoginAt, &autoConsign, &autoBargain, &summary.CreatedAt,
+			&summary.LastLoginAt, &autoConsign, &autoBargain, &summary.CaptchaBrowserMode, &summary.CreatedAt,
 		); scanErr != nil {
 			return nil, scanErr
 		}
@@ -154,12 +156,12 @@ func (c *Cookies) GetSummaryOwned(ctx context.Context, userID int64, cookieID st
 		SELECT id, user_id, auto_confirm, COALESCE(remark,''), pause_duration,
 		       COALESCE(paused_until,0), COALESCE(username,''), show_browser,
 		       COALESCE(nickname,''), COALESCE(avatar_url,''), COALESCE(last_refresh_at,0),
-		       COALESCE(login_method,''), COALESCE(last_login_at,0), COALESCE(auto_consign,0), COALESCE(auto_bargain,0), created_at
+		       COALESCE(login_method,''), COALESCE(last_login_at,0), COALESCE(auto_consign,0), COALESCE(auto_bargain,0), COALESCE(captcha_browser_mode,'playwright'), created_at
 		FROM cookies WHERE id=? AND user_id=?`, cookieID, userID).Scan(
 		&summary.ID, &summary.UserID, &autoConfirm, &summary.Remark, &pauseDuration,
 		&summary.PausedUntil, &summary.Username, &showBrowser, &summary.Nickname,
 		&summary.AvatarURL, &summary.LastRefreshAt, &summary.LoginMethod,
-		&summary.LastLoginAt, &autoConsign, &autoBargain, &summary.CreatedAt)
+		&summary.LastLoginAt, &autoConsign, &autoBargain, &summary.CaptchaBrowserMode, &summary.CreatedAt)
 	if queryErr != nil {
 		if errors.Is(queryErr, sql.ErrNoRows) {
 			return CookieSummary{}, ErrNotFound
@@ -282,6 +284,8 @@ type CookiePlatformRuntimeData struct {
 	LastRefreshAt int64
 	// ShowBrowser 表示 token 风控恢复是否允许使用可视化浏览器。
 	ShowBrowser bool
+	// CaptchaBrowserMode 表示账号选择的验证码处理模式，空值按 playwright 兼容。
+	CaptchaBrowserMode string
 }
 
 // GetCookieRuntimeData 返回运行时所需的最小 Cookie 与 metadata 字段，并严格跳过登录密码、用户名等其他列。
@@ -322,14 +326,18 @@ func (c *Cookies) GetCookiePlatformRuntimeData(ctx context.Context, cookieID str
 	var encryptedValue, encryptedMetadata string
 	// queryErr 表示账号不存在或平台运行时查询失败的原因。
 	if queryErr := c.DB.QueryRowContext(ctx,
-		`SELECT id, user_id, value, COALESCE(show_browser,0), COALESCE(metadata_json,''), COALESCE(last_refresh_at,0) FROM cookies WHERE id=?`, cookieID).
-		Scan(&data.ID, &data.UserID, &encryptedValue, &showBrowser, &encryptedMetadata, &data.LastRefreshAt); queryErr != nil {
+		`SELECT id, user_id, value, COALESCE(show_browser,0), COALESCE(metadata_json,''), COALESCE(last_refresh_at,0), COALESCE(captcha_browser_mode,'') FROM cookies WHERE id=?`, cookieID).
+		Scan(&data.ID, &data.UserID, &encryptedValue, &showBrowser, &encryptedMetadata, &data.LastRefreshAt, &data.CaptchaBrowserMode); queryErr != nil {
 		if errors.Is(queryErr, sql.ErrNoRows) {
 			return CookiePlatformRuntimeData{}, ErrNotFound
 		}
 		return CookiePlatformRuntimeData{}, queryErr
 	}
 	data.ShowBrowser = showBrowser != 0
+	// 空值或历史非法值按 playwright 处理，避免升级后静默停用既有的自动验证行为。
+	if !IsValidCaptchaBrowserMode(data.CaptchaBrowserMode) {
+		data.CaptchaBrowserMode = CaptchaBrowserModePlaywright
+	}
 	// decryptErr 表示 Cookie 或 metadata 密文无法解密的原因。
 	var decryptErr error
 	data.Value, decryptErr = c.codec.decrypt("cookie", data.ID, encryptedValue)

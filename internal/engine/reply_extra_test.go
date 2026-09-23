@@ -37,6 +37,178 @@ func (f *fakeAIReplier) Reply(_ context.Context, _ ChatMessage) (*ReplyResult, e
 	return f.result, f.err
 }
 
+// TestReply_HumanHandoffPreservesKeywordAndBlocksAI 验证人工触发消息仍按关键词优先回复，并为同一买家暂停 AI。
+func TestReply_HumanHandoffPreservesKeywordAndBlocksAI(t *testing.T) {
+	// store、cleanup 提供本测试独占的账号与人工接管表。
+	store, cleanup := newReplyStore(t)
+	defer cleanup()
+	// ctx 是人工接管配置、状态和回复解析共用的测试上下文。
+	ctx := context.Background()
+	// setupErr 保存启用 AI 及十分钟人工接管窗口的配置写入结果。
+	setupErr := store.AIReply.UpsertSettings(ctx, "cid", db.AIReplySettings{AIEnabled: true, HumanHandoffMinutes: 10})
+	if setupErr != nil {
+		t.Fatal(setupErr)
+	}
+	// keywordErr 保存人工触发消息的关键词回复配置结果。
+	_, keywordErr := store.DB.ExecContext(ctx, `INSERT INTO keywords (cookie_id,keyword,reply,type) VALUES ('cid','人工','关键词仍回复','text')`)
+	if keywordErr != nil {
+		t.Fatal(keywordErr)
+	}
+	// ai 记录人工接管期间不应被调用的 AI 请求次数。
+	ai := &fakeAIReplier{result: &ReplyResult{Text: "不应调用 AI"}}
+	// reply 使用固定时间验证人工接管截止时间的确定性。
+	reply := NewReplyService("cid", store, nil, nil, ai, nil)
+	reply.now = func() time.Time { return time.Unix(1_000, 0).UTC() }
+	// trigger 是包含人工关键词的当前买家消息；它仍应返回关键词回复。
+	trigger := chatMsg("请转人工", "", "chat-trigger")
+	trigger.SenderUserID = "buyer-a"
+	// result 是人工接管触发消息的回复结果，必须仍走关键词分支且忽略 AI。
+	result := reply.resolve(ctx, trigger)
+	if result == nil || result.Source != "关键词" || result.Text != "关键词仍回复" {
+		t.Fatalf("人工触发消息应保留关键词回复: %+v", result)
+	}
+	if ai.called != 0 {
+		t.Fatalf("人工接管触发消息不应调用 AI: %d", ai.called)
+	}
+	// active、activeErr 保存当前买家人工接管状态及查询错误。
+	active, activeErr := store.AIReply.IsHumanHandoffActive(ctx, "cid", "buyer-a", 1_000+9*60)
+	if activeErr != nil || !active {
+		t.Fatalf("应保存十分钟接管状态 active=%v err=%v", active, activeErr)
+	}
+	// defaultErr 保存默认回复配置写入结果，验证接管期间 AI 跳过后仍回退默认回复。
+	defaultErr := store.DefaultReps.Upsert(ctx, "cid", db.DefaultReply{Enabled: true, ReplyContent: "默认回复"})
+	if defaultErr != nil {
+		t.Fatal(defaultErr)
+	}
+	// resumed 保存同一买家另一会话在接管期间的回复结果。
+	resumed := reply.resolve(ctx, ChatMessage{AccountID: "cid", ChatID: "chat-other", SenderUserID: "buyer-a", Text: "普通问题"})
+	if resumed == nil || resumed.Source != "默认" || ai.called != 0 {
+		t.Fatalf("接管期间应跳过 AI 并回退默认: result=%+v calls=%d", resumed, ai.called)
+	}
+	// otherBuyer 保存不同买家消息，确认人工接管不会跨买家泄漏。
+	otherBuyer := reply.resolve(ctx, ChatMessage{AccountID: "cid", ChatID: "chat-other", SenderUserID: "buyer-b", Text: "普通问题"})
+	if otherBuyer == nil || otherBuyer.Source != "AI" || ai.called != 1 {
+		t.Fatalf("不同买家应继续调用 AI: result=%+v calls=%d", otherBuyer, ai.called)
+	}
+}
+
+// TestReply_ManualHumanHandoffBlocksAIAndClearResumes 验证会话界面手动接管会跳过 AI，提前结束后立即恢复。
+func TestReply_ManualHumanHandoffBlocksAIAndClearResumes(t *testing.T) {
+	// store、cleanup 提供本测试独占的人工接管状态。
+	store, cleanup := newReplyStore(t)
+	defer cleanup()
+	// ctx 是接管写入、清除和回复解析共用的测试上下文。
+	ctx := context.Background()
+	// setupErr 保存启用 AI 的账号级配置写入结果；手动接管不依赖账号级“人工”关键词配置。
+	if setupErr := store.AIReply.UpsertSettings(ctx, "cid", db.AIReplySettings{AIEnabled: true}); setupErr != nil {
+		t.Fatal(setupErr)
+	}
+	// ai 记录手动接管期间与结束后 AI 的实际调用次数。
+	ai := &fakeAIReplier{result: &ReplyResult{Text: "AI 已恢复"}}
+	// reply 使用固定时间，使接管窗口判定不依赖真实时间流逝。
+	reply := NewReplyService("cid", store, nil, nil, ai, nil)
+	reply.now = func() time.Time { return time.Unix(4_000, 0).UTC() }
+	// handoffErr 保存会话界面手动接管的写入结果。
+	if handoffErr := store.AIReply.SetHumanHandoff(ctx, "cid", "buyer-manual", 4_600); handoffErr != nil {
+		t.Fatal(handoffErr)
+	}
+	// blocked 保存接管期间的回复结果；没有默认回复时必须为空且不调用 AI。
+	blocked := reply.resolve(ctx, ChatMessage{AccountID: "cid", ChatID: "chat-manual", SenderUserID: "buyer-manual", Text: "在吗"})
+	if blocked != nil || ai.called != 0 {
+		t.Fatalf("手动接管期间不得调用 AI: result=%+v calls=%d", blocked, ai.called)
+	}
+	// clearErr 保存提前结束接管的写入结果。
+	if _, clearErr := store.AIReply.ClearHumanHandoff(ctx, "cid", "buyer-manual"); clearErr != nil {
+		t.Fatal(clearErr)
+	}
+	// resumed 保存结束接管后的回复结果；AI 必须立即恢复。
+	resumed := reply.resolve(ctx, ChatMessage{AccountID: "cid", ChatID: "chat-manual", SenderUserID: "buyer-manual", Text: "在吗"})
+	if resumed == nil || resumed.Source != "AI" || ai.called != 1 {
+		t.Fatalf("结束接管后应立即恢复 AI: result=%+v calls=%d", resumed, ai.called)
+	}
+	// otherBuyer 保存同一账号下其它买家的回复结果，用于确认接管按买家隔离。
+	otherBuyer := reply.resolve(ctx, ChatMessage{AccountID: "cid", ChatID: "chat-manual", SenderUserID: "buyer-other", Text: "在吗"})
+	if otherBuyer == nil || otherBuyer.Source != "AI" || ai.called != 2 {
+		t.Fatalf("其它买家不受接管影响: result=%+v calls=%d", otherBuyer, ai.called)
+	}
+}
+
+// TestReply_HumanHandoffExpiresAndAIResumes 验证截止时间相等及超过后均恢复 AI 回复。
+func TestReply_HumanHandoffExpiresAndAIResumes(t *testing.T) {
+	// store、cleanup 提供本测试独占的人工接管状态。
+	store, cleanup := newReplyStore(t)
+	defer cleanup()
+	// ctx 是状态写入和回复解析共用的测试上下文。
+	ctx := context.Background()
+	// setupErr 保存一分钟人工接管配置的写入结果。
+	if setupErr := store.AIReply.UpsertSettings(ctx, "cid", db.AIReplySettings{AIEnabled: true, HumanHandoffMinutes: 1}); setupErr != nil {
+		t.Fatal(setupErr)
+	}
+	// activateErr 保存人工接管截止时间的直接写入结果。
+	if activateErr := store.AIReply.ActivateHumanHandoff(ctx, "cid", "buyer-a", 2_060); activateErr != nil {
+		t.Fatal(activateErr)
+	}
+	// ai 返回固定内容，供恢复调用断言。
+	ai := &fakeAIReplier{result: &ReplyResult{Text: "AI恢复"}}
+	// reply 使用截止时间边界前后的固定时钟。
+	reply := NewReplyService("cid", store, nil, nil, ai, nil)
+	reply.now = func() time.Time { return time.Unix(2_060, 0).UTC() }
+	// atBoundary 保存截止秒相等时的结果；按约定此时暂停已结束。
+	atBoundaryMessage := chatMsg("普通问题", "", "chat-expire")
+	atBoundaryMessage.SenderUserID = "buyer-a"
+	// atBoundary 是截止秒恰好相等时的解析结果，此时暂停已结束必须恢复 AI 回复。
+	atBoundary := reply.resolve(ctx, atBoundaryMessage)
+	if atBoundary == nil || atBoundary.Source != "AI" || ai.called != 1 {
+		t.Fatalf("截止时间相等应恢复 AI: result=%+v calls=%d", atBoundary, ai.called)
+	}
+	// reply.now 改为截止时间之前，验证严格大于 now 才算活动。
+	reply.now = func() time.Time { return time.Unix(2_059, 0).UTC() }
+	// beforeExpiry 保存仍在接管窗口内的结果。
+	beforeExpiryMessage := chatMsg("普通问题", "", "chat-expire-2")
+	beforeExpiryMessage.SenderUserID = "buyer-a"
+	// beforeExpiry 是仍在接管窗口内（严格小于截止秒）时的解析结果，此时必须跳过 AI 并返回空结果。
+	beforeExpiry := reply.resolve(ctx, beforeExpiryMessage)
+	if beforeExpiry != nil || ai.called != 1 {
+		t.Fatalf("截止前应跳过 AI 并继续默认空结果: result=%+v calls=%d", beforeExpiry, ai.called)
+	}
+}
+
+// TestReply_HumanHandoffDatabaseFailuresFailClosed 验证人工配置读取和接管写入失败时均不调用 AI。
+func TestReply_HumanHandoffDatabaseFailuresFailClosed(t *testing.T) {
+	// store、cleanup 提供本测试独占的数据库连接。
+	store, cleanup := newReplyStore(t)
+	defer cleanup()
+	// ctx 是数据库故障夹具和回复解析共用的测试上下文。
+	ctx := context.Background()
+	// setupErr 保存启用 AI 及人工接管窗口的配置写入结果。
+	if setupErr := store.AIReply.UpsertSettings(ctx, "cid", db.AIReplySettings{AIEnabled: true, HumanHandoffMinutes: 5}); setupErr != nil {
+		t.Fatal(setupErr)
+	}
+	// ai 记录 fail-closed 时不得发生的调用。
+	ai := &fakeAIReplier{result: &ReplyResult{Text: "不应调用 AI"}}
+	// reply 使用固定时间，避免故障测试依赖系统时钟。
+	reply := NewReplyService("cid", store, nil, nil, ai, nil)
+	reply.now = func() time.Time { return time.Unix(3_000, 0).UTC() }
+	// triggerErr 保存拒绝人工接管写入的 SQLite 触发器创建结果。
+	if _, triggerErr := store.DB.ExecContext(ctx, `CREATE TRIGGER deny_handoff_write BEFORE INSERT ON ai_human_handoffs BEGIN SELECT RAISE(FAIL,'handoff write rejected'); END`); triggerErr != nil {
+		t.Fatal(triggerErr)
+	}
+	// writeFailure 保存接管写入失败时的回复结果；AI 必须被阻断。
+	writeFailure := reply.resolve(ctx, chatMsg("需要人工", "", "chat-write-failure"))
+	if writeFailure != nil || ai.called != 0 {
+		t.Fatalf("接管写入失败应 fail-closed: result=%+v calls=%d", writeFailure, ai.called)
+	}
+	// closeErr 保存关闭数据库连接的结果，后续配置读取必然失败。
+	if closeErr := store.DB.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	// readFailure 保存人工配置读取失败时的回复结果；数据库不确定时仍不得调用 AI。
+	readFailure := reply.resolve(ctx, chatMsg("需要人工", "", "chat-read-failure"))
+	if readFailure != nil || ai.called != 0 {
+		t.Fatalf("接管配置读取失败应 fail-closed: result=%+v calls=%d", readFailure, ai.called)
+	}
+}
+
 // recordingSender 记录发送的文本/图片，用于断言回复投递。
 type recordingSender struct {
 	texts    []textSent
@@ -47,6 +219,55 @@ type recordingSender struct {
 	textCalls int
 	// beforeTextError 在文本发送返回错误前执行，用于模拟发送过程中取消请求上下文。
 	beforeTextError func()
+}
+
+// SendReply 复现聊天应用的图片先发、文字后发顺序，供回复状态测试使用。
+func (r *recordingSender) SendReply(ctx context.Context, message ReplyMessage) (ReplySendResult, error) {
+	// result 保存已成功完成的平台分段。
+	result := ReplySendResult{}
+	if message.ImageURL != "" {
+		// imageErr 保存图片分段发送结果。
+		if imageErr := r.SendImage(ctx, message.ChatID, message.ToUserID, message.ImageURL, 0, 0, 0); imageErr != nil {
+			result.Uncertain = replySendUncertain(imageErr)
+			return result, imageErr
+		}
+		result.ImageSent = true
+	}
+	if message.Text != "" {
+		// textErr 保存文字分段发送结果。
+		if textErr := r.SendText(ctx, message.ChatID, message.ToUserID, message.Text); textErr != nil {
+			result.Uncertain = replySendUncertain(textErr)
+			return result, textErr
+		}
+		result.TextSent = true
+	}
+	return result, nil
+}
+
+// replySendUncertain 复现聊天应用对测试发送错误的确定性分类；普通本地错误和明确未发送错误都允许重试。
+func replySendUncertain(err error) bool {
+	if err == nil || errors.Is(err, automation.ErrMessageNotSent) {
+		return false
+	}
+	// sendErr 保存可由协议层明确标记为不确定的发送错误。
+	var sendErr *ws.SendError
+	return errors.As(err, &sendErr) && ws.SendResultKind(err) == ws.SendUncertain
+}
+
+// recordingReplyDelivery 记录引擎交给聊天应用的完整回复，不模拟任何协议级图片尺寸逻辑。
+type recordingReplyDelivery struct {
+	// messages 保存完整回复消息及其字段。
+	messages []ReplyMessage
+	// result 保存聊天应用返回的分段确认结果。
+	result ReplySendResult
+	// err 保存聊天应用返回的发送错误。
+	err error
+}
+
+// SendReply 记录完整回复并返回预设的应用层发送结果。
+func (d *recordingReplyDelivery) SendReply(_ context.Context, message ReplyMessage) (ReplySendResult, error) {
+	d.messages = append(d.messages, message)
+	return d.result, d.err
 }
 
 // textSent 用于本次流程后续判断的文本Sent
@@ -117,18 +338,6 @@ func (r *recordingSender) SendImage(_ context.Context, chatID, toUserID, url str
 	return nil
 }
 
-// fixedReplyImageDimensions 返回固定宽高，隔离自动回复参数透传测试与外部图片服务。
-// ctx 和 imageURL 是解析器输入但在该替身中不使用；宽高以像素返回且无解析错误。
-func fixedReplyImageDimensions(context.Context, string) (int, int, error) {
-	return 1920, 1080, nil
-}
-
-// failedReplyImageDimensions 模拟图片元数据不可读取，以验证回复继续沿用协议默认尺寸。
-// ctx 和 imageURL 是解析器输入但在该替身中不使用；返回零宽高和读取错误。
-func failedReplyImageDimensions(context.Context, string) (int, int, error) {
-	return 0, 0, errors.New("image metadata unavailable")
-}
-
 // TestAIQuoteSavedOnlyAfterTextDelivery 验证 AI 报价只有在回复发送成功后才成为可执行报价。
 func TestAIQuoteSavedOnlyAfterTextDelivery(t *testing.T) {
 	// store、cleanup 是回复链测试仓储及清理函数。
@@ -180,7 +389,6 @@ func TestReplyOnceRetriesOnlyFailedParts(t *testing.T) {
 	firstSender := &recordingSender{textErr: textFailure}
 	// service 用于本次流程后续判断的service
 	service := NewReplyService("cid", s, firstSender, nil, nil, nil)
-	service.imageDimensions = fixedReplyImageDimensions
 	if // err 用于本次流程后续判断的err
 	err := service.Handle(ctx, chatMsg("在吗", "", "chat-retry")); !errors.Is(err, textFailure) {
 		t.Fatalf("first error=%v want text failure", err)
@@ -197,7 +405,6 @@ func TestReplyOnceRetriesOnlyFailedParts(t *testing.T) {
 	// secondSender 用于本次流程后续判断的secondSender
 	secondSender := &recordingSender{}
 	service = NewReplyService("cid", s, secondSender, nil, nil, nil)
-	service.imageDimensions = fixedReplyImageDimensions
 	if // err 用于本次流程后续判断的err
 	err := service.Handle(ctx, chatMsg("再问", "", "chat-retry")); err != nil {
 		t.Fatal(err)
@@ -414,7 +621,7 @@ func TestReply_ImageKeyword(t *testing.T) {
 	}
 }
 
-// TestReply_HandleSendsImageThenText 验证 Handle 先发带原始宽高的图片后发文本，且 Skip 不发送；t 管理本测试。
+// TestReply_HandleSendsImageThenText 验证 Handle 通过完整消息端口先发图片后发文本，且 Skip 不发送；t 管理本测试。
 func TestReply_HandleSendsImageThenText(t *testing.T) {
 	// s、cleanup 用于本次流程后续判断的s、cleanup
 	s, cleanup := newReplyStore(t)
@@ -427,12 +634,11 @@ func TestReply_HandleSendsImageThenText(t *testing.T) {
 	sender := &recordingSender{}
 	// r 用于本次流程后续判断的r
 	r := NewReplyService("cid", s, sender, nil, nil, nil)
-	r.imageDimensions = fixedReplyImageDimensions
 	if // err 用于本次流程后续判断的err
 	err := r.Handle(ctx, chatMsg("在吗", "", "chat9")); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
-	if len(sender.images) != 1 || sender.images[0].url != "http://img/y.png" || sender.images[0].width != 1920 || sender.images[0].height != 1080 {
+	if len(sender.images) != 1 || sender.images[0].url != "http://img/y.png" || sender.images[0].width != 0 || sender.images[0].height != 0 {
 		t.Fatalf("应先发图片，got %+v", sender.images)
 	}
 	if len(sender.texts) != 1 || sender.texts[0].text != "文字" {
@@ -454,8 +660,8 @@ func TestReply_HandleSendsImageThenText(t *testing.T) {
 	}
 }
 
-// TestReply_HandleUsesProtocolDefaultWhenImageDimensionsCannotBeRead 验证元数据失败仍会投递图片；t 管理本测试。
-func TestReply_HandleUsesProtocolDefaultWhenImageDimensionsCannotBeRead(t *testing.T) {
+// TestReply_HandleDelegatesImageURLWithoutDimensionProbe 验证图片 URL 原样交给完整消息端口而不在引擎读取尺寸；t 管理本测试。
+func TestReply_HandleDelegatesImageURLWithoutDimensionProbe(t *testing.T) {
 	// store 和 cleanup 保存当前测试独占的回复数据库及关闭责任。
 	store, cleanup := newReplyStore(t)
 	defer cleanup()
@@ -466,17 +672,48 @@ func TestReply_HandleUsesProtocolDefaultWhenImageDimensionsCannotBeRead(t *testi
 	if setupErr != nil {
 		t.Fatal(setupErr)
 	}
-	// sender 记录解析失败后的实际图片发送尺寸。
+	// sender 记录完整消息端口收到的图片地址和尺寸占位。
 	sender := &recordingSender{}
-	// reply 使用元数据失败替身确认兼容路径仍发送图片。
+	// reply 使用统一完整消息端口发送图片，不配置任何引擎级尺寸解析器。
 	reply := NewReplyService("cid", store, sender, nil, nil, nil)
-	reply.imageDimensions = failedReplyImageDimensions
-	// sendErr 保存元数据读取失败后继续投递图片的结果。
+	// sendErr 保存完整消息发送结果。
 	if sendErr := reply.Handle(ctx, chatMsg("给我照片", "", "chat-image-dimensions-fallback")); sendErr != nil {
-		t.Fatalf("元数据读取失败不应阻断图片回复: %v", sendErr)
+		t.Fatalf("图片回复不应被引擎尺寸解析阻断: %v", sendErr)
 	}
 	if len(sender.images) != 1 || sender.images[0].width != 0 || sender.images[0].height != 0 {
-		t.Fatalf("元数据失败应保留协议默认尺寸，实际发送=%+v", sender.images)
+		t.Fatalf("引擎不应自行设置图片尺寸，实际发送=%+v", sender.images)
+	}
+}
+
+// TestReply_HandleDelegatesCompleteMessageToChatDelivery 验证自动回复只生成完整消息并交给聊天应用统一发送。
+func TestReply_HandleDelegatesCompleteMessageToChatDelivery(t *testing.T) {
+	// store、cleanup 保存一次性默认回复状态的隔离数据库。
+	store, cleanup := newReplyStore(t)
+	defer cleanup()
+	// setupErr 保存完整图片文字默认回复的配置写入结果。
+	if setupErr := store.DefaultReps.Upsert(context.Background(), "cid", db.DefaultReply{Enabled: true, ReplyOnce: true, ReplyContent: "文字", ReplyImageURL: "https://origin.example/reply.jpg"}); setupErr != nil {
+		t.Fatal(setupErr)
+	}
+	// delivery 记录引擎提交的完整消息，并模拟两个分段都已由平台确认。
+	delivery := &recordingReplyDelivery{result: ReplySendResult{ImageSent: true, TextSent: true}}
+	// reply 使用生产构造路径，不能访问旧版直接发送器或自动回复尺寸探测器。
+	reply := NewReplyService("cid", store, delivery, nil, nil, nil)
+	// sendErr 保存统一聊天应用发送结果。
+	if sendErr := reply.Handle(context.Background(), chatMsg("你好", "", "chat-complete")); sendErr != nil {
+		t.Fatalf("Handle: %v", sendErr)
+	}
+	if len(delivery.messages) != 1 {
+		t.Fatalf("完整回复调用次数=%d", len(delivery.messages))
+	}
+	// message 是交给消息页面的完整图片文字回复，原始 URL 不应携带猜测尺寸。
+	message := delivery.messages[0]
+	if message.AccountID != "cid" || message.ChatID != "chat-complete" || message.ToUserID != "buyer1" || message.Text != "文字" || message.ImageURL != "https://origin.example/reply.jpg" {
+		t.Fatalf("完整回复内容错误=%+v", message)
+	}
+	// record、recordErr 保存聊天应用成功后的一次性分段状态。
+	record, recordErr := store.DefaultReps.Record(context.Background(), "cid", "chat-complete")
+	if recordErr != nil || record.Status != "sent" || !record.ImageSent || !record.TextSent {
+		t.Fatalf("reply_once 状态错误 record=%+v err=%v", record, recordErr)
 	}
 }
 

@@ -33,12 +33,14 @@ type AccountSettingsUpdate struct {
 	AutoConfirm *bool
 	AutoConsign *bool
 	// AutoBargain 是砍价“待刀成”阶段是否自动免拼的独立开关，不从自动发货开关派生。
-	AutoBargain   *bool
-	PauseDuration *int
-	Username      *string
-	Password      *string
-	ShowBrowser   *bool
-	ChannelIDs    *[]int64
+	AutoBargain *bool
+	// CaptchaBrowserMode 是账号验证码处理模式，仅允许 playwright 或 system_manual。
+	CaptchaBrowserMode *string
+	PauseDuration      *int
+	Username           *string
+	Password           *string
+	ShowBrowser        *bool
+	ChannelIDs         *[]int64
 }
 
 // UpdateSettings 在一个事务中更新账号字段及通知绑定，避免前端并行请求只成功一部分。
@@ -104,6 +106,13 @@ func (c *Cookies) UpdateSettings(ctx context.Context, cookieID string, input Acc
 	if input.AutoBargain != nil {
 		assignments = append(assignments, "auto_bargain=?")
 		args = append(args, boolToInt(*input.AutoBargain))
+	}
+	if input.CaptchaBrowserMode != nil {
+		if !IsValidCaptchaBrowserMode(*input.CaptchaBrowserMode) {
+			return 0, ErrInvalidCaptchaBrowserMode
+		}
+		assignments = append(assignments, "captcha_browser_mode=?")
+		args = append(args, *input.CaptchaBrowserMode)
 	}
 	// pausedUntil 用于本次流程后续判断的pausedUntil
 	pausedUntil := int64(0)
@@ -469,13 +478,13 @@ func (c *Cookies) GetDetails(ctx context.Context, cookieID string) (*CookieDetai
 	// err 用于本次流程后续判断的err
 	err := c.DB.QueryRowContext(ctx,
 		`SELECT id, value, user_id, auto_confirm, COALESCE(remark,''), pause_duration, COALESCE(paused_until,0),
-		        COALESCE(username,''), COALESCE(password,''),
-		        show_browser, COALESCE(nickname,''), COALESCE(avatar_url,''),
+			   COALESCE(username,''), COALESCE(password,''),
+			   show_browser, COALESCE(captcha_browser_mode,'playwright'), COALESCE(nickname,''), COALESCE(avatar_url,''),
 		        COALESCE(metadata_json,''), COALESCE(last_refresh_at,0),
 		        COALESCE(login_method,''), COALESCE(last_login_at,0), created_at
 		 FROM cookies WHERE id=?`, cookieID).Scan(
 		&d.ID, &d.Value, &d.UserID, &autoConfirm, &d.Remark, &pauseDuration, &d.PausedUntil,
-		&d.Username, &d.Password, &showBrowser, &d.Nickname, &d.AvatarURL,
+		&d.Username, &d.Password, &showBrowser, &d.CaptchaBrowserMode, &d.Nickname, &d.AvatarURL,
 		&d.MetadataJSON, &d.LastRefreshAt, &d.LoginMethod, &d.LastLoginAt, &d.CreatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -485,6 +494,9 @@ func (c *Cookies) GetDetails(ctx context.Context, cookieID string) (*CookieDetai
 	}
 	d.AutoConfirm = autoConfirm != 0
 	d.ShowBrowser = showBrowser != 0
+	if !IsValidCaptchaBrowserMode(d.CaptchaBrowserMode) {
+		d.CaptchaBrowserMode = CaptchaBrowserModePlaywright
+	}
 	d.PauseDuration = 10
 	if pauseDuration.Valid {
 		// 0 是有效值，表示不暂停。

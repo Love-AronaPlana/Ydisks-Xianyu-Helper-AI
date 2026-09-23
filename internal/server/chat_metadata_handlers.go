@@ -171,6 +171,106 @@ func newChatBuyerNoteResponse(note chatapp.BuyerNote) chatBuyerNoteResponse {
 	return chatBuyerNoteResponse{AccountID: note.AccountID, BuyerID: note.BuyerID, Content: note.Content, UpdatedAt: note.UpdatedAt}
 }
 
+// chatHumanHandoffResponse 是按账号和买家隔离的人工接管状态响应 DTO。
+type chatHumanHandoffResponse struct {
+	// AccountID 是接管所属账号标识。
+	AccountID string `json:"account_id"`
+	// BuyerID 是被接管买家的平台标识，由服务端从会话推导。
+	BuyerID string `json:"buyer_id"`
+	// PausedUntil 是接管截止时间的 Unix 秒；未接管时为零。
+	PausedUntil int64 `json:"paused_until"`
+	// Active 表示当前该买家是否仍处于接管中。
+	Active bool `json:"active"`
+	// RemainingSeconds 是距离接管结束的剩余秒数；未接管时为零。
+	RemainingSeconds int `json:"remaining_seconds"`
+}
+
+// chatHumanHandoffUpdateRequest 是设置人工接管的具名请求 DTO。
+type chatHumanHandoffUpdateRequest struct {
+	// AccountID 是当前用户拥有的目标账号标识。
+	AccountID string `json:"account_id"`
+	// ChatID 是目标会话标识；服务端据此推导要接管的买家。
+	ChatID string `json:"chat_id"`
+	// Minutes 是接管时长，单位为分钟。
+	Minutes int `json:"minutes"`
+}
+
+// getChatHumanHandoff 返回当前账号下目标会话买家的接管状态。
+func (s *Server) getChatHumanHandoff(w http.ResponseWriter, r *http.Request) {
+	// session 保存认证中间件写入的当前用户身份。
+	session := auth.SessionFromContext(r.Context())
+	// accountID、chatID 保存接管查询的账号与会话键。
+	accountID, chatID := strings.TrimSpace(r.URL.Query().Get("account_id")), strings.TrimSpace(r.URL.Query().Get("chat_id"))
+	// handoff、readErr 保存应用层读取的接管状态及错误。
+	handoff, readErr := s.chatApplication().GetHumanHandoff(r.Context(), session.UserID, accountID, chatID)
+	if readErr != nil {
+		writeChatHumanHandoffError(w, readErr)
+		return
+	}
+	writeJSON(w, http.StatusOK, newChatHumanHandoffResponse(handoff))
+}
+
+// setChatHumanHandoff 按操作者选择的分钟数接管目标会话买家的 AI 回复。
+func (s *Server) setChatHumanHandoff(w http.ResponseWriter, r *http.Request) {
+	// session 保存认证中间件写入的当前用户身份。
+	session := auth.SessionFromContext(r.Context())
+	// request 保存反序列化后的接管参数。
+	var request chatHumanHandoffUpdateRequest
+	// decodeErr 保存接管请求体反序列化失败原因。
+	if decodeErr := decodeJSON(r, &request); decodeErr != nil {
+		writeErr(w, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	// handoff、setErr 保存设置后的接管状态及应用层校验错误。
+	handoff, setErr := s.chatApplication().SetHumanHandoff(r.Context(), session.UserID, request.AccountID, request.ChatID, request.Minutes)
+	if setErr != nil {
+		writeChatHumanHandoffError(w, setErr)
+		return
+	}
+	writeJSON(w, http.StatusOK, newChatHumanHandoffResponse(handoff))
+}
+
+// clearChatHumanHandoff 提前结束目标会话买家的人工接管。
+func (s *Server) clearChatHumanHandoff(w http.ResponseWriter, r *http.Request) {
+	// session 保存认证中间件写入的当前用户身份。
+	session := auth.SessionFromContext(r.Context())
+	// accountID、chatID 保存接管清除的账号与会话键。
+	accountID, chatID := strings.TrimSpace(r.URL.Query().Get("account_id")), strings.TrimSpace(r.URL.Query().Get("chat_id"))
+	// handoff、clearErr 保存清除后的接管状态及应用层错误。
+	handoff, clearErr := s.chatApplication().ClearHumanHandoff(r.Context(), session.UserID, accountID, chatID)
+	if clearErr != nil {
+		writeChatHumanHandoffError(w, clearErr)
+		return
+	}
+	writeJSON(w, http.StatusOK, newChatHumanHandoffResponse(handoff))
+}
+
+// newChatHumanHandoffResponse 将应用层接管状态转换为稳定 HTTP DTO。
+func newChatHumanHandoffResponse(handoff chatapp.HumanHandoff) chatHumanHandoffResponse {
+	return chatHumanHandoffResponse{
+		AccountID: handoff.AccountID, BuyerID: handoff.BuyerID, PausedUntil: handoff.PausedUntil,
+		Active: handoff.Active, RemainingSeconds: handoff.RemainingSeconds,
+	}
+}
+
+// writeChatHumanHandoffError 将人工接管用例错误映射到统一 HTTP 状态和错误 envelope。
+func writeChatHumanHandoffError(w http.ResponseWriter, operationErr error) {
+	switch {
+	case errors.Is(operationErr, chatapp.ErrInvalidInput):
+		writeErr(w, http.StatusBadRequest, "账号或会话无效")
+	case errors.Is(operationErr, chatapp.ErrHumanHandoffInvalidMinutes):
+		writeErr(w, http.StatusBadRequest, "人工接管时长必须在 1 到 1440 分钟之间")
+	case errors.Is(operationErr, chatapp.ErrHumanHandoffForbidden):
+		writeErr(w, http.StatusForbidden, "无权操作该账号")
+	case errors.Is(operationErr, chatapp.ErrHumanHandoffSessionNotFound):
+		writeErr(w, http.StatusNotFound, "聊天会话不存在")
+	case errors.Is(operationErr, chatapp.ErrHumanHandoffUnavailable):
+		writeErr(w, http.StatusServiceUnavailable, "人工接管服务未启用")
+	default:
+		writeErr(w, http.StatusInternalServerError, "人工接管操作失败")
+	}
+}
+
 // writeChatMetadataError 将聊天元数据用例错误映射到统一 HTTP 状态和错误 envelope。
 func writeChatMetadataError(w http.ResponseWriter, operationErr error) {
 	switch {

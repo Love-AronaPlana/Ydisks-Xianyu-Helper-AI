@@ -620,7 +620,7 @@ func TestOrderPaidPreparationFailureIsPersistedAndRecovered(t *testing.T) {
 		OrderDetailFetcher: testFetcher{err: errors.New("temporary order API failure")},
 	})
 	// task 用于本次流程后续判断的任务
-	task := Task{Source: "ws", AccountID: "cid", TriggerType: TriggerOrderPaid, OrderID: "pending-order", ItemID: "pending-item", ChatID: "chat", BuyerID: "buyer", Raw: map[string]any{"message_id": "paid-1"}}
+	task := Task{Source: "ws", AccountID: "cid", OrderRole: OrderRoleSeller, TriggerType: TriggerOrderPaid, OrderID: "pending-order", ItemID: "pending-item", ChatID: "chat", BuyerID: "buyer", Raw: map[string]any{"message_id": "paid-1"}}
 	if // err 用于本次流程后续判断的err
 	err := center.HandleTask(ctx, task); err != nil {
 		t.Fatalf("preparation failure should be durably deferred: %v", err)
@@ -1140,7 +1140,7 @@ func TestCenterOrderPaidFetchesOrderDetailMatchesSpecAndQuantity(t *testing.T) {
 
 	// task 是模拟 WebSocket 重复投递时保持不变的订单支付事件。
 	task := Task{
-		Source: "ws", AccountID: "cid", CookieStr: "unb=123; _m_h5_tk=tk_1;", TriggerType: TriggerOrderPaid,
+		Source: "ws", AccountID: "cid", OrderRole: OrderRoleSeller, CookieStr: "unb=123; _m_h5_tk=tk_1;", TriggerType: TriggerOrderPaid,
 		ChatID: "chat-1", OrderID: "order-1", ItemID: "item-1", BuyerID: "buyer-1", Raw: map[string]any{"message_id": "m1"},
 	}
 	err = center.HandleTask(ctx, task)
@@ -1281,7 +1281,7 @@ func TestCenterOrderPaidSendsAllCardActionsForSameSpec(t *testing.T) {
 
 	if // err 用于本次流程后续判断的err
 	err := center.HandleTask(ctx, Task{
-		Source: "ws", AccountID: "cid", CookieStr: "unb=123; _m_h5_tk=tk_1;", TriggerType: TriggerOrderPaid,
+		Source: "ws", AccountID: "cid", OrderRole: OrderRoleSeller, CookieStr: "unb=123; _m_h5_tk=tk_1;", TriggerType: TriggerOrderPaid,
 		ChatID: "chat-bundle", OrderID: "order-bundle", ItemID: "item-bundle", BuyerID: "buyer-1", Raw: map[string]any{"message_id": "m-bundle"},
 	}); err != nil {
 		t.Fatalf("HandleTask: %v", err)
@@ -1333,7 +1333,7 @@ func TestCenterOrderPaidDoesNotConfirmWhenNoCardSpecMatches(t *testing.T) {
 	})
 
 	err = center.HandleTask(ctx, Task{
-		Source: "ws", AccountID: "cid", CookieStr: "unb=123; _m_h5_tk=tk_1;", TriggerType: TriggerOrderPaid,
+		Source: "ws", AccountID: "cid", OrderRole: OrderRoleSeller, CookieStr: "unb=123; _m_h5_tk=tk_1;", TriggerType: TriggerOrderPaid,
 		ChatID: "chat-1", OrderID: "order-no-match", ItemID: "item-1", BuyerID: "buyer-1", Raw: map[string]any{"message_id": "m2"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "未匹配") {
@@ -1397,7 +1397,7 @@ func TestCenterOrderPaidSendsCardBeforeConfirmShipment(t *testing.T) {
 
 	if // err 用于本次流程后续判断的err
 	err := center.HandleTask(ctx, Task{
-		Source: "ws", AccountID: "cid", CookieStr: "unb=123; _m_h5_tk=tk_1;", TriggerType: TriggerOrderPaid,
+		Source: "ws", AccountID: "cid", OrderRole: OrderRoleSeller, CookieStr: "unb=123; _m_h5_tk=tk_1;", TriggerType: TriggerOrderPaid,
 		ChatID: "chat-1", OrderID: "order-seq", ItemID: "item-1", BuyerID: "buyer-1", Raw: map[string]any{"message_id": "m3"},
 	}); err != nil {
 		t.Fatalf("HandleTask: %v", err)
@@ -2291,7 +2291,7 @@ func TestCenterNotifiesOnDeliverySuccess(t *testing.T) {
 
 	if // err 用于本次流程后续判断的err
 	err := center.HandleTask(ctx, Task{
-		Source: "ws", AccountID: "cid", TriggerType: TriggerOrderPaid,
+		Source: "ws", AccountID: "cid", OrderRole: OrderRoleSeller, TriggerType: TriggerOrderPaid,
 		ChatID: "chat-n", OrderID: "order-n", ItemID: "item-n", BuyerID: "buyer-n", Raw: map[string]any{"mid": "m"},
 	}); err != nil {
 		t.Fatalf("HandleTask: %v", err)
@@ -2349,7 +2349,7 @@ func TestCenterNotifiesOnDeliveryFailure(t *testing.T) {
 
 	// HandleTask 对单条规则失败只记录日志不返回错误，但通知应已发出。
 	_ = center.HandleTask(ctx, Task{
-		Source: "ws", AccountID: "cid", TriggerType: TriggerOrderPaid,
+		Source: "ws", AccountID: "cid", OrderRole: OrderRoleSeller, TriggerType: TriggerOrderPaid,
 		ChatID: "chat-f", OrderID: "order-f", ItemID: "item-f", BuyerID: "buyer-f", Raw: map[string]any{"mid": "m"},
 	})
 
@@ -2377,7 +2377,7 @@ func TestCenterNoNotifyWhenNoMatchingRule(t *testing.T) {
 	center := NewWithDependencies(store, testSenderProvider{sender: &testSender{}}, nil, CenterDependencies{Notifier: notifier})
 
 	_ = center.HandleTask(ctx, Task{
-		Source: "ws", AccountID: "cid", TriggerType: TriggerOrderPaid,
+		Source: "ws", AccountID: "cid", OrderRole: OrderRoleSeller, TriggerType: TriggerOrderPaid,
 		ChatID: "c", OrderID: "o", ItemID: "none", BuyerID: "b", Raw: map[string]any{"mid": "m"},
 	})
 

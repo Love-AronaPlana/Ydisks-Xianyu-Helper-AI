@@ -37,6 +37,8 @@ func (s *Server) mountItemsReal(r chi.Router) {
 	r.Delete("/items/{cookie_id}/{item_id}", s.deleteItem)
 	r.Put("/items/{cookie_id}/{item_id}/multi-spec", s.setItemMultiSpec)
 	r.Put("/items/{cookie_id}/{item_id}/multi-quantity-delivery", s.setItemMultiQuantity)
+	r.Get("/items/{cookie_id}/{item_id}/ai-prompt", s.getItemAIPrompt)
+	r.Put("/items/{cookie_id}/{item_id}/ai-prompt", s.putItemAIPrompt)
 }
 
 // publishItem 解析 HTTP 发布请求并调用商品发布应用服务完成单商品发布。

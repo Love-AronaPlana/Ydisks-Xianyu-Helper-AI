@@ -202,3 +202,17 @@ export interface OperationResponse {
   /** 操作完成后是否需要重新登录。 */
   requires_relogin?: boolean;
 }
+
+/** 按账号和买家隔离的人工接管状态 UI 模型；买家标识由服务端从会话推导。 */
+export interface ChatHumanHandoff {
+  /** 接管所属账号标识。 */
+  account_id: string;
+  /** 被接管买家的平台标识。 */
+  buyer_id: string;
+  /** 接管截止时间的 Unix 秒；未接管时为零。 */
+  paused_until: number;
+  /** 当前是否仍处于接管中。 */
+  active: boolean;
+  /** 距离接管结束的剩余秒数；未接管时为零。 */
+  remaining_seconds: number;
+}

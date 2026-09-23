@@ -17,18 +17,44 @@ type AIConversationMessage struct {
 	BargainCount int
 }
 
+// AI 回复模式的合法取值：bargain 表示仅砍价消息触发 AI（历史默认行为），
+// keyword_first 表示关键词规则优先、AI 回答其余全部消息，full 表示 AI 完全接管、
+// 跳过关键词规则直接由 AI 回答所有买家消息。
+const (
+	AIReplyModeBargain      = "bargain"
+	AIReplyModeKeywordFirst = "keyword_first"
+	AIReplyModeFull         = "full"
+)
+
+// IsAIReplyMode 校验给定的模式字符串是否为受支持的 AI 回复模式。
+func IsAIReplyMode(mode string) bool {
+	switch mode {
+	case AIReplyModeBargain, AIReplyModeKeywordFirst, AIReplyModeFull:
+		return true
+	}
+	return false
+}
+
 // AIReplySettings 对应 ai_reply_settings 表。
 type AIReplySettings struct {
 	CookieID               string `json:"cookie_id"`
 	AIEnabled              bool   `json:"ai_enabled"`
 	AutoAdjustPriceEnabled bool   `json:"auto_adjust_price_enabled"`
-	ModelName              string `json:"model_name"`
-	APIKey                 string `json:"api_key"`
-	BaseURL                string `json:"base_url"`
-	MaxDiscountPercent     int    `json:"max_discount_percent"`
-	MaxDiscountAmount      int    `json:"max_discount_amount"`
-	MaxBargainRounds       int    `json:"max_bargain_rounds"`
-	CustomPrompts          string `json:"custom_prompts"`
+	// ReplyMode 是 AI 回复模式；空值按 bargain 处理以保持历史行为。
+	ReplyMode string `json:"ai_reply_mode"`
+	// FullPrompt 是完全模式的独立系统提示词；空串表示使用内置默认提示词。
+	FullPrompt string `json:"ai_full_prompt"`
+	// HumanHandoffMinutes 是人工接管时按账号配置暂停该买家的分钟数，零表示不自动暂停。
+	HumanHandoffMinutes int `json:"human_handoff_minutes"`
+	// VisionEnabled 表示是否允许把买家图片随消息发送给多模态模型；历史行缺失时按开启处理。
+	VisionEnabled bool   `json:"ai_vision_enabled"`
+	ModelName     string `json:"model_name"`
+	APIKey              string `json:"api_key"`
+	BaseURL             string `json:"base_url"`
+	MaxDiscountPercent  int    `json:"max_discount_percent"`
+	MaxDiscountAmount   int    `json:"max_discount_amount"`
+	MaxBargainRounds    int    `json:"max_bargain_rounds"`
+	CustomPrompts       string `json:"custom_prompts"`
 }
 
 // AIBargainQuote 保存一条已经成功发送给买家的、可用于订单改价的 AI 报价。
@@ -68,6 +94,25 @@ func (a *AIReply) IsEnabled(ctx context.Context, cookieID string) (bool, error) 
 	return enabled != 0, err
 }
 
+// ReplyMode 只读取账号的 AI 回复模式，供回复链判断是否由 AI 完全接管；
+// 不解密模型密钥等敏感字段，未配置或历史值非法时按 bargain 保持旧行为。
+func (a *AIReply) ReplyMode(ctx context.Context, cookieID string) (string, error) {
+	// mode 是数据库保存的回复模式原始值。
+	var mode sql.NullString
+	// err 是模式查询错误；没有账号级配置时按 bargain 处理。
+	err := a.DB.QueryRowContext(ctx, `SELECT ai_reply_mode FROM ai_reply_settings WHERE cookie_id=?`, cookieID).Scan(&mode)
+	if errors.Is(err, sql.ErrNoRows) {
+		return AIReplyModeBargain, nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if !IsAIReplyMode(mode.String) {
+		return AIReplyModeBargain, nil
+	}
+	return mode.String, nil
+}
+
 // PricingMode 只读取 AI 议价及其真实改价开关，供订单事件选择互斥执行路径。
 func (a *AIReply) PricingMode(ctx context.Context, cookieID string) (bool, bool, error) {
 	// aiEnabled、autoAdjustEnabled 分别是 AI 议价和真实自动改价开关的数据库整数值。
@@ -90,12 +135,18 @@ func (a *AIReply) Get(ctx context.Context, cookieID string) (*AIReplySettings, e
 	var autoAdjustEnabled int
 	// apiKey、customPrompts 用于本次流程后续判断的apiKey、customPrompts
 	var apiKey, customPrompts sql.NullString
+	// replyMode 是数据库保存的 AI 回复模式字符串；历史行可能还没有该列值，默认按 bargain 处理。
+	var replyMode sql.NullString
+	// fullPrompt 是完全模式独立提示词，空串表示使用内置默认提示词。
+	var fullPrompt sql.NullString
+	// visionEnabled 是图片识别开关的整数列值；历史行缺失时 COALESCE 按开启处理。
+	var visionEnabled int
 	// err 用于本次流程后续判断的err
 	err := a.DB.QueryRowContext(ctx,
-		`SELECT cookie_id, ai_enabled, auto_adjust_price_enabled, COALESCE(model_name, ''), COALESCE(api_key, ''), COALESCE(base_url, ''),
+		`SELECT cookie_id, ai_enabled, auto_adjust_price_enabled, COALESCE(ai_reply_mode, ''), COALESCE(ai_full_prompt, ''), COALESCE(human_handoff_minutes, 0), COALESCE(ai_vision_enabled, 1), COALESCE(model_name, ''), COALESCE(api_key, ''), COALESCE(base_url, ''),
 		        max_discount_percent, max_discount_amount, max_bargain_rounds, custom_prompts
 		 FROM ai_reply_settings WHERE cookie_id=?`, cookieID).Scan(
-		&s.CookieID, &enabled, &autoAdjustEnabled, &s.ModelName, &apiKey, &s.BaseURL,
+		&s.CookieID, &enabled, &autoAdjustEnabled, &replyMode, &fullPrompt, &s.HumanHandoffMinutes, &visionEnabled, &s.ModelName, &apiKey, &s.BaseURL,
 		&s.MaxDiscountPercent, &s.MaxDiscountAmount, &s.MaxBargainRounds, &customPrompts)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -105,6 +156,12 @@ func (a *AIReply) Get(ctx context.Context, cookieID string) (*AIReplySettings, e
 	}
 	s.AIEnabled = enabled != 0
 	s.AutoAdjustPriceEnabled = autoAdjustEnabled != 0
+	s.VisionEnabled = visionEnabled != 0
+	s.ReplyMode = replyMode.String
+	if !IsAIReplyMode(s.ReplyMode) {
+		s.ReplyMode = AIReplyModeBargain
+	}
+	s.FullPrompt = fullPrompt.String
 	s.APIKey, err = a.codec.decrypt("ai-api-key", cookieID, apiKey.String)
 	if err != nil {
 		return nil, err
@@ -123,7 +180,8 @@ func (a *AIReply) Get(ctx context.Context, cookieID string) (*AIReplySettings, e
 func (a *AIReply) ListForUser(ctx context.Context, userID int64) ([]AIReplySettings, error) {
 	// rows、err 用于本次流程后续判断的rows、err
 	rows, err := a.DB.QueryContext(ctx, `
-		SELECT a.cookie_id, a.ai_enabled, a.auto_adjust_price_enabled, a.max_discount_percent, a.max_discount_amount,
+		SELECT a.cookie_id, a.ai_enabled, a.auto_adjust_price_enabled, COALESCE(a.ai_reply_mode, ''), COALESCE(a.ai_full_prompt, ''),
+		       COALESCE(a.human_handoff_minutes, 0), COALESCE(a.ai_vision_enabled, 1), a.max_discount_percent, a.max_discount_amount,
 		       a.max_bargain_rounds, COALESCE(a.custom_prompts, '')
 		  FROM ai_reply_settings a JOIN cookies c ON c.id=a.cookie_id WHERE c.user_id=?`, userID)
 	if err != nil {
@@ -137,35 +195,128 @@ func (a *AIReply) ListForUser(ctx context.Context, userID int64) ([]AIReplySetti
 		var item AIReplySettings
 		// enabled 用于本次流程后续判断的启用状态
 		var enabled, autoAdjustEnabled int
+		// replyMode、fullPrompt 是数据库中的模式与完全模式提示词原始值。
+		var replyMode, fullPrompt sql.NullString
+		// visionEnabled 是图片识别开关的整数列值；历史行缺失时按开启处理。
+		var visionEnabled int
 		if // err 用于本次流程后续判断的err
-		err := rows.Scan(&item.CookieID, &enabled, &autoAdjustEnabled, &item.MaxDiscountPercent, &item.MaxDiscountAmount, &item.MaxBargainRounds, &item.CustomPrompts); err != nil {
+		err := rows.Scan(&item.CookieID, &enabled, &autoAdjustEnabled, &replyMode, &fullPrompt, &item.HumanHandoffMinutes, &visionEnabled, &item.MaxDiscountPercent, &item.MaxDiscountAmount, &item.MaxBargainRounds, &item.CustomPrompts); err != nil {
 			return nil, err
 		}
 		item.AIEnabled = enabled != 0
 		item.AutoAdjustPriceEnabled = autoAdjustEnabled != 0
+		item.VisionEnabled = visionEnabled != 0
+		item.ReplyMode = replyMode.String
+		if !IsAIReplyMode(item.ReplyMode) {
+			item.ReplyMode = AIReplyModeBargain
+		}
+		item.FullPrompt = fullPrompt.String
 		out = append(out, item)
 	}
 	return out, rows.Err()
 }
 
-// UpsertSettings 保存指定账号的 AI 回复开关和砍价约束。
+// UpsertSettings 保存指定账号的 AI 回复开关、回复模式、完全模式提示词和砍价约束。
 func (a *AIReply) UpsertSettings(ctx context.Context, cookieID string, settings AIReplySettings) error {
+	// mode 是归一化后的回复模式；历史调用方未传入时保持 bargain 默认行为。
+	mode := settings.ReplyMode
+	if !IsAIReplyMode(mode) {
+		mode = AIReplyModeBargain
+	}
 	// err 用于本次流程后续判断的err
 	_, err := a.DB.ExecContext(ctx,
 		`INSERT INTO ai_reply_settings
-		 (cookie_id, ai_enabled, auto_adjust_price_enabled, max_discount_percent, max_discount_amount,
-		  max_bargain_rounds, custom_prompts, updated_at)
-		 VALUES (?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`+dialectUpsert(a.Dialect, []string{"cookie_id"}, map[string]string{
+			 (cookie_id, ai_enabled, auto_adjust_price_enabled, ai_reply_mode, ai_full_prompt, human_handoff_minutes, ai_vision_enabled, max_discount_percent, max_discount_amount,
+			  max_bargain_rounds, custom_prompts, updated_at)
+			 VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`+dialectUpsert(a.Dialect, []string{"cookie_id"}, map[string]string{
 			"ai_enabled":                "EXCLUDED.ai_enabled",
 			"auto_adjust_price_enabled": "EXCLUDED.auto_adjust_price_enabled",
+			"ai_reply_mode":             "EXCLUDED.ai_reply_mode",
+			"ai_full_prompt":            "EXCLUDED.ai_full_prompt",
+			"human_handoff_minutes":     "EXCLUDED.human_handoff_minutes",
+			"ai_vision_enabled":         "EXCLUDED.ai_vision_enabled",
 			"max_discount_percent":      "EXCLUDED.max_discount_percent",
 			"max_discount_amount":       "EXCLUDED.max_discount_amount",
 			"max_bargain_rounds":        "EXCLUDED.max_bargain_rounds",
 			"custom_prompts":            "EXCLUDED.custom_prompts",
 			"updated_at":                "CURRENT_TIMESTAMP",
-		}), cookieID, boolToInt(settings.AIEnabled), boolToInt(settings.AutoAdjustPriceEnabled), settings.MaxDiscountPercent,
+		}), cookieID, boolToInt(settings.AIEnabled), boolToInt(settings.AutoAdjustPriceEnabled), mode, settings.FullPrompt, settings.HumanHandoffMinutes, boolToInt(settings.VisionEnabled), settings.MaxDiscountPercent,
 		settings.MaxDiscountAmount, settings.MaxBargainRounds, nullableAIString(settings.CustomPrompts))
 	return err
+}
+
+// ActivateHumanHandoff 为账号和买家建立人工接管暂停；已存在更长暂停时不会被缩短。
+func (a *AIReply) ActivateHumanHandoff(ctx context.Context, cookieID, buyerID string, pausedUntil int64) error {
+	// assignment 保存按数据库方言选择的延长暂停表达式，避免重复事件缩短已有人工接管窗口。
+	assignment := "CASE WHEN EXCLUDED.paused_until > paused_until THEN EXCLUDED.paused_until ELSE paused_until END"
+	// query 是当前方言下的人工接管写入语句：默认使用 ON CONFLICT 兼容 SQLite/Postgres，MySQL 分支会替换为 ON DUPLICATE KEY。
+	query := `INSERT INTO ai_human_handoffs (cookie_id,buyer_id,paused_until,updated_at)
+		VALUES (?,?,?,CURRENT_TIMESTAMP) ON CONFLICT (cookie_id,buyer_id) DO UPDATE SET paused_until=` + assignment + `,updated_at=CURRENT_TIMESTAMP`
+	if a.Dialect == DialectMySQL {
+		assignment = "CASE WHEN VALUES(paused_until) > paused_until THEN VALUES(paused_until) ELSE paused_until END"
+		query = `INSERT INTO ai_human_handoffs (cookie_id,buyer_id,paused_until,updated_at)
+			VALUES (?,?,?,CURRENT_TIMESTAMP) ON DUPLICATE KEY UPDATE paused_until=` + assignment + `,updated_at=CURRENT_TIMESTAMP`
+	}
+	// _, err 写入或延长账号与买家隔离的人工接管记录。
+	_, err := a.DB.ExecContext(ctx, query, cookieID, buyerID, pausedUntil)
+	return err
+}
+
+// IsHumanHandoffActive 判断指定账号和买家在 now 时刻是否仍处于人工接管暂停期；边界相等视为已结束。
+func (a *AIReply) IsHumanHandoffActive(ctx context.Context, cookieID, buyerID string, now int64) (bool, error) {
+	// pausedUntil 保存账号与买家组合对应的暂停截止 Unix 秒。
+	var pausedUntil int64
+	// err 表示查询人工接管记录时产生的数据库错误。
+	err := a.DB.QueryRowContext(ctx, `SELECT paused_until FROM ai_human_handoffs WHERE cookie_id=? AND buyer_id=?`, cookieID, buyerID).Scan(&pausedUntil)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return pausedUntil > now, nil
+}
+
+// SetHumanHandoff 覆盖写入账号与买家的人工接管截止时间，供操作者在会话界面手动设定。
+// 与只延长窗口的 ActivateHumanHandoff 不同：操作者选择更短时长时必须真正缩短既有窗口。
+func (a *AIReply) SetHumanHandoff(ctx context.Context, cookieID, buyerID string, pausedUntil int64) error {
+	// err 是覆盖写入账号与买家隔离的人工接管记录时的数据库错误。
+	_, err := a.DB.ExecContext(ctx, `INSERT INTO ai_human_handoffs (cookie_id,buyer_id,paused_until,updated_at)
+		VALUES (?,?,?,CURRENT_TIMESTAMP)`+dialectUpsert(a.Dialect, []string{"cookie_id", "buyer_id"}, map[string]string{
+		"paused_until": "EXCLUDED.paused_until",
+		"updated_at":   "CURRENT_TIMESTAMP",
+	}), cookieID, buyerID, pausedUntil)
+	return err
+}
+
+// ClearHumanHandoff 删除账号与买家的人工接管记录，使 AI 可以立即恢复回复。
+// 返回 cleared 表示是否确实删除了记录；目标不存在时按幂等成功处理且不报错。
+func (a *AIReply) ClearHumanHandoff(ctx context.Context, cookieID, buyerID string) (bool, error) {
+	// result、err 保存删除结果与数据库错误。
+	result, err := a.DB.ExecContext(ctx, `DELETE FROM ai_human_handoffs WHERE cookie_id=? AND buyer_id=?`, cookieID, buyerID)
+	if err != nil {
+		return false, err
+	}
+	// affected 是实际删除的记录数；零表示本就没有接管记录。
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return affected > 0, nil
+}
+
+// GetHumanHandoff 读取账号与买家的接管截止时间；found 为 false 表示当前没有接管记录。
+// 返回值 pausedUntil 是以 Unix 秒表示的截止时间，调用方负责换算剩余时长并判断是否已过期。
+func (a *AIReply) GetHumanHandoff(ctx context.Context, cookieID, buyerID string) (pausedUntil int64, found bool, err error) {
+	// err 表示查询人工接管记录时的数据库错误；无记录不是错误。
+	err = a.DB.QueryRowContext(ctx, `SELECT paused_until FROM ai_human_handoffs WHERE cookie_id=? AND buyer_id=?`, cookieID, buyerID).Scan(&pausedUntil)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return pausedUntil, true, nil
 }
 
 // ReplacePendingQuote 使同一买家和商品的旧报价失效，并保存最新的可执行报价。

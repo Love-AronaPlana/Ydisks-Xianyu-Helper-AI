@@ -1,4 +1,4 @@
-import { Bell,Check,Clock,Eye,EyeOff,Key,Loader2,X } from 'lucide-react';
+import { Bell,Check,Clock,Eye,EyeOff,Key,Loader2,ShieldCheck,X } from 'lucide-react';
 import React from 'react';
 import { createPortal } from 'react-dom';
 import type { NotificationChannel } from '../api';
@@ -208,6 +208,31 @@ export const AccountEditModal: React.FC<AccountEditModalProps> = ({
                 立即按当前时长重新暂停
               </button>
             )}
+          </div>
+
+          <div>
+            <label className="block text-sm font-bold text-gray-700 mb-2 flex items-center gap-2"><ShieldCheck className="w-4 h-4 text-emerald-500" />验证码处理方式</label>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={/* 当前回调切换到内置浏览器自动处理验证码。 */ () => updateField('captcha_browser_mode', 'playwright')}
+                className={`p-3 rounded-xl border text-left transition-colors ${editForm.captcha_browser_mode === 'playwright' ? 'border-brand bg-blue-50' : 'border-gray-200 hover:bg-gray-50'}`}
+              >
+                <div className="font-bold text-sm text-gray-900">自动处理</div>
+                <div className="mt-1 text-xs text-gray-500">使用内置浏览器自动完成滑块验证，无需人工操作</div>
+              </button>
+              <button
+                type="button"
+                onClick={/* 当前回调切换到系统浏览器人工完成验证码。 */ () => updateField('captcha_browser_mode', 'system_manual')}
+                className={`p-3 rounded-xl border text-left transition-colors ${editForm.captcha_browser_mode === 'system_manual' ? 'border-brand bg-blue-50' : 'border-gray-200 hover:bg-gray-50'}`}
+              >
+                <div className="font-bold text-sm text-gray-900">系统浏览器人工完成</div>
+                <div className="mt-1 text-xs text-gray-500">在本机 Chrome/Edge 打开验证页面，由你手动完成滑块</div>
+              </button>
+            </div>
+            <p className="text-xs text-gray-500 mt-2">
+              自动处理更省事；如果验证码页经常直接失败，或后台服务运行时看不到验证窗口，请选择“系统浏览器人工完成”，在你自己登录的桌面上手动拖动滑块。
+            </p>
           </div>
 
           <div className="border-t border-gray-200 pt-6">

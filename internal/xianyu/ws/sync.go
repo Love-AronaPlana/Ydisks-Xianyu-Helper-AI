@@ -107,31 +107,68 @@ func (c *Conn) sendACK(ctx context.Context, msg map[string]any) {
 	cancel()
 }
 
-// extractSyncPayload 取出 body.syncPushPackage.data[0].data（字符串）。
-func extractSyncPayload(msg map[string]any) (string, bool) {
-	// body 用于本次流程后续判断的请求体
+// syncPayloadEntry 描述同步推送包 data 数组中单个条目的提取结果。
+// 平台会把同一批同步卡片放在同一个数组里，条目顺序即业务事件顺序；
+// 因此每个条目都必须独立保留下标与失败原因，调用方不能因为某一条失败而丢弃整帧后续付款事件。
+type syncPayloadEntry struct {
+	// index 是该条目在 body.syncPushPackage.data 数组中的原始下标（从 0 开始），
+	// 用于在告警中定位问题条目，并让调用方按平台顺序派发有效事件。
+	index int
+	// data 是条目内非空 string 类型的 data 字段，保持平台原始编码（通常为 base64 的系统消息或加密载荷）。
+	// 仅当 valid 为 true 时可信；本字段不做任何解码或解密。
+	data string
+	// valid 表示该条目是否可以进入解码流程；为 false 时调用方必须跳过并依据 invalidReason 记录告警。
+	valid bool
+	// invalidReason 是条目被判定为无效的中文原因，仅在 valid 为 false 时非空，用于告警文案而不是控制流。
+	invalidReason string
+}
+
+// extractSyncPayloads 按平台顺序取出 body.syncPushPackage.data 中的全部条目。
+// msg 是已解析的单个 WebSocket 帧；返回值 ok 为 false 表示该帧不是同步推送包
+// （缺少 body、缺少 syncPushPackage 或 data 不是非空数组），调用方应按非同步帧处理。
+// ok 为 true 时返回的切片长度等于平台数组长度且大于 0，其中既有 valid 为 true 的可解码条目，
+// 也有 valid 为 false 并带 invalidReason 的无效条目；无效条目不得导致整帧被判为失败。
+func extractSyncPayloads(msg map[string]any) ([]syncPayloadEntry, bool) {
+	// body 是平台帧的业务主体；缺失或类型不符说明该帧不是同步推送。
 	body, _ := msg["body"].(map[string]any)
 	if body == nil {
-		return "", false
+		return nil, false
 	}
-	// pkg 用于本次流程后续判断的pkg
+	// pkg 是同步推送包节点；缺失说明该帧不携带同步卡片。
 	pkg, _ := body["syncPushPackage"].(map[string]any)
 	if pkg == nil {
-		return "", false
+		return nil, false
 	}
-	// arr 用于本次流程后续判断的arr
+	// arr 是同一帧内的同步卡片列表，元素顺序即平台推送的业务事件顺序。
 	arr, _ := pkg["data"].([]any)
 	if len(arr) == 0 {
-		return "", false
+		return nil, false
 	}
-	// first 用于本次流程后续判断的first
-	first, _ := arr[0].(map[string]any)
-	if first == nil {
-		return "", false
+	// entries 按平台顺序收集每个条目的提取结果，长度与 arr 相同，调用方据此保留帧内事件顺序。
+	entries := make([]syncPayloadEntry, 0, len(arr))
+	// index 是条目在平台 data 数组中的原始下标；item 是当前待提取的原始条目值。
+	for index, item := range arr {
+		// entry 是当前条目的提取结果，默认无效，只有取到非空字符串 data 才会被置为有效。
+		entry := syncPayloadEntry{index: index}
+		// object 是条目按 JSON 对象解析的结果；isObject 表示该条目是否真的是对象。
+		object, isObject := item.(map[string]any)
+		if !isObject {
+			entry.invalidReason = "条目不是对象"
+			entries = append(entries, entry)
+			continue
+		}
+		// data 是条目内的载荷字符串；dataOK 表示 data 字段存在且类型为 string。
+		data, dataOK := object["data"].(string)
+		if !dataOK || data == "" {
+			entry.invalidReason = "缺少非空字符串 data"
+			entries = append(entries, entry)
+			continue
+		}
+		entry.data = data
+		entry.valid = true
+		entries = append(entries, entry)
 	}
-	// d、ok 用于本次流程后续判断的d、ok
-	d, ok := first["data"].(string)
-	return d, ok && d != ""
+	return entries, true
 }
 
 // decodeSyncData 先尝试 base64+JSON（未加密系统消息），失败则 base64+msgpack 解密。

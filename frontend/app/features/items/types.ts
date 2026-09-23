@@ -1,5 +1,6 @@
 import type { ComponentType,Dispatch,SetStateAction } from 'react';
 import type { AccountDetail,Item,ShippingRule } from './api';
+import type { ItemAIPromptModalProps } from './components/ItemAIPromptModal';
 import type { PublishImagesEditorProps } from './components/PublishImagesEditor';
 import type { PublishSpecsEditorProps } from './components/PublishSpecsEditor';
 import type { PublishLocation } from './api';
@@ -12,6 +13,8 @@ export interface ItemListProps {
   publishSpecsEditor?: ComponentType<PublishSpecsEditorProps>;
   // publishImagesEditor 是应用壳按需注入的可排序商品图片编辑器组件。
   publishImagesEditor?: ComponentType<PublishImagesEditorProps>;
+  // itemAIPromptEditor 是应用壳按需注入的商品级 AI 提示词编辑器组件，避免其编辑逻辑进入商品列表分片。
+  itemAIPromptEditor?: ComponentType<ItemAIPromptModalProps>;
 }
 
 // BatchPhase 表示批量铺货流程当前所在的步骤。

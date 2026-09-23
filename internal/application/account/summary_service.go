@@ -17,6 +17,8 @@ type AccountSummary struct {
 	AutoConsign bool
 	// AutoBargain 表示砍价“待刀成”阶段是否自动调用免拼接口。
 	AutoBargain bool
+	// CaptchaBrowserMode 表示账号验证码处理模式，历史账号默认 playwright。
+	CaptchaBrowserMode string
 	// Remark 是用户为账号设置的备注。
 	Remark string
 	// PauseDuration 是账号暂停时长，单位为分钟。

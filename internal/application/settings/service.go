@@ -24,6 +24,19 @@ var ErrConfigNotFound = errors.New("AI 回复设置不存在")
 // ErrPricingModeConflict 表示 AI 议价与固定自动改价规则不能同时启用。
 var ErrPricingModeConflict = errors.New("AI 议价与自动化规则改价不能同时启用，请先关闭另一种改价方式")
 
+// ErrInvalidAIReplyMode 表示请求的 AI 回复模式不在受支持枚举内。
+var ErrInvalidAIReplyMode = errors.New("AI 回复模式无效")
+
+// ErrAIReplyPromptTooLong 表示完全模式提示词超出允许长度。
+var ErrAIReplyPromptTooLong = errors.New("完全模式提示词过长")
+
+// ErrInvalidHumanHandoffMinutes 表示人工接管暂停分钟数超出 0 到 1440 的范围。
+var ErrInvalidHumanHandoffMinutes = errors.New("人工接管暂停分钟数必须在 0 到 1440 之间")
+
+// MaxAIReplyPromptLength 是完全模式提示词允许的最大字符数，防止提示词膨胀
+// 拖垮每次 AI 调用的上下文开销。
+const MaxAIReplyPromptLength = 8000
+
 // SecretChange 描述敏感系统设置的显式三态变更命令。
 type SecretChange struct {
 	// Action 是 retain、replace 或 clear 之一。
@@ -40,6 +53,15 @@ type AIReplySettings struct {
 	AIEnabled bool
 	// AutoAdjustPriceEnabled 表示是否把有效 AI 报价自动应用到买家新拍订单。
 	AutoAdjustPriceEnabled bool
+	// ReplyMode 是 AI 回复模式：bargain 仅砍价、keyword_first 关键词优先、
+	// full 表示 AI 完全接管所有买家消息。
+	ReplyMode string
+	// FullPrompt 是完全模式的独立系统提示词；空串表示使用内置默认提示词。
+	FullPrompt string
+	// HumanHandoffMinutes 是人工接管时暂停该买家的分钟数，零表示关闭自动暂停。
+	HumanHandoffMinutes int
+	// VisionEnabled 表示是否允许把买家图片随消息发送给多模态模型；新账号默认开启。
+	VisionEnabled bool
 	// MaxDiscountPercent 是允许的最大折扣比例。
 	MaxDiscountPercent int
 	// MaxDiscountAmount 是允许的最大折扣金额。
@@ -311,11 +333,26 @@ func (s *Service) UpsertAIReply(ctx context.Context, userID int64, cookieID stri
 	if settings.MaxDiscountAmount < 0 {
 		return errors.New("最大折扣金额不能小于 0")
 	}
+	if settings.HumanHandoffMinutes < 0 || settings.HumanHandoffMinutes > 1440 {
+		return ErrInvalidHumanHandoffMinutes
+	}
 	if settings.MaxBargainRounds < 1 || settings.MaxBargainRounds > 10 {
 		return errors.New("最大砍价轮次必须在 1 到 10 之间")
 	}
 	if settings.AutoAdjustPriceEnabled && !settings.AIEnabled {
 		return errors.New("开启 AI 自动改价前必须先启用 AI 议价")
+	}
+	// 归一化 AI 回复模式：空值按 bargain 保持历史行为；未知枚举显式拒绝。
+	settings.ReplyMode = strings.TrimSpace(settings.ReplyMode)
+	switch settings.ReplyMode {
+	case "":
+		settings.ReplyMode = "bargain"
+	case "bargain", "keyword_first", "full":
+	default:
+		return ErrInvalidAIReplyMode
+	}
+	if len([]rune(settings.FullPrompt)) > MaxAIReplyPromptLength {
+		return ErrAIReplyPromptTooLong
 	}
 	if settings.AIEnabled {
 		// conflict 表示当前账号是否已有启用的固定价格规则；conflictErr 是查询错误。

@@ -124,7 +124,7 @@ func TestRefreshSingleCoversCookieAndCredentialRaceBranches(t *testing.T) {
 	assertRefreshSingleError(t, &RefreshService{repository: changedRepository, runtime: changedRuntime}, ErrRefreshCredentialChanged)
 }
 
-// TestRefreshCoversSelectionAndUnsupportedBranches 覆盖批量刷新账号筛选、列表扫描和接口能力分支。
+// TestRefreshCoversSelectionAndUnsupportedBranches 覆盖批量刷新账号筛选、列表能力和兼容参数分支。
 func TestRefreshCoversSelectionAndUnsupportedBranches(t *testing.T) {
 	// nilService 保存空批量刷新服务的保护性边界。
 	var nilService *RefreshService
@@ -153,28 +153,27 @@ func TestRefreshCoversSelectionAndUnsupportedBranches(t *testing.T) {
 		t.Fatalf("筛选账号拒绝异常: result=%+v err=%v", forbiddenResult, forbiddenErr)
 	}
 
-	// repository 保存详情扫描目标和扫描错误。
-	repository := &refreshRepositoryFake{rows: []OrderRow{{OrderID: "stable", OrderStatus: "completed", Amount: "1.00"}, {OrderID: "pending", OrderStatus: "processing"}}, rowsErr: errors.New("扫描失败")}
-	// runtime 保存不支持详情和订单列表的运行时。
+	// repository 保存列表能力缺失场景的内存依赖。
+	repository := &refreshRepositoryFake{rowsErr: errors.New("批量同步不应读取本地详情目标")}
+	// runtime 保存不支持订单列表的运行时。
 	runtime := &refreshRuntimeFake{}
-	// result、err 保存不支持平台能力下的结果。
+	// result、err 保存订单列表能力缺失时的结果。
 	result, err := (&RefreshService{repository: repository, runtime: runtime}).Refresh(context.Background(), 7, "", "all")
-	// 列表能力缺失与详情扫描失败必须分别报告，不能吞掉第二个错误。
-	if err != nil || !result.PartialFailure || result.Summary.Failed != 2 || len(result.Results) != 2 || result.Results[1].Error != "读取待同步订单失败" {
-		t.Fatalf("不支持订单列表分支异常: result=%+v err=%v", result, err)
+	if err != nil || !result.PartialFailure || result.Summary.Failed != 1 || len(result.Results) != 1 || repository.rowsCalls != 0 || result.Results[0].Message != "当前 MTop 客户端不支持订单列表发现" {
+		t.Fatalf("不支持订单列表分支异常: result=%+v err=%v rows=%d", result, err, repository.rowsCalls)
 	}
 
-	// filterRepository 保存可筛选的订单扫描结果。
-	filterRepository := &refreshRepositoryFake{owned: map[string]bool{"cookie-1": true}, rows: []OrderRow{{OrderID: "other", OrderStatus: "processing"}}}
-	// filterRuntime 保存详情可用但订单列表不可用的运行时。
-	filterRuntime := &refreshRuntimeFake{detailAvailable: true}
+	// filterRepository 保存账号筛选和订单列表同步结果。
+	filterRepository := &refreshRepositoryFake{owned: map[string]bool{"cookie-1": true}, detail: &PlatformRuntimeData{UserID: 7, Value: "cookie"}, rowsErr: errors.New("状态筛选不应读取本地详情目标")}
+	// filterRuntime 保存详情可用但批量同步仍不请求详情的运行时。
+	filterRuntime := &refreshRuntimeFake{soldAvailable: true, detailAvailable: true, soldResult: RefreshSoldFetchResult{Orders: []RefreshSoldOrder{{OrderID: "listed", OrderStatus: "completed"}}}, detailErr: errors.New("状态筛选不应请求订单详情")}
 	result, err = (&RefreshService{repository: filterRepository, runtime: filterRuntime}).Refresh(context.Background(), 7, "cookie-1", "completed")
-	if err != nil || result.Summary.DetailTotal != 0 {
+	if err != nil || result.Summary.Discovered != 1 || result.Summary.DetailTotal != 0 || filterRuntime.detailCalls != 0 || filterRepository.rowsCalls != 0 {
 		t.Fatalf("状态筛选分支异常: result=%+v err=%v", result, err)
 	}
 }
 
-// TestRefreshCoversDiscoveryErrorAndDetailUnavailableBranches 覆盖订单发现错误、会话过期和详情跳过分支。
+// TestRefreshCoversDiscoveryErrorAndDetailUnavailableBranches 覆盖订单发现错误、会话过期和详情能力隔离分支。
 func TestRefreshCoversDiscoveryErrorAndDetailUnavailableBranches(t *testing.T) {
 	// fetchErr 保存平台订单列表错误。
 	fetchErr := errors.New("订单列表请求失败")
@@ -195,13 +194,13 @@ func TestRefreshCoversDiscoveryErrorAndDetailUnavailableBranches(t *testing.T) {
 		t.Fatalf("会话过期发现分支异常: result=%+v err=%v", result, err)
 	}
 
-	// noDetailRepository 保存新订单扫描目标。
-	noDetailRepository := &refreshRepositoryFake{detail: repository.detail, rows: []OrderRow{{OrderID: "order-1", OrderStatus: "processing"}}, orders: map[string]*Order{}}
-	// noDetailRuntime 保存可发现订单但不支持详情的运行时。
+	// noDetailRepository 保存列表同步所需的有效凭证。
+	noDetailRepository := &refreshRepositoryFake{detail: repository.detail, rowsErr: errors.New("详情能力隔离后不应读取本地订单")}
+	// noDetailRuntime 保存可发现订单但不支持详情的运行时；批量同步仍应成功。
 	noDetailRuntime := &refreshRuntimeFake{soldAvailable: true, soldResult: RefreshSoldFetchResult{Orders: []RefreshSoldOrder{{OrderID: "order-1", OrderStatus: "processing"}}}}
 	result, err = (&RefreshService{repository: noDetailRepository, runtime: noDetailRuntime}).Refresh(context.Background(), 7, "", "all")
-	if err != nil || result.Summary.DetailTotal != 1 || result.Message == "" {
-		t.Fatalf("详情接口跳过分支异常: result=%+v err=%v", result, err)
+	if err != nil || result.Summary.Discovered != 1 || result.Summary.DetailTotal != 0 || result.Summary.Total != 0 || noDetailRuntime.detailCalls != 0 || noDetailRepository.rowsCalls != 0 || result.Message == "" {
+		t.Fatalf("详情接口隔离分支异常: result=%+v err=%v", result, err)
 	}
 }
 
@@ -270,26 +269,20 @@ func TestRefreshCoversDiscoveryPersistenceBranches(t *testing.T) {
 	}
 }
 
-// TestRefreshCoversCursorSkipAndSessionBranches 覆盖订单游标重复、稳定订单跳过和会话过期后的详情跳过分支。
-func TestRefreshCoversCursorSkipAndSessionBranches(t *testing.T) {
-	// rows 保存恰好一页的稳定订单，第二次读取会命中重复游标保护。
-	rows := make([]OrderRow, 500)
-	// index 是当前初始化订单行的下标。
-	for index := range rows {
-		rows[index] = OrderRow{OrderID: "stable", OrderStatus: "completed", Amount: "1.00"}
-	}
-	// cursorRepository 保存游标重复和稳定订单跳过场景的仓储。
-	cursorRepository := &refreshRepositoryFake{rows: rows}
-	// cursorRuntime 保存不请求详情的运行时。
+// TestRefreshCoversNoLocalDetailScanAndSessionBranches 覆盖批量同步不读本地详情游标和会话过期分支。
+func TestRefreshCoversNoLocalDetailScanAndSessionBranches(t *testing.T) {
+	// cursorRepository 保存不应被批量同步读取的本地详情游标。
+	cursorRepository := &refreshRepositoryFake{rows: []OrderRow{{OrderID: "stable", OrderStatus: "completed", Amount: "1.00"}}, rowsErr: errors.New("批量同步不应读取本地详情游标")}
+	// cursorRuntime 保存不支持订单列表的运行时。
 	cursorRuntime := &refreshRuntimeFake{}
-	// cursorResult、cursorErr 保存游标扫描结果。
+	// cursorResult、cursorErr 保存不读取本地游标的同步结果。
 	cursorResult, cursorErr := (&RefreshService{repository: cursorRepository, runtime: cursorRuntime}).Refresh(context.Background(), 7, "", "all")
-	if cursorErr != nil || cursorResult.Summary.DetailTotal != 0 {
+	if cursorErr != nil || cursorResult.Summary.DetailTotal != 0 || cursorRepository.rowsCalls != 0 {
 		t.Fatalf("游标重复或稳定订单跳过异常: result=%+v err=%v", cursorResult, cursorErr)
 	}
 
-	// expiredRepository 保存会话过期后仍有本地详情目标的仓储。
-	expiredRepository := &refreshRepositoryFake{detail: &PlatformRuntimeData{UserID: 7, Value: "cookie"}, rows: []OrderRow{{OrderID: "order-1", OrderStatus: "processing"}}}
+	// expiredRepository 保存会话过期发现所需的凭证仓储。
+	expiredRepository := &refreshRepositoryFake{detail: &PlatformRuntimeData{UserID: 7, Value: "cookie"}}
 	// expiredRuntime 保存发现阶段会话过期的运行时。
 	expiredRuntime := &refreshRuntimeFake{soldAvailable: true, soldResult: RefreshSoldFetchResult{Orders: []RefreshSoldOrder{{OrderID: "remote-1"}}}, fetchErr: errors.New("会话过期"), expired: true, detailAvailable: true}
 	// expiredResult、expiredErr 保存会话过期后的批量结果。
@@ -298,14 +291,14 @@ func TestRefreshCoversCursorSkipAndSessionBranches(t *testing.T) {
 		t.Fatalf("会话过期详情跳过异常: result=%+v err=%v", expiredResult, expiredErr)
 	}
 
-	// detailExpiredRepository 保存详情阶段会话过期的本地目标。
-	detailExpiredRepository := &refreshRepositoryFake{detail: &PlatformRuntimeData{UserID: 7, Value: "cookie"}, rows: []OrderRow{{OrderID: "order-1", OrderStatus: "processing"}}}
-	// detailExpiredRuntime 保存详情请求会话过期的运行时。
+	// detailExpiredRepository 保存直接详情分片调用的有效凭证。
+	detailExpiredRepository := &refreshRepositoryFake{detail: &PlatformRuntimeData{UserID: 7, Value: "cookie"}}
+	// detailExpiredRuntime 保存直接详情分片调用的会话过期错误。
 	detailExpiredRuntime := &refreshRuntimeFake{detailAvailable: true, detailErrors: []error{errors.New("详情会话过期")}, expired: true}
-	// detailExpiredResult、detailExpiredErr 保存详情阶段过期结果。
-	detailExpiredResult, detailExpiredErr := (&RefreshService{repository: detailExpiredRepository, runtime: detailExpiredRuntime}).Refresh(context.Background(), 7, "", "all")
-	if detailExpiredErr != nil || !detailExpiredResult.PartialFailure || !detailExpiredRuntime.recovered {
-		t.Fatalf("详情会话过期分支异常: result=%+v err=%v", detailExpiredResult, detailExpiredErr)
+	// detailExpiredFailed、detailExpiredResults、detailExpiredExpired 保存详情分片过期结果。
+	_, _, detailExpiredFailed, detailExpiredResults, detailExpiredExpired := (&RefreshService{repository: detailExpiredRepository, runtime: detailExpiredRuntime}).refreshDetailChunk(context.Background(), 7, "cookie-1", []refreshTarget{{OrderID: "order-1", CurrentStatus: "processing"}})
+	if detailExpiredFailed != 1 || len(detailExpiredResults) != 1 || !detailExpiredExpired || !detailExpiredRuntime.recovered {
+		t.Fatalf("详情会话过期分支异常: failed=%d results=%d expired=%v recovered=%v", detailExpiredFailed, len(detailExpiredResults), detailExpiredExpired, detailExpiredRuntime.recovered)
 	}
 }
 

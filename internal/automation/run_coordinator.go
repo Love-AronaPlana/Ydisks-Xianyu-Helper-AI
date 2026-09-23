@@ -185,6 +185,8 @@ func (r automationRunCoordinator) executeRule(ctx context.Context, task Task, ru
 
 // prepareRuleRun 先补全任务事实和动作计划，再恢复既有运行或原子创建新的幂等运行；skipped 为 true 表示重复事件或已失效恢复任务无需执行。
 func (r automationRunCoordinator) prepareRuleRun(ctx context.Context, task Task, rule db.AutomationRule) (preparedTask Task, run *db.AutomationRun, skipped bool, err error) {
+	// 先把账号级规格授权冻结进任务快照，后续动作规划和恢复都只读该快照，不重新解释规则配置。
+	task.AllowAllItems = ruleAllowsAllItems(rule, task.TriggerType)
 	if len(task.ActionPlan) == 0 && task.TriggerType != TriggerOrderPaid {
 		task.ActionPlan = r.planner.plan(task, rule.Actions)
 	}

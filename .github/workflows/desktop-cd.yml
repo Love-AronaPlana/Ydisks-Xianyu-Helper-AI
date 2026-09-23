@@ -331,6 +331,7 @@ jobs:
               $serverPath,
               '-service',
               "-workdir $workDir",
+              '-addr 0.0.0.0:59188',
               "-playwright-runtime-root $runtimeRoot"
             )
             $invalidServiceArgument = $requiredServiceArguments |
@@ -514,6 +515,7 @@ jobs:
             $requiredServiceArguments = @(
               $expectedServer,
               '-service',
+              '-addr 0.0.0.0:59188',
               "-playwright-runtime-root $expectedRuntime"
             )
             $invalidServiceArgument = $requiredServiceArguments |

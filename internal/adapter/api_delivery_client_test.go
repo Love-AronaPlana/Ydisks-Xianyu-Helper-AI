@@ -54,7 +54,7 @@ func TestAPICardTesterPreservesRemoteFailureDiagnostics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("远端失败不应变为本地错误: %v", err)
 	}
-	if result.Status != "failed" || result.StatusCode != http.StatusBadGateway || result.ResponsePreview != "remote failure" {
+	if result.Status != "failed" || result.StatusCode != http.StatusBadGateway || result.ResponsePreview != "remote failure" || result.ResponseFields == nil {
 		t.Fatalf("远端失败诊断错误: %+v", result)
 	}
 }

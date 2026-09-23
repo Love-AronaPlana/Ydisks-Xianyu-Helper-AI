@@ -29,6 +29,8 @@ type Manager struct {
 	store   *db.Store
 	handler engine.Handler
 	logger  *slog.Logger
+	// replyDeliveryProvider 在每个账号运行实例构造时提供统一聊天应用发送端口。
+	replyDeliveryProvider func() engine.ReplyDelivery
 
 	mu       sync.Mutex
 	accounts map[string]*managedAccount
@@ -52,15 +54,22 @@ type managedAccount struct {
 
 // NewManager 构造管理器。
 func NewManager(store *db.Store, handler engine.Handler, logger *slog.Logger) *Manager {
+	return NewManagerWithReplyDelivery(store, handler, logger, nil)
+}
+
+// NewManagerWithReplyDelivery 构造支持聊天应用完整回复发送端口的账号管理器。
+// provider 只在账号实例创建时读取，组合根应在启动管理器前完成其闭包所引用的服务装配。
+func NewManagerWithReplyDelivery(store *db.Store, handler engine.Handler, logger *slog.Logger, provider func() engine.ReplyDelivery) *Manager {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &Manager{
-		store:    store,
-		handler:  handler,
-		logger:   logger,
-		accounts: make(map[string]*managedAccount),
-		stopping: make(map[string]struct{}),
+		store:                 store,
+		handler:               handler,
+		logger:                logger,
+		replyDeliveryProvider: provider,
+		accounts:              make(map[string]*managedAccount),
+		stopping:              make(map[string]struct{}),
 	}
 }
 
@@ -129,13 +138,19 @@ func (m *Manager) Start(ctx context.Context, cookieID, cookieValue string) error
 			return nil
 		}
 	}
+	// replyDelivery 保存构造该账号时固定的聊天应用完整回复端口。
+	var replyDelivery engine.ReplyDelivery
+	if m.replyDeliveryProvider != nil {
+		replyDelivery = m.replyDeliveryProvider()
+	}
 	// acc 用于本次流程后续判断的acc
 	acc := engine.New(engine.Config{
-		CookieID:  cookieID,
-		CookieStr: cookieValue,
-		Store:     m.store,
-		Handler:   m.handler,
-		Logger:    m.logger,
+		CookieID:      cookieID,
+		CookieStr:     cookieValue,
+		Store:         m.store,
+		Handler:       m.handler,
+		Logger:        m.logger,
+		ReplyDelivery: replyDelivery,
 	})
 	// accCtx、cancel 用于本次流程后续判断的accCtx、cancel
 	accCtx, cancel := context.WithCancel(ctx)

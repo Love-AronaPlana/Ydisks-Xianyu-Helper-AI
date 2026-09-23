@@ -542,6 +542,12 @@ func TestServiceRejectsInvalidSettingsInputs(t *testing.T) {
 		{name: "upsert auto without AI", run: func() error {
 			return service.UpsertAIReply(ctx, 7, "acc", AIReplySettings{AutoAdjustPriceEnabled: true, MaxBargainRounds: 1})
 		}},
+		{name: "upsert negative handoff", run: func() error {
+			return service.UpsertAIReply(ctx, 7, "acc", AIReplySettings{HumanHandoffMinutes: -1, MaxBargainRounds: 1})
+		}},
+		{name: "upsert large handoff", run: func() error {
+			return service.UpsertAIReply(ctx, 7, "acc", AIReplySettings{HumanHandoffMinutes: 1441, MaxBargainRounds: 1})
+		}},
 		{name: "models invalid user", run: func() error {
 			// err 是无效用户模型目录查询的身份错误。
 			_, err := service.ListAIModels(ctx, 0, "", "")

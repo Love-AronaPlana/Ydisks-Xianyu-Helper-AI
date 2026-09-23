@@ -20,5 +20,7 @@ func (s *Server) mountVersionedItems(r chi.Router) {
 		r.Delete("/api/v1/items/{cookie_id}/{item_id}", s.deleteItem)
 		r.Put("/api/v1/items/{cookie_id}/{item_id}/multi-spec", s.setItemMultiSpec)
 		r.Put("/api/v1/items/{cookie_id}/{item_id}/multi-quantity-delivery", s.setItemMultiQuantity)
+		r.Get("/api/v1/items/{cookie_id}/{item_id}/ai-prompt", s.getItemAIPrompt)
+		r.Put("/api/v1/items/{cookie_id}/{item_id}/ai-prompt", s.putItemAIPrompt)
 	})
 }

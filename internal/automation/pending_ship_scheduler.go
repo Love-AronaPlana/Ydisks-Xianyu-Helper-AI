@@ -44,7 +44,7 @@ func (s *Scheduler) paidRecoveryReady(ctx context.Context, task Task, run db.Aut
 		reason := "订单归属账号与付款运行不一致，已停止自动恢复"
 		return false, s.quarantineRunForReview(ctx, run, reason)
 	}
-	if order.OrderStatus != "pending_ship" || order.SystemShipped {
+	if !isPendingShipOrder(order) || order.SystemShipped {
 		// reason 记录自动取消原因；订单已取消、完成或发货时无需用户再次处理。
 		reason := fmt.Sprintf("订单当前状态为 %s，不再需要自动发货恢复", firstNonEmpty(order.OrderStatus, "未知"))
 		// canceled、cancelErr 保存过期运行是否仍与扫描快照一致并已安全取消。
@@ -56,6 +56,24 @@ func (s *Scheduler) paidRecoveryReady(ctx context.Context, task Task, run db.Aut
 			s.center.logger.Info("订单已不再待发货，取消历史付款恢复运行", "run_id", run.ID, "account", run.CookieID, "order_id", run.OrderID, "order_status", order.OrderStatus, "system_shipped", order.SystemShipped)
 		}
 		return false, nil
+	}
+	if task.Source == "ws" && task.OrderRole != OrderRoleSeller {
+		// _, sellerVerified、roleReason、roleErr 保存历史 WS 运行的未知角色核验结果；恢复路径不能沿用旧快照猜测卖家身份。
+		_, sellerVerified, roleReason, roleErr := s.center.authorizeWebSocketSellerTaskWithOrder(ctx, task, order)
+		if roleErr != nil {
+			// postponeErr 保存本地商品归属暂时不可读时的延期结果，避免数据库瞬时故障直接执行外部发货。
+			postponeErr := s.center.store.Automation.PostponeRecoveryRun(ctx, run.ID, run.AttemptCount, time.Now().UTC().Add(defaultReviewRequestScanInterval).Unix())
+			if postponeErr != nil {
+				return false, errors.Join(fmt.Errorf("核对未知角色付款运行失败: %w", roleErr), fmt.Errorf("延期付款恢复运行失败: %w", postponeErr))
+			}
+			s.center.logger.Warn("未知角色付款运行核验失败，已延期等待本地事实恢复", "run_id", run.ID, "account", run.CookieID, "order_id", run.OrderID, "err", roleErr)
+			return false, nil
+		}
+		if !sellerVerified {
+			// reason 说明历史运行无法由本地商品和订单身份证明是卖家事件，必须人工核对而不能重放发货。
+			reason := "历史 WebSocket 付款运行缺少明确卖家角色且本地证据不足（" + roleReason + "），已停止自动恢复"
+			return false, s.quarantineRunForReview(ctx, run, reason)
+		}
 	}
 	// enabled、settingsErr 保存账号当前自动发货总开关及读取错误。
 	enabled, settingsErr := s.center.paidDeliveryAutoConfirmEnabled(ctx, run.CookieID)
@@ -163,7 +181,8 @@ func (s *Scheduler) scanPendingShipDeliveriesWithContextAndLimit(ctx context.Con
 			// taskCtx、cancel 为单个兜底任务提供执行预算及释放函数。
 			taskCtx, cancel := context.WithTimeout(ctx, pendingShipTaskTimeout)
 			// task 保存待发货订单转换后的自动化任务载荷。
-			task := Task{Source: "scheduler", AccountID: order.CookieID, TriggerType: TriggerOrderPaid, ChatID: order.ChatID, OrderID: order.OrderID, ItemID: order.ItemID, BuyerID: order.BuyerID, Text: "付款系统消息缺失，按订单状态补触发自动发货", Raw: map[string]any{"source": "scheduler", "order_id": order.OrderID}}
+			// task 是由本地待发货订单扫描构造的可信卖家任务；它不依赖 WS 卡片中的 role 字段。
+			task := Task{Source: "scheduler", AccountID: order.CookieID, OrderRole: OrderRoleSeller, TriggerType: TriggerOrderPaid, ChatID: order.ChatID, OrderID: order.OrderID, ItemID: order.ItemID, BuyerID: order.BuyerID, Text: "付款系统消息缺失，按订单状态补触发自动发货", Raw: map[string]any{"source": "scheduler", "order_id": order.OrderID}}
 			// err 保存兜底任务执行错误；失败只影响当前订单。
 			if err := s.center.HandleTask(taskCtx, task); err != nil {
 				s.center.logger.Warn("待发货兜底任务执行失败", "account", order.CookieID, "order_id", order.OrderID, "err", err)

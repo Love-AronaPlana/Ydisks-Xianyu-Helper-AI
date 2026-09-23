@@ -63,13 +63,13 @@ type RefreshJobSummary struct {
 	ListUpdated int `json:"list_updated"`
 	// SoftDeleted 是平台已不存在而被本地标记删除的数量。
 	SoftDeleted int `json:"soft_deleted"`
-	// DetailTotal 是进入详情补全阶段的订单数量。
+	// DetailTotal 是兼容旧任务契约的详情补全数量；批量列表同步固定为零。
 	DetailTotal int `json:"detail_total"`
-	// Total 是本次详情补全处理的订单总数量。
+	// Total 是兼容旧任务契约的详情处理总数；批量列表同步固定为零。
 	Total int `json:"total"`
-	// Updated 是详情补全后状态或字段发生变化的数量。
+	// Updated 是兼容旧任务契约的详情刷新变化数量；批量列表字段变化计入 ListUpdated。
 	Updated int `json:"updated"`
-	// NoChange 是详情补全后没有变化的数量。
+	// NoChange 是兼容旧任务契约的详情刷新未变化数量；批量列表同步固定为零。
 	NoChange int `json:"no_change"`
 	// Failed 是刷新过程中失败的数量。
 	Failed int `json:"failed"`

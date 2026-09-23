@@ -769,6 +769,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/chat/human-handoff": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 读取指定会话买家的人工接管状态 */
+        get: operations["getApiV1ChatHumanHandoff"];
+        /** 按分钟数接管指定会话买家的 AI 回复 */
+        put: operations["putApiV1ChatHumanHandoff"];
+        post?: never;
+        /** 提前结束指定会话买家的人工接管 */
+        delete: operations["deleteApiV1ChatHumanHandoff"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/chat/messages": {
         parameters: {
             query?: never;
@@ -957,6 +976,24 @@ export interface paths {
         post?: never;
         /** deleteApiV1ItemsBycookie_idByitem_id */
         delete: operations["deleteApiV1ItemsBycookie_idByitem_id"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/items/{cookie_id}/{item_id}/ai-prompt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 读取商品级 AI 提示词 */
+        get: operations["getApiV1ItemsBycookie_idByitem_idAiPrompt"];
+        /** 保存商品级 AI 提示词 */
+        put: operations["putApiV1ItemsBycookie_idByitem_idAiPrompt"];
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -2212,11 +2249,24 @@ export interface components {
             id: number;
             keyword: string;
             reply: string;
+            /** @description 关联商品标识的持久化字段；多选时为逗号分隔串，空串表示账号级回复 */
             item_id: string;
+            /** @description 关联商品标识集合；空集合表示账号级回复 */
+            item_ids: string[];
             type: string;
             image_url: string;
         };
         KeywordTypedListResponse: components["schemas"]["KeywordTypedResponse"][];
+        KeywordCreateRequest: {
+            keyword: string;
+            reply: string;
+            /** @description 兼容旧单值调用方；多选时由 item_ids 合并而来 */
+            item_id: string;
+            /** @description 关联商品标识集合；一条规则可关联多个商品，空集合表示账号级回复 */
+            item_ids: string[];
+            type: string;
+            image_url: string;
+        };
         DefaultReplyMapResponse: {
             [key: string]: components["schemas"]["DefaultReplyResponse"];
         };
@@ -2231,6 +2281,17 @@ export interface components {
             cookie_id?: string;
             ai_enabled: boolean;
             auto_adjust_price_enabled: boolean;
+            /**
+             * @default bargain
+             * @enum {string}
+             */
+            ai_reply_mode: "bargain" | "keyword_first" | "full";
+            /** @default  */
+            ai_full_prompt: string;
+            /** @default 0 */
+            human_handoff_minutes: number;
+            /** @description 是否把买家图片随消息发送给多模态模型；省略时保留账号当前值，新账号默认开启。 */
+            ai_vision_enabled?: boolean;
             max_discount_percent: number;
             max_discount_amount: number;
             max_bargain_rounds: number;
@@ -2239,6 +2300,17 @@ export interface components {
         AIReplySettingsUpdateRequest: {
             ai_enabled: boolean;
             auto_adjust_price_enabled: boolean;
+            /**
+             * @default bargain
+             * @enum {string}
+             */
+            ai_reply_mode: "bargain" | "keyword_first" | "full";
+            /** @default  */
+            ai_full_prompt: string;
+            /** @default 0 */
+            human_handoff_minutes: number;
+            /** @description 是否把买家图片随消息发送给多模态模型；省略时保留账号当前值。 */
+            ai_vision_enabled?: boolean;
             max_discount_percent: number;
             max_discount_amount: number;
             max_bargain_rounds: number;
@@ -2556,6 +2628,24 @@ export interface components {
             is_multi_spec: boolean;
             multi_quantity_delivery: boolean;
         };
+        ItemAIPromptRequest: {
+            /** @enum {string} */
+            strategy: "inherit" | "append" | "override";
+            prompt: string;
+            custom_variables: {
+                [key: string]: string;
+            };
+        };
+        ItemAIPromptResponse: {
+            cookie_id: string;
+            item_id: string;
+            /** @enum {string} */
+            strategy: "inherit" | "append" | "override";
+            prompt: string;
+            custom_variables: {
+                [key: string]: string;
+            };
+        };
         NotificationChannelResponse: {
             id: number;
             name: string;
@@ -2667,6 +2757,11 @@ export interface components {
             paused_until: number;
             paused: boolean;
             show_browser: boolean;
+            /**
+             * @default playwright
+             * @enum {string}
+             */
+            captcha_browser_mode: "playwright" | "system_manual";
             username: string;
             nickname: string;
             avatar_url: string;
@@ -2696,6 +2791,11 @@ export interface components {
             login_password?: string;
             clear_password?: boolean;
             show_browser?: boolean;
+            /**
+             * @description 验证码处理模式；省略时保持账号当前值，新账号默认 playwright。
+             * @enum {string}
+             */
+            captcha_browser_mode?: "playwright" | "system_manual";
             channel_ids?: number[];
         };
         AccountLoginInfoRequest: {
@@ -2934,6 +3034,18 @@ export interface components {
         ChatBuyerNoteSaveRequest: {
             account_id: string;
             content: string;
+        };
+        ChatHumanHandoff: {
+            account_id: string;
+            buyer_id: string;
+            paused_until: number;
+            active: boolean;
+            remaining_seconds: number;
+        };
+        ChatHumanHandoffUpdateRequest: {
+            account_id: string;
+            chat_id: string;
+            minutes: number;
         };
         OrderDTO: {
             order_id: string;
@@ -7362,6 +7474,238 @@ export interface operations {
             };
         };
     };
+    getApiV1ChatHumanHandoff: {
+        parameters: {
+            query: {
+                account_id: string;
+                chat_id: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatHumanHandoff"];
+                };
+            };
+            /** @description 统一错误响应 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    putApiV1ChatHumanHandoff: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChatHumanHandoffUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description 成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatHumanHandoff"];
+                };
+            };
+            /** @description 统一错误响应 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    deleteApiV1ChatHumanHandoff: {
+        parameters: {
+            query: {
+                account_id: string;
+                chat_id: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatHumanHandoff"];
+                };
+            };
+            /** @description 统一错误响应 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     getApiV1ChatMessages: {
         parameters: {
             query: {
@@ -8487,6 +8831,146 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getApiV1ItemsBycookie_idByitem_idAiPrompt: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                cookie_id: string;
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ItemAIPromptResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    putApiV1ItemsBycookie_idByitem_idAiPrompt: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                cookie_id: string;
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ItemAIPromptRequest"];
+            };
+        };
+        responses: {
+            /** @description 成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ItemAIPromptResponse"];
                 };
             };
             /** @description 统一错误响应 */
@@ -11491,7 +11975,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["KeywordCreateRequest"];
+            };
+        };
         responses: {
             /** @description 成功 */
             200: {
@@ -11693,7 +12181,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["KeywordCreateRequest"];
+            };
+        };
         responses: {
             /** @description 成功 */
             200: {

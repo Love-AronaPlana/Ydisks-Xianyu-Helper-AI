@@ -93,10 +93,13 @@ type sendSender struct {
 	itemChatID, itemPeerUserID, itemKey string
 	// item 保存商品卡片发送器收到的规范商品快照。
 	item ChatItem
+	// calls 保存完整回复发送时图片和文字的调用顺序。
+	calls []string
 }
 
 // SendText 记录文本发送并返回预设错误。
 func (s *sendSender) SendText(_ context.Context, _, _, _, messageKey string) error {
+	s.calls = append(s.calls, "text")
 	s.sentKey = messageKey
 	return s.sendErr
 }
@@ -105,6 +108,7 @@ func (s *sendSender) SendText(_ context.Context, _, _, _, messageKey string) err
 func (s *sendSender) SendImage(_ context.Context, _, _, _ string, _ int64, width, height int, messageKey string) error {
 	// imageWidth、imageHeight 记录应用层透传的平台图片尺寸。
 	s.imageWidth, s.imageHeight = width, height
+	s.calls = append(s.calls, "image")
 	s.sentKey = messageKey
 	return s.sendErr
 }
@@ -330,5 +334,48 @@ func TestSendImageCoversValidationUploadCreationAndPlatformFailures(t *testing.T
 	message, sendErr := senderFailure.SendImage(context.Background(), input)
 	if !errors.Is(sendErr, ErrSend) || message == nil || len(senderFailureRepository.statuses) != 1 || senderFailureRepository.statuses[0] != "failed" {
 		t.Fatalf("message=%+v err=%v statuses=%v", message, sendErr, senderFailureRepository.statuses)
+	}
+}
+
+// TestSendReplyUsesTheMessagePageImagePipeline 验证完整回复的图片和文字都经过消息页面已有发送入口。
+func TestSendReplyUsesTheMessagePageImagePipeline(t *testing.T) {
+	// repository、sender 和 uploader 保存统一发送链路的测试端口。
+	repository, sender := &sendRepository{}, &sendSender{}
+	// uploader 保存平台返回的真实图片地址和像素尺寸。
+	uploader := sendUploader{result: ImageUpload{URL: "https://cdn.example/reply.jpg", Width: 1600, Height: 900}}
+	// service 是同时具备文字、图片上传和完整回复能力的聊天应用服务。
+	service := NewWithSending(nil, repository, sendProvider{sender: sender}, uploader)
+	service.imageDownloader = func(context.Context, string) ([]byte, string, string, error) {
+		return []byte("reply-image"), "image/jpeg", "reply.jpg", nil
+	}
+	// result、sendErr 保存完整回复投递结果及错误。
+	result, sendErr := service.SendReply(context.Background(), ReplyInput{
+		Session: Session{AccountID: "acc-1", ChatID: "chat-1", PeerUserID: "buyer-1"},
+		Text:    "图片随后附上", ImageURL: "https://origin.example/reply.jpg",
+	})
+	if sendErr != nil || result == nil || !result.ImageSent || !result.TextSent || result.Image == nil || result.Text == nil {
+		t.Fatalf("result=%+v err=%v", result, sendErr)
+	}
+	if sender.imageWidth != 1600 || sender.imageHeight != 900 || strings.Join(sender.calls, ",") != "image,text" {
+		t.Fatalf("统一发送顺序或尺寸错误 calls=%v size=%dx%d", sender.calls, sender.imageWidth, sender.imageHeight)
+	}
+}
+
+// TestSendReplyStopsBeforeTextWhenImageDownloadFails 验证图片下载失败时不会旁路发送文字。
+func TestSendReplyStopsBeforeTextWhenImageDownloadFails(t *testing.T) {
+	// sender 保存不应被调用的消息页面发送端口。
+	sender := &sendSender{}
+	// service 是注入下载失败的完整回复服务。
+	service := NewWithSending(nil, &sendRepository{}, sendProvider{sender: sender}, sendUploader{})
+	service.imageDownloader = func(context.Context, string) ([]byte, string, string, error) {
+		return nil, "", "", errors.New("download failed")
+	}
+	// sendErr 保存图片下载失败后统一映射的错误。
+	_, sendErr := service.SendReply(context.Background(), ReplyInput{
+		Session: Session{AccountID: "acc-1", ChatID: "chat-1", PeerUserID: "buyer-1"},
+		Text:    "不应发送", ImageURL: "https://origin.example/fail.jpg",
+	})
+	if !errors.Is(sendErr, ErrSend) || len(sender.calls) != 0 {
+		t.Fatalf("download error=%v calls=%v", sendErr, sender.calls)
 	}
 }

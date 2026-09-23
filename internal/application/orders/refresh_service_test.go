@@ -26,7 +26,7 @@ type refreshRepositoryFake struct {
 	soldDeleteCount int
 	// upsertCount 保存订单写入次数。
 	upsertCount int
-	// batchUpsertCount 保存详情分片批量写入调用次数。
+	// batchUpsertCount 保存订单列表或详情批次批量写入调用次数。
 	batchUpsertCount int
 	// batchFindCount 保存订单发现批量读取调用次数。
 	batchFindCount int
@@ -52,6 +52,8 @@ type refreshRepositoryFake struct {
 	existsResult *bool
 	// rowsErr 保存详情目标扫描错误。
 	rowsErr error
+	// rowsCalls 保存批量刷新读取本地详情目标的调用次数；列表同步应保持为零。
+	rowsCalls int
 	// deleteErr 保存缺失订单清理错误。
 	deleteErr error
 	// updateCookieErr 保存扁平 Cookie 写入错误。
@@ -224,7 +226,7 @@ func (f *refreshRepositoryFake) UpsertOrder(_ context.Context, orderID string, o
 	return nil
 }
 
-// BatchUpsertOrders 记录测试详情分片批量写入。
+// BatchUpsertOrders 记录测试订单刷新批次批量写入。
 func (f *refreshRepositoryFake) BatchUpsertOrders(ctx context.Context, rows []RefreshOrderWrite) error {
 	f.batchUpsertCount++
 	if f.batchUpsertErr != nil {
@@ -250,6 +252,7 @@ func (f *refreshRepositoryFake) SoftDeleteMissingOrders(context.Context, string,
 
 // ListOrdersByCookieCursor 返回测试详情目标。
 func (f *refreshRepositoryFake) ListOrdersByCookieCursor(context.Context, string, int, string, string) ([]OrderRow, error) {
+	f.rowsCalls++
 	return f.rows, f.rowsErr
 }
 
@@ -290,6 +293,8 @@ type refreshRuntimeFake struct {
 	soldResult RefreshSoldFetchResult
 	// fetchErr 保存平台请求错误。
 	fetchErr error
+	// detailErr 保存仅订单详情请求使用的预置错误；为空时沿用 fetchErr。
+	detailErr error
 	// expired 表示请求错误是否为会话过期。
 	expired bool
 	// recovered 保存是否执行了会话恢复。
@@ -342,7 +347,10 @@ func (f *refreshRuntimeFake) FetchOrderDetail(context.Context, *PlatformRuntimeD
 		result = f.detailResults[index]
 	}
 	// fetchErr 保存本次详情请求的预置错误。
-	fetchErr := f.fetchErr
+	fetchErr := f.detailErr
+	if fetchErr == nil {
+		fetchErr = f.fetchErr
+	}
 	if index < len(f.detailErrors) {
 		fetchErr = f.detailErrors[index]
 	}
@@ -419,8 +427,8 @@ func TestRefreshSingleRejectsUnsupportedAndCredentialChanges(t *testing.T) {
 	}
 }
 
-// TestRefreshBatchDiscoveryAndDetails 验证批量刷新会发现订单、清理缺失记录并补全详情。
-func TestRefreshBatchDiscoveryAndDetails(t *testing.T) {
+// TestRefreshBatchDiscoveryUsesSoldListOnly 验证批量刷新只写入已售列表字段且不请求订单详情。
+func TestRefreshBatchDiscoveryUsesSoldListOnly(t *testing.T) {
 	// repository 保存批量刷新使用的内存持久化依赖。
 	repository := &refreshRepositoryFake{
 		owned:           map[string]bool{"cookie-1": true},
@@ -432,14 +440,16 @@ func TestRefreshBatchDiscoveryAndDetails(t *testing.T) {
 	// runtime 保存批量刷新使用的平台运行时依赖。
 	runtime := &refreshRuntimeFake{
 		soldAvailable: true, detailAvailable: true,
-		soldResult:   RefreshSoldFetchResult{Orders: []RefreshSoldOrder{{OrderID: "order-1", OrderStatus: "2", Amount: "¥12.00"}, {OrderID: "order-2", OrderStatus: "2"}}},
-		detailResult: RefreshDetailFetchResult{Detail: &RefreshDetail{OrderStatus: "3", Amount: "12.00"}},
+		soldResult: RefreshSoldFetchResult{Orders: []RefreshSoldOrder{{OrderID: "order-1", OrderStatus: "pending_ship", Amount: "¥12.00"}, {OrderID: "order-2", OrderStatus: "pending_ship"}}},
+		detailErr:  errors.New("批量同步不应调用订单详情"),
 	}
 	// result、err 保存批量刷新结果和错误。
-	// result 保存批量刷新结果。
 	result, err := NewRefreshService(repository, runtime, 1).Refresh(context.Background(), 7, "", "all")
-	if err != nil || result.Summary.Discovered != 1 || result.Summary.SoftDeleted != 1 || result.Summary.DetailTotal == 0 || repository.upsertCount == 0 || repository.batchFindCount != 1 || repository.batchUpsertCount != 2 {
+	if err != nil || result.Summary.Discovered != 1 || result.Summary.SoftDeleted != 1 || result.Summary.DetailTotal != 0 || result.Summary.Total != 0 || result.Summary.Updated != 0 || result.Summary.NoChange != 0 || runtime.detailCalls != 0 || repository.rowsCalls != 0 || repository.upsertCount == 0 || repository.batchFindCount != 1 || repository.batchUpsertCount != 1 {
 		t.Fatalf("批量刷新结果异常: result=%+v err=%v repository=%+v", result, err, repository)
+	}
+	if repository.orders["order-2"].OrderStatus != "pending_ship" || repository.orders["order-1"].Amount != "12.00" {
+		t.Fatalf("已售列表字段未正确落库: orders=%+v", repository.orders)
 	}
 }
 

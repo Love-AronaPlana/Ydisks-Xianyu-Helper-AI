@@ -1,4 +1,7 @@
 // models 保存本 feature adapter 输出的 UI 模型；这些模型不直接代表 HTTP DTO。
+/** 账号验证码处理模式：playwright 使用内置浏览器自动处理，system_manual 交给系统浏览器由用户手动完成。 */
+export type CaptchaBrowserMode = 'playwright' | 'system_manual';
+
 /** 由当前 feature adapter 归一后的 AccountDetail UI 模型；不直接暴露 HTTP DTO。 */
 export interface AccountDetail {
   /** 闲鱼账号稳定标识。 */
@@ -28,6 +31,8 @@ export interface AccountDetail {
   login_password_configured?: boolean;
   /** 是否在密码登录时显示浏览器。 */
   show_browser?: boolean;
+  /** 账号验证码处理模式：playwright 为内置浏览器自动处理，system_manual 为系统浏览器人工完成。 */
+  captcha_browser_mode?: CaptchaBrowserMode;
   // Frontend helpers
   /** 平台账号昵称。 */
   nickname?: string;
@@ -48,6 +53,14 @@ export interface AccountDetail {
   ai_enabled?: boolean;
   /** 是否把 AI 有效报价自动应用到待付款订单。 */
   auto_adjust_price_enabled?: boolean;
+  /** AI 回复模式。 */
+  ai_reply_mode?: 'bargain' | 'keyword_first' | 'full';
+  /** 完全模式独立系统提示词。 */
+  ai_full_prompt?: string;
+  /** 买家发起人工请求后暂停该买家 AI 的时长，单位为分钟；0 表示关闭。 */
+  human_handoff_minutes?: number;
+  /** 是否把买家图片发送给多模态模型；旧服务端缺少该字段时按开启处理。 */
+  ai_vision_enabled?: boolean;
   /** 允许的最大折扣比例。 */
   max_discount_percent?: number;
   /** 允许的最大折扣金额。 */
@@ -115,6 +128,14 @@ export interface AIReplySettings {
   ai_enabled: boolean;
   /** 是否自动执行 AI 报价对应的真实订单改价。 */
   auto_adjust_price_enabled: boolean;
+  /** AI 回复模式：仅砍价、关键词优先或完全接管。 */
+  ai_reply_mode: 'bargain' | 'keyword_first' | 'full';
+  /** 完全模式独立系统提示词。 */
+  ai_full_prompt: string;
+  /** 买家发起人工请求后暂停该买家 AI 的时长，单位为分钟；0 表示关闭。 */
+  human_handoff_minutes: number;
+  /** 是否把买家图片发送给多模态模型；开启后买家图片会交由模型识别。 */
+  ai_vision_enabled: boolean;
   /** 最大折扣比例。 */
   max_discount_percent: number;
   /** 最大折扣金额。 */
@@ -194,6 +215,8 @@ export interface AccountSummaryResponse {
   username: string;
   /** 是否允许密码登录显示浏览器；兼容旧服务端的 0/1 字符串值。 */
   show_browser: boolean | number | string;
+  /** 验证码处理模式；旧服务端缺少该字段时由 adapter 归一为自动处理。 */
+  captcha_browser_mode?: CaptchaBrowserMode;
   /** 平台昵称缓存。 */
   nickname: string;
   /** 平台头像地址。 */
@@ -268,6 +291,14 @@ export interface AIReplySettingsResponse {
   ai_enabled: boolean;
   /** 有效 AI 报价是否会自动触发真实订单改价。 */
   auto_adjust_price_enabled: boolean;
+  /** AI 回复模式。 */
+  ai_reply_mode: 'bargain' | 'keyword_first' | 'full';
+  /** 完全模式独立系统提示词。 */
+  ai_full_prompt: string;
+  /** 买家发起人工请求后暂停该买家 AI 的时长，单位为分钟；0 表示关闭。 */
+  human_handoff_minutes: number;
+  /** 是否把买家图片发送给多模态模型；旧服务端响应缺少该字段时按开启处理。 */
+  ai_vision_enabled?: boolean;
   /** 最大折扣比例。 */
   max_discount_percent: number;
   /** 最大折扣金额。 */

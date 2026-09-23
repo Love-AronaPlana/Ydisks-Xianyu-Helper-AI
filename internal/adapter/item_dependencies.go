@@ -71,6 +71,14 @@ func (d *ItemDependencies) NewItemCatalogRepository() *ItemCatalogRepository {
 	return NewItemCatalogRepository(d.store)
 }
 
+// NewItemAIPromptRepository 创建商品级 AI 提示词仓储适配器。
+func (d *ItemDependencies) NewItemAIPromptRepository() *ItemAIPromptRepository {
+	if d == nil {
+		return nil
+	}
+	return NewItemAIPromptRepository(d.store)
+}
+
 // NewItemSyncRepository 创建商品同步端口，并接收平台会话回调。
 func (d *ItemDependencies) NewItemSyncRepository(client func() MTOPClient, logger *slog.Logger, update func(context.Context, string, string), recover func(context.Context, string, error)) *ItemSyncRepository {
 	if d == nil {

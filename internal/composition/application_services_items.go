@@ -92,6 +92,8 @@ type itemCatalogServices struct {
 	catalog *itemapp.CatalogService
 	// mutation 提供商品写入服务。
 	mutation *itemapp.CatalogMutationService
+	// aiPrompt 提供商品级 AI 提示词配置服务。
+	aiPrompt *itemapp.ItemAIPromptService
 	// categoryRecommendation 提供平台类目推荐服务。
 	categoryRecommendation *itemapp.CategoryRecommendationService
 	// previewPersistence 保存批量预检结果。
@@ -113,6 +115,11 @@ func buildItemCatalogServices(dependencies Dependencies, sessionRecovery adapter
 	itemCatalogMutation, itemCatalogMutationErr := itemapp.NewCatalogMutationService(itemCatalogRepository)
 	if itemCatalogMutationErr != nil {
 		return itemCatalogServices{}, fmt.Errorf("构造商品目录写入服务失败: %w", itemCatalogMutationErr)
+	}
+	// itemAIPrompt 是商品级 AI 提示词应用服务的构造结果。
+	itemAIPrompt, itemAIPromptErr := itemapp.NewItemAIPromptService(dependencies.ItemDependencies.NewItemAIPromptRepository())
+	if itemAIPromptErr != nil {
+		return itemCatalogServices{}, fmt.Errorf("构造商品 AI 提示词服务失败: %w", itemAIPromptErr)
 	}
 	// itemPublishPort 是单商品与批量发布共享的平台凭证适配器。
 	itemPublishPort := dependencies.ItemDependencies.NewItemPublishPort(dependencies.MTopClient, dependencies.Logger, dependencies.UpdateRunningCookie, func(ctx context.Context, cookieID string, err error) bool {
@@ -136,5 +143,5 @@ func buildItemCatalogServices(dependencies Dependencies, sessionRecovery adapter
 	if itemSinglePublishErr != nil {
 		return itemCatalogServices{}, fmt.Errorf("构造单商品发布服务失败: %w", itemSinglePublishErr)
 	}
-	return itemCatalogServices{catalog: itemCatalog, mutation: itemCatalogMutation, categoryRecommendation: itemCategoryRecommendation, previewPersistence: itemBatchPreviewPersistence, singlePublish: itemSinglePublish}, nil
+	return itemCatalogServices{catalog: itemCatalog, mutation: itemCatalogMutation, aiPrompt: itemAIPrompt, categoryRecommendation: itemCategoryRecommendation, previewPersistence: itemBatchPreviewPersistence, singlePublish: itemSinglePublish}, nil
 }

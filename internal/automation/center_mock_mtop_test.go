@@ -363,7 +363,7 @@ func TestConfirmShipmentRetriesFromCheckpointWithoutResendingCard(t *testing.T) 
 		OrderDetailFetcher: recoverer,
 	})
 	// task 用于本次流程后续判断的任务
-	task := Task{Source: "ws", AccountID: "cid", TriggerType: TriggerOrderPaid, OrderID: "checkpoint-order",
+	task := Task{Source: "ws", AccountID: "cid", OrderRole: OrderRoleSeller, TriggerType: TriggerOrderPaid, OrderID: "checkpoint-order",
 		ItemID: "checkpoint-item", BuyerID: "buyer", ChatID: "chat", Quantity: "1", Amount: "9.9"}
 	if // err 用于本次流程后续判断的err
 	err := center.HandleTask(ctx, task); err == nil {
@@ -463,7 +463,7 @@ func TestConfirmShipmentRetriesFromCheckpointWithoutResendingTemplate(t *testing
 	// center 保存模板恢复测试使用的自动化中心。
 	center := NewWithDependencies(store, testSenderProvider{sender: sender}, nil, CenterDependencies{MTop: mtopMock, OrderDetailFetcher: recoverer})
 	// task 保存模板恢复测试的订单任务。
-	task := Task{Source: "ws", AccountID: "cid", TriggerType: TriggerOrderPaid, OrderID: "template-recovery-order", ItemID: "template-recovery-item", BuyerID: "buyer", ChatID: "chat", Quantity: "1"}
+	task := Task{Source: "ws", AccountID: "cid", OrderRole: OrderRoleSeller, TriggerType: TriggerOrderPaid, OrderID: "template-recovery-order", ItemID: "template-recovery-item", BuyerID: "buyer", ChatID: "chat", Quantity: "1"}
 	// firstErr 保存首次确认发货因凭证恢复失败而返回的错误。
 	firstErr := center.HandleTask(ctx, task)
 	if firstErr == nil {
@@ -583,7 +583,7 @@ func TestCenterConfirmShipment_MockMTopConsigError(t *testing.T) {
 
 	// HandleTask 内部记录 executeRule 失败到 automation_runs（不向上透传错误）。
 	_ = center.HandleTask(ctx, Task{
-		Source: "ws", AccountID: "cid", CookieStr: "unb=1; _m_h5_tk=tk;", TriggerType: TriggerOrderPaid,
+		Source: "ws", AccountID: "cid", OrderRole: OrderRoleSeller, CookieStr: "unb=1; _m_h5_tk=tk;", TriggerType: TriggerOrderPaid,
 		ChatID: "chat-1", OrderID: "order-mock", ItemID: "item-1", BuyerID: "buyer-1",
 	})
 	if mtopMock.consignCalls != 1 {
@@ -615,7 +615,7 @@ func TestCenterConfirmShipment_MockMTopConsigError(t *testing.T) {
 		OrderDetailFetcher: testFetcher{detail: &OrderDetail{Quantity: "1", Amount: "9.9"}},
 	})
 	_ = center2.HandleTask(ctx, Task{
-		Source: "ws", AccountID: "cid", CookieStr: "unb=1; _m_h5_tk=tk;", TriggerType: TriggerOrderPaid,
+		Source: "ws", AccountID: "cid", OrderRole: OrderRoleSeller, CookieStr: "unb=1; _m_h5_tk=tk;", TriggerType: TriggerOrderPaid,
 		ChatID: "chat-2", OrderID: "order-mock2", ItemID: "item-1", BuyerID: "buyer-1",
 	})
 	store.DB.QueryRowContext(ctx, `SELECT status FROM automation_runs WHERE order_id='order-mock2'`).Scan(&runStatus)
@@ -664,7 +664,7 @@ func TestPaidTemplateWithZeroRenderedMessagesDoesNotConfirmShipment(t *testing.T
 		OrderDetailFetcher: testFetcher{detail: &OrderDetail{Quantity: "1", Amount: "9.9"}},
 	})
 	// task 是缺少买家昵称、会把模板渲染为空的付款订单任务。
-	task := Task{Source: "ws", AccountID: "cid", CookieStr: "unb=1; _m_h5_tk=tk;", TriggerType: TriggerOrderPaid,
+	task := Task{Source: "ws", AccountID: "cid", OrderRole: OrderRoleSeller, CookieStr: "unb=1; _m_h5_tk=tk;", TriggerType: TriggerOrderPaid,
 		ChatID: "chat-zero", OrderID: "order-zero-message", ItemID: "zero-message-item", BuyerID: "buyer-zero", Quantity: "1"}
 	// runErr 保存规则执行错误；零消息是确定未发送，应允许安全重试而不确认发货。
 	runErr := center.HandleTask(ctx, task)

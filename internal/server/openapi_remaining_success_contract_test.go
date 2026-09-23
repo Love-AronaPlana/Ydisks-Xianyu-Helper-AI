@@ -278,8 +278,8 @@ func testOpenAPIChatHistoryAndReadSuccess(t *testing.T) {
 
 // testOpenAPIChatMetadataSuccess 覆盖快捷回复和按买家 ID 隔离备注的所有版本化成功响应。
 func testOpenAPIChatMetadataSuccess(t *testing.T) {
-	// srv、_、cleanup 分别是装配真实聊天元数据用例的服务、无需直接读取的存储和资源释放函数。
-	srv, _, cleanup := newTestServerWithChat(t)
+	// srv、store、cleanup 分别是装配真实聊天元数据用例的服务、夹具存储和资源释放函数。
+	srv, store, cleanup := newTestServerWithChat(t)
 	defer cleanup()
 	// handler 是当前场景使用的真实版本化 Router。
 	handler := srv.Router()
@@ -327,6 +327,26 @@ func testOpenAPIChatMetadataSuccess(t *testing.T) {
 	deleteRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(deleteRecorder, deleteRequest)
 	assertOpenAPIRecordedSuccessResponse(t, deleteRequest, deleteRecorder)
+
+	// handoffSeedErr 表示写入人工接管契约会话夹具失败的原因；接管按买家隔离，必须先有可解析对端的会话。
+	if handoffSeedErr := store.Chats.UpsertSession(context.Background(), db.ChatSession{CookieID: "acc1", ChatID: "chat-handoff", BuyerID: "buyer-handoff", BuyerName: "接管买家"}); handoffSeedErr != nil {
+		t.Fatalf("写入人工接管会话夹具失败: %v", handoffSeedErr)
+	}
+	// handoffRequests 保存人工接管的读取、按分钟设置与提前结束请求。
+	handoffRequests := []*http.Request{
+		httptest.NewRequest(http.MethodGet, "/api/v1/chat/human-handoff?account_id=acc1&chat_id=chat-handoff", nil),
+		httptest.NewRequest(http.MethodPut, "/api/v1/chat/human-handoff", strings.NewReader(`{"account_id":"acc1","chat_id":"chat-handoff","minutes":5}`)),
+		httptest.NewRequest(http.MethodDelete, "/api/v1/chat/human-handoff?account_id=acc1&chat_id=chat-handoff", nil),
+	}
+	// handoffRequest 表示当前待验证的人工接管 HTTP 请求。
+	for _, handoffRequest := range handoffRequests {
+		handoffRequest.Header.Set("Content-Type", "application/json")
+		handoffRequest.AddCookie(sessionCookie)
+		// handoffRecorder 保存当前人工接管响应。
+		handoffRecorder := httptest.NewRecorder()
+		handler.ServeHTTP(handoffRecorder, handoffRequest)
+		assertOpenAPIRecordedSuccessResponse(t, handoffRequest, handoffRecorder)
+	}
 }
 
 // testOpenAPILocalItemAndManualShipSuccess 覆盖无需平台请求的商品创建和状态型手动发货成功响应。
@@ -898,6 +918,21 @@ func (contractChatPort) GetBuyerNote(context.Context, int64, string, string) (ch
 // SaveBuyerNote 返回逻辑空备注，避免发送契约测试依赖真实备注持久化。
 func (contractChatPort) SaveBuyerNote(context.Context, int64, string, string, string) (chatapp.BuyerNote, error) {
 	return chatapp.BuyerNote{}, nil
+}
+
+// GetHumanHandoff 返回确定性的未接管状态，避免契约测试依赖真实接管持久化。
+func (contractChatPort) GetHumanHandoff(context.Context, int64, string, string) (chatapp.HumanHandoff, error) {
+	return chatapp.HumanHandoff{}, nil
+}
+
+// SetHumanHandoff 返回确定性接管结果，并回显请求中的隔离键与剩余时长。
+func (contractChatPort) SetHumanHandoff(_ context.Context, _ int64, accountID, chatID string, minutes int) (chatapp.HumanHandoff, error) {
+	return chatapp.HumanHandoff{AccountID: accountID, BuyerID: chatID, Active: true, RemainingSeconds: minutes * 60}, nil
+}
+
+// ClearHumanHandoff 返回确定性的已结束接管状态，避免契约测试依赖真实接管持久化。
+func (contractChatPort) ClearHumanHandoff(_ context.Context, _ int64, accountID, chatID string) (chatapp.HumanHandoff, error) {
+	return chatapp.HumanHandoff{AccountID: accountID, BuyerID: chatID}, nil
 }
 
 // contractItemPublishPort 是只返回确定性商品结果的单商品发布端口。

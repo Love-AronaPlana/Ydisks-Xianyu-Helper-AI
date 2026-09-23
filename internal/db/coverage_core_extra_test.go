@@ -36,6 +36,9 @@ func TestAIReplySettingsAndConversationBranches(t *testing.T) {
 	settings := AIReplySettings{
 		AIEnabled:              true,
 		AutoAdjustPriceEnabled: true,
+		ReplyMode:              AIReplyModeFull,
+		FullPrompt:             "完整接管提示词",
+		HumanHandoffMinutes:    30,
 		ModelName:              "model",
 		BaseURL:                "https://example.test/v1",
 		MaxDiscountPercent:     12,
@@ -49,7 +52,7 @@ func TestAIReplySettingsAndConversationBranches(t *testing.T) {
 	}
 	// loaded、loadedErr 保存重新读取后的非敏感 AI 配置。
 	loaded, loadedErr := store.AIReply.Get(ctx, cookieID)
-	if loadedErr != nil || loaded == nil || !loaded.AIEnabled || !loaded.AutoAdjustPriceEnabled || loaded.ModelName != "qwen-plus" || loaded.BaseURL == "" || loaded.CustomPrompts != "prompt" {
+	if loadedErr != nil || loaded == nil || !loaded.AIEnabled || !loaded.AutoAdjustPriceEnabled || loaded.ReplyMode != AIReplyModeFull || loaded.FullPrompt != "完整接管提示词" || loaded.HumanHandoffMinutes != 30 || loaded.ModelName != "qwen-plus" || loaded.BaseURL == "" || loaded.CustomPrompts != "prompt" {
 		t.Fatalf("loaded=%+v err=%v", loaded, loadedErr)
 	}
 	// listed、listErr 验证用户列表只返回非敏感配置。
@@ -57,6 +60,32 @@ func TestAIReplySettingsAndConversationBranches(t *testing.T) {
 	if listErr != nil || len(listed) != 1 || !listed[0].AIEnabled || listed[0].APIKey != "" {
 		t.Fatalf("listed=%+v err=%v", listed, listErr)
 	}
+	// active 验证人工接管按账号与买家隔离，并在 paused_until 相等时判定为已结束。
+	active, activeErr := store.AIReply.IsHumanHandoffActive(ctx, cookieID, "buyer-1", 100)
+	if activeErr != nil || active {
+		t.Fatalf("missing human handoff=%v err=%v", active, activeErr)
+	}
+	// err 是写入人工接管记录的失败原因；测试前置数据写入失败会掩盖后续断言，故直接终止用例。
+	if err := store.AIReply.ActivateHumanHandoff(ctx, cookieID, "buyer-1", 200); err != nil {
+		t.Fatal(err)
+	}
+	// err 是第二次写入（暂停截止更早）的失败原因；该调用用于验证已有窗口不会被缩短。
+	if err := store.AIReply.ActivateHumanHandoff(ctx, cookieID, "buyer-1", 150); err != nil {
+		t.Fatal(err)
+	}
+	active, activeErr = store.AIReply.IsHumanHandoffActive(ctx, cookieID, "buyer-1", 199)
+	if activeErr != nil || !active {
+		t.Fatalf("human handoff should remain active=%v err=%v", active, activeErr)
+	}
+	active, activeErr = store.AIReply.IsHumanHandoffActive(ctx, cookieID, "buyer-2", 199)
+	if activeErr != nil || active {
+		t.Fatalf("human handoff buyer isolation=%v err=%v", active, activeErr)
+	}
+	active, activeErr = store.AIReply.IsHumanHandoffActive(ctx, cookieID, "buyer-1", 200)
+	if activeErr != nil || active {
+		t.Fatalf("human handoff boundary=%v err=%v", active, activeErr)
+	}
+
 	// replaced 验证空提示词的持久化兼容分支。
 	settings.CustomPrompts = ""
 	// replaced 保存空提示词转换后的数据库值。

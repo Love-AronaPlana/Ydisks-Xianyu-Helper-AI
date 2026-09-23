@@ -243,7 +243,7 @@ func TestAIReplySettings(t *testing.T) {
 	cookie := loginHelper(t, h)
 
 	// body 用于本次流程后续判断的请求体
-	body := `{"ai_enabled":true,"auto_adjust_price_enabled":true,"max_discount_percent":12,"max_discount_amount":88,"max_bargain_rounds":4,"custom_prompts":"按商品信息回复"}`
+	body := `{"ai_enabled":true,"auto_adjust_price_enabled":true,"ai_reply_mode":"full","ai_full_prompt":"完整模式","human_handoff_minutes":30,"max_discount_percent":12,"max_discount_amount":88,"max_bargain_rounds":4,"custom_prompts":"按商品信息回复"}`
 	// req 用于本次流程后续判断的req
 	req := httptest.NewRequest(http.MethodPut, "/ai-reply-settings/acc1", strings.NewReader(body))
 	req.AddCookie(cookie)
@@ -268,6 +268,7 @@ func TestAIReplySettings(t *testing.T) {
 		cfg["max_discount_percent"] != float64(12) ||
 		cfg["max_discount_amount"] != float64(88) ||
 		cfg["max_bargain_rounds"] != float64(4) ||
+		cfg["ai_reply_mode"] != "full" || cfg["ai_full_prompt"] != "完整模式" || cfg["human_handoff_minutes"] != float64(30) ||
 		cfg["custom_prompts"] != "按商品信息回复" {
 		t.Fatalf("AI 设置异常: %+v", cfg)
 	}

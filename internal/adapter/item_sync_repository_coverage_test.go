@@ -20,8 +20,6 @@ type itemSyncListClient struct {
 	// allErr、pageErr 保存全量和分页请求的模拟错误。
 	allErr  error
 	pageErr error
-	// detect 保存多规格探测的模拟函数。
-	detect func(context.Context, string, string) (bool, error)
 }
 
 // FetchAllItems 返回预置的全量商品列表结果。
@@ -32,14 +30,6 @@ func (c *itemSyncListClient) FetchAllItems(context.Context, string, int, int) (*
 // FetchItemsPage 返回预置的分页商品列表结果。
 func (c *itemSyncListClient) FetchItemsPage(context.Context, string, int, int) (*mtop.ItemListResult, error) {
 	return c.pageResult, c.pageErr
-}
-
-// DetectItemMultiSpec 返回预置的商品多规格探测结果。
-func (c *itemSyncListClient) DetectItemMultiSpec(ctx context.Context, cookies, itemID string) (bool, error) {
-	if c.detect == nil {
-		return false, nil
-	}
-	return c.detect(ctx, cookies, itemID)
 }
 
 // TestItemSyncRepositoryRunsSQLiteAndPlatformFakePaths 验证商品全量/分页同步主链及本地 reconcile。
@@ -53,11 +43,10 @@ func TestItemSyncRepositoryRunsSQLiteAndPlatformFakePaths(t *testing.T) {
 	updates := make([]string, 0, 2)
 	// recoveries 保存平台会话过期后的恢复通知账号。
 	recoveries := make([]string, 0, 2)
-	// client 保存全量、分页及多规格探测的本地平台替身。
+	// client 保存全量和分页商品列表结果的本地平台替身。
 	client := &itemSyncListClient{
 		allResult:  &mtop.ItemListResult{Items: []mtop.ItemListItem{{ID: "sync-all", Title: "全量商品", Price: "10", CategoryID: "cat", ItemDetail: `{"title":"all"}`}}, PageNumber: 1, PageSize: 20, TotalPages: 1},
 		pageResult: &mtop.ItemListResult{Items: []mtop.ItemListItem{{ID: "sync-page", Title: "分页商品", PriceText: "20", CategoryID: "cat-page", IsMultiSpec: true}}, PageNumber: 2, PageSize: 1, TotalPages: 3},
-		detect:     func(context.Context, string, string) (bool, error) { return true, nil },
 	}
 	// repository 保存注入本地平台和恢复回调的同步适配器。
 	repository := NewItemSyncRepository(store, func() mtop.Client { return client }, nil, func(_ context.Context, accountID, value string) {

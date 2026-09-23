@@ -216,10 +216,13 @@ packaging/macos/build-pkg.sh 0.0.0-local "$PWD/dist/macos" arm64
 The packaging script prepares matching runtime files from the local Playwright cache when needed. Use amd64 for
 Intel macOS. Without a signing identity, the result is an unsigned pkg.
 
-The desktop first-run URL is http://127.0.0.1:59188. Set and confirm the administrator password in the web page.
-Source examples using -addr :59188 listen on all interfaces; restrict the port with a firewall, security group, or
-reverse proxy. Use -no-browser only when Chromium is unavailable; browser-fingerprint and token-slider features
-will then be unavailable.
+Desktop listen addresses differ per platform. The Windows service binds 0.0.0.0:59188, so the management page is
+reachable at http://<host-ip>:59188 from other machines on the LAN and still at http://127.0.0.1:59188 on the machine
+itself; keep that port behind Windows Firewall or an equivalent network ACL and never expose it to the public
+internet. macOS and Linux packages keep the loopback binding http://127.0.0.1:59188. Set and confirm the
+administrator password in the web page on first run. Source examples using -addr :59188 listen on all interfaces;
+restrict the port with a firewall, security group, or reverse proxy. Use -no-browser only when Chromium is
+unavailable; browser-fingerprint and token-slider features will then be unavailable.
 
 ## First use
 

@@ -335,11 +335,20 @@ func extractChatMessage(decrypted map[string]any, accountID, cookieStr string) *
 	}
 	// reminder 用于本次流程后续判断的reminder
 	reminder, _ := m10["reminderContent"].(string)
-	if reminder == "" {
+	// imageURLs 是平台声明为图片消息时解析出的买家图片地址；非图片消息恒为空。
+	imageURLs := extractBuyerImageURLs(m1, m10, decrypted)
+	// isBuyerImage 表示本条消息确实是买家发来的图片；只有它为真时才绕过系统提示摘要过滤。
+	isBuyerImage := isBuyerImageMessage(m1, m10, len(imageURLs))
+	if reminder == "" && !isBuyerImage {
 		return nil
 	}
-	if isNonUserChatNotice(m1, m10, reminder) {
+	if isNonUserChatNotice(m1, m10, reminder) && !isBuyerImage {
 		return nil
+	}
+	// 图片消息没有买家原话，平台只给出空摘要或“发来一条新消息”这类通用提示；
+	// 统一换成与平台一致的图片占位，避免把系统摘要当成买家发言交给模型。
+	if isBuyerImage && (strings.TrimSpace(reminder) == "" || strings.TrimSpace(reminder) == "发来一条新消息") {
+		reminder = buyerImagePlaceholder
 	}
 	// chatID 用于本次流程后续判断的聊天ID
 	chatID := toString(m1["2"])
@@ -370,6 +379,7 @@ func extractChatMessage(decrypted map[string]any, accountID, cookieStr string) *
 		SenderUserID: senderUserID,
 		SenderName:   senderName,
 		Text:         reminder,
+		ImageURLs:    imageURLs,
 		MessageID:    extractMessageID(decrypted),
 		ItemID:       itemID,
 		Raw:          decrypted,
@@ -440,59 +450,6 @@ func extractOwnWebSocketEcho(decrypted map[string]any, accountID, cookieStr stri
 		MessageType: messageType,
 		Content:     content,
 	}
-}
-
-// extractImageObservationContent 从自身回显中提取第一张图片 URL，供自动化发送确认使用。
-// value 是已解密但未包含凭证的 WebSocket 消息；解析失败或缺少公网 URL 时返回空值。
-func extractImageObservationContent(value any) string {
-	// imageURL 保存当前回显中首个可比较的图片地址；找到后停止递归，保持消息顺序稳定。
-	var imageURL string
-	// walk 递归展开平台对象、数组和嵌套 JSON 字符串，避免依赖单一客户端版本的固定路径。
-	var walk func(any)
-	walk = func(current any) {
-		if imageURL != "" || current == nil {
-			return
-		}
-		// typed 保存当前节点的具体协议类型，便于继续展开嵌套图片正文。
-		switch typed := current.(type) {
-		case string:
-			// nested 保存可能作为字符串封装的图片消息对象。
-			var nested any
-			if json.Unmarshal([]byte(typed), &nested) == nil {
-				walk(nested)
-			}
-		case map[string]any:
-			// image 保存平台图片消息的对象；pics 保存其中按发送顺序排列的图片数组。
-			// imageFound 表示当前对象是否包含图片正文；picsFound 表示是否找到图片数组。
-			if image, imageFound := typed["image"].(map[string]any); imageFound {
-				// pics、picsFound 保存图片数组及其存在性，避免把非图片节点误当作可确认正文。
-				if pics, picsFound := image["pics"].([]any); picsFound {
-					// picValue 保存图片数组中的单个协议节点，后续只读取其中的 URL 字段。
-					for _, picValue := range pics {
-						// pic 保存当前图片字段；picURL 是其可直接比较的 URL。
-						pic, _ := picValue.(map[string]any)
-						// picURL 保存当前图片的公网地址，用于和发送参数做幂等匹配。
-						picURL := strings.TrimSpace(toString(pic["url"]))
-						if strings.HasPrefix(picURL, "http://") || strings.HasPrefix(picURL, "https://") {
-							imageURL = picURL
-							return
-						}
-					}
-				}
-			}
-			// child 保存当前对象的嵌套字段，继续寻找不同客户端版本的图片路径。
-			for _, child := range typed {
-				walk(child)
-			}
-		case []any:
-			// child 保存数组中的协议节点，按平台原始顺序递归展开。
-			for _, child := range typed {
-				walk(child)
-			}
-		}
-	}
-	walk(value)
-	return imageURL
 }
 
 // extractItemCardObservationContent 从已解密帧中查找 contentType=7 的 itemCard.item 并输出规范 JSON。

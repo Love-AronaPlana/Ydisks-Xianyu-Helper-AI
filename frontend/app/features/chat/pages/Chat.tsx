@@ -7,11 +7,13 @@ import Lightbox from 'yet-another-react-lightbox';
 import 'yet-another-react-lightbox/styles.css';
 import { AudioMessage } from '../components/AudioMessage';
 import BrowserNotificationToggle from '../components/BrowserNotificationToggle';
+import ChatHumanHandoffButton from '../components/ChatHumanHandoffButton';
 import { ChatItemPickerDialog } from '../components/ChatItemPickerDialog';
 import ChatMetadataFeature from '../components/ChatMetadataFeature';
 import { ConversationListItem } from '../components/ConversationListItem';
 import { DeleteConversationDialog } from '../components/DeleteConversationDialog';
 import { ItemMessageCard } from '../components/ItemMessageCard';
+import { useChatHumanHandoff } from '../handoff';
 import { useChat } from '../hooks';
 import type { ChatSession } from '../models';
 import { unreadBadgeClassName,unreadBadgeLabel } from '../state';
@@ -31,6 +33,8 @@ const Chat: React.FC = () => {
 
   // imageMessages 保存当前会话中的图片消息，供灯箱按消息顺序浏览。
   const imageMessages = React.useMemo(/* 当前回调筛选当前会话中的图片消息。 */ () => messages.filter(/* 当前回调判断消息是否为图片类型。 */ message => message.message_type === 'image'), [messages]);
+  // handoffState 是当前会话买家的人工接管状态与动作；按买家隔离，切换会话时自动重新读取。
+  const handoffState = useChatHumanHandoff(activeAccountID, selectedSession ?? null);
   // imageSlides 将聊天图片转换为灯箱组件所需的展示模型。
   const imageSlides = React.useMemo(/* 当前回调构造灯箱图片展示数据。 */ () => imageMessages.map(/* 当前回调转换单条图片消息。 */ message => ({ src: message.content, alt: '聊天图片' })), [imageMessages]);
   // lightboxIndex 保存当前灯箱图片下标；负值表示灯箱关闭。
@@ -155,7 +159,10 @@ const Chat: React.FC = () => {
                     <div className="truncate text-sm font-black text-slate-950">{selectedSession.peer_name || selectedSession.peer_user_id}</div>
                     <div className="mt-0.5 flex flex-col text-xs text-slate-500"><span>用户 ID：</span><span className="truncate">{selectedSession.peer_user_id}</span></div>
                   </div>
-                  <span className={`ml-auto rounded-full px-2.5 py-1 text-[10px] font-bold ${activeAccount?.runtime_state === 'online' ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
+                  <div className="ml-auto flex flex-col items-end gap-1">
+                    <ChatHumanHandoffButton handoffState={handoffState} />
+                  </div>
+                  <span className={`ml-3 rounded-full px-2.5 py-1 text-[10px] font-bold ${activeAccount?.runtime_state === 'online' ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
                     {activeAccount?.runtime_state === 'online' ? '账号在线' : '账号离线'}
                   </span>
                 </div>

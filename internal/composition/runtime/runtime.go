@@ -181,7 +181,7 @@ func BuildRuntime(options RuntimeOptions, infrastructure RuntimeInfrastructure) 
 		OrderDependencies: orderDependencies, AccountDependencies: accountDependencies, ItemDependencies: itemDependencies,
 		ChatDependencies: chatDependencies, AutomationDependencies: automationDependencies, TransportApplications: transportApplications,
 		OrderReconciliationRecovery: orderReconciliationRecovery, Manager: runtimeBundle.Manager, Automation: runtimeBundle.Automation, OrderDetails: runtimeBundle.OrderDetails,
-		Notifier: runtimeBundle.Notifier, Chat: runtimeBundle.Chat, Logger: infrastructure.Logger,
+		Notifier: runtimeBundle.Notifier, Chat: runtimeBundle.Chat, ChatApplication: runtimeBundle.ChatApplication, Logger: infrastructure.Logger,
 		MTopClient: platformDependencies.MTOPClient, LongLoginClient: platformDependencies.LongLoginClient, QRLogin: platformDependencies.QRLoginService(),
 		UpdateRunningCookie: updateRunningCookie, SessionRecovery: sessionRecovery, LifecycleContext: lifecycleCoordinator.Context,
 	})

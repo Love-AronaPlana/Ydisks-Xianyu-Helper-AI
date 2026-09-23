@@ -136,7 +136,8 @@ func newPaidRecoveryFixture(t *testing.T, orderStatus, source string) (int64, *t
 		t.Fatal(orderErr)
 	}
 	// task 是运行创建时保存的原始付款事件快照。
-	task := Task{Source: source, AccountID: "cid", TriggerType: TriggerOrderPaid, OrderID: "paid-recovery-order", ItemID: "recovery-item", BuyerID: "buyer", ChatID: "chat", Quantity: "1", OrderStatus: "pending_ship"}
+	// task 是恢复夹具中已明确确认卖家角色的付款事件；未知角色恢复由独立回归覆盖。
+	task := Task{Source: source, AccountID: "cid", OrderRole: OrderRoleSeller, TriggerType: TriggerOrderPaid, OrderID: "paid-recovery-order", ItemID: "recovery-item", BuyerID: "buyer", ChatID: "chat", Quantity: "1", OrderStatus: "pending_ship"}
 	// rawJSON、marshalErr 保存任务快照编码及序列化错误。
 	rawJSON, marshalErr := json.Marshal(task)
 	if marshalErr != nil {

@@ -104,6 +104,34 @@ func (f *fakeBrowser) TokenCaptchaRecover(ctx context.Context, _ string, cookieS
 	return f.tokenCaptchaResult, f.tokenCaptchaErr
 }
 
+// fakeEngineBrowser 在测试中记录 WithEngine 自动滑块入口，确认 system_manual 不会误调用自动实现。
+type fakeEngineBrowser struct {
+	fakeBrowser
+	engineCalls int
+}
+
+// TokenCaptchaRecoverWithEngine 记录 Playwright 编排入口并返回预设结果。
+func (f *fakeEngineBrowser) TokenCaptchaRecoverWithEngine(_ context.Context, _, _, verificationURL string, _ bool, _ browser.TokenCaptchaURLProvider) (string, string, error) {
+	f.engineCalls++
+	f.tokenCaptchaURL = verificationURL
+	return f.tokenCaptchaResult, "playwright", f.tokenCaptchaErr
+}
+
+// fakeManualCaptcha 记录人工验证端口收到的请求并返回可控的 Cookie 结果。
+type fakeManualCaptcha struct {
+	request TokenCaptchaManualVerificationRequest
+	result  string
+	err     error
+	calls   int
+}
+
+// VerifyTokenCaptcha 模拟人工代理完成或拒绝验证，不执行真实浏览器操作。
+func (f *fakeManualCaptcha) VerifyTokenCaptcha(_ context.Context, request TokenCaptchaManualVerificationRequest) (string, error) {
+	f.calls++
+	f.request = request
+	return f.result, f.err
+}
+
 // fakeCaptchaRequester 用于本次流程后续判断的fakeCaptchaRequester
 type fakeCaptchaRequester struct {
 	result      *mtop.FreshCaptchaResult
@@ -247,6 +275,84 @@ func TestOnAccountAlert_ForwardedToNotifier(t *testing.T) {
 	a.OnAccountAlert(context.Background(), "cid", "warn", "闲鱼要求滑块验证", "请完成 captcha")
 	if len(n.events) != 2 || n.events[1].eventType != engine.EventSecurityVerification {
 		t.Fatalf("风控告警应分类为 security_verification: events=%+v alerts=%+v", n.events, n.alerts)
+	}
+}
+
+// TestOnTokenCaptchaVerificationSystemManualUsesPort 验证 system_manual 只调用人工端口、保留 URL 并记录人工引擎。
+func TestOnTokenCaptchaVerificationSystemManualUsesPort(t *testing.T) {
+	// store、cleanup 保存隔离数据库及关闭责任。
+	store, cleanup := newAdapterTestStore(t)
+	defer cleanup()
+	// ctx 是人工 CAPTCHA 测试共用的上下文。
+	ctx := context.Background()
+	// modeErr 保存账号模式写入错误。
+	if _, modeErr := store.DB.ExecContext(ctx, "UPDATE cookies SET captcha_browser_mode=? WHERE id=?", db.CaptchaBrowserModeSystemManual, "cid"); modeErr != nil {
+		t.Fatal(modeErr)
+	}
+	// browser 记录自动编排调用，manual 记录人工代理调用。
+	browser := &fakeEngineBrowser{fakeBrowser: fakeBrowser{tokenCaptchaResult: "unb=1; x5sec=automatic"}}
+	// manual 记录人工代理调用，用于断言 system_manual 模式确实走了人工端口。
+	manual := &fakeManualCaptcha{result: "unb=1; x5sec=manual"}
+	// adapter 是注入人工端口后的适配器。
+	adapter := New(store, nil, nil)
+	adapter.SetBrowser(browser)
+	adapter.SetTokenCaptchaManualVerificationPort(manual)
+	// verificationURL 是必须保留给人工处理的完整验证地址。
+	verificationURL := "https://punish.example/captcha?token=keep"
+	// result、ok 是人工验证返回的刷新结果及其是否成功；两者共同决定账号是否已脱离风控。
+	result, ok := adapter.OnTokenCaptchaVerification(ctx, "cid", "unb=1; x5sec=old", verificationURL, "device-1")
+	if !ok || result == nil || !strings.Contains(result.UpdatedCookies, "x5sec=manual") {
+		t.Fatalf("人工验证结果异常 result=%+v ok=%v", result, ok)
+	}
+	if manual.calls != 1 || manual.request.VerificationURL != verificationURL || manual.request.DeviceID != "device-1" {
+		t.Fatalf("人工端口请求异常 calls=%d request=%+v", manual.calls, manual.request)
+	}
+	if browser.engineCalls != 0 {
+		t.Fatalf("system_manual 不得调用自动滑块，calls=%d", browser.engineCalls)
+	}
+	// engineName 接收最近一条风控审计日志记录的处理引擎名称。
+	var engineName string
+	// scanErr 是审计日志查询或扫描失败的错误，非空说明适配器没有写入预期的风控记录。
+	if scanErr := store.DB.QueryRowContext(ctx, "SELECT captcha_engine FROM risk_control_logs WHERE cookie_id=? ORDER BY id DESC LIMIT 1", "cid").Scan(&engineName); scanErr != nil {
+		t.Fatal(scanErr)
+	}
+	if engineName != db.CaptchaBrowserModeSystemManual {
+		t.Fatalf("人工模式审计引擎=%q", engineName)
+	}
+}
+
+// TestOnTokenCaptchaVerificationSystemManualUnavailableKeepsURL 验证代理不可用时不调用自动滑块并保留人工 URL。
+func TestOnTokenCaptchaVerificationSystemManualUnavailableKeepsURL(t *testing.T) {
+	// store、cleanup 保存隔离数据库及关闭责任。
+	store, cleanup := newAdapterTestStore(t)
+	defer cleanup()
+	// ctx 是不可用代理测试共用的上下文。
+	ctx := context.Background()
+	// modeErr 是账号模式写入失败的错误；写入失败会让后续断言失去意义，因此直接终止用例。
+	if _, modeErr := store.DB.ExecContext(ctx, "UPDATE cookies SET captcha_browser_mode=? WHERE id=?", db.CaptchaBrowserModeSystemManual, "cid"); modeErr != nil {
+		t.Fatal(modeErr)
+	}
+	// browser 记录不应被调用的自动滑块入口。
+	browser := &fakeEngineBrowser{}
+	// adapter 明确清空人工端口，模拟系统代理未接入。
+	adapter := New(store, nil, nil)
+	adapter.SetBrowser(browser)
+	adapter.SetTokenCaptchaManualVerificationPort(nil)
+	// verificationURL 是人工代理不可用时必须原样保留在审计结果中的验证地址。
+	verificationURL := "https://punish.example/captcha?token=manual"
+	// result、ok 是人工端口缺失时的返回；两者必须同时为空或 false，证明没有伪造成功。
+	result, ok := adapter.OnTokenCaptchaVerification(ctx, "cid", "unb=1", verificationURL, "device-1")
+	if ok || result != nil || browser.engineCalls != 0 {
+		t.Fatalf("人工代理不可用时结果或自动调用异常 result=%+v ok=%v calls=%d", result, ok, browser.engineCalls)
+	}
+	// message、engineName 分别接收最近一条风控审计日志的错误说明与处理引擎名称。
+	var message, engineName string
+	// scanErr 是审计日志查询或扫描失败的错误，非空说明不可用分支没有写入审计记录。
+	if scanErr := store.DB.QueryRowContext(ctx, "SELECT error_message, captcha_engine FROM risk_control_logs WHERE cookie_id=? ORDER BY id DESC LIMIT 1", "cid").Scan(&message, &engineName); scanErr != nil {
+		t.Fatal(scanErr)
+	}
+	if !strings.Contains(message, "人工验证不可用") || engineName != db.CaptchaBrowserModeSystemManual {
+		t.Fatalf("人工不可用审计异常 message=%q engine=%q", message, engineName)
 	}
 }
 

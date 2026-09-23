@@ -36,13 +36,15 @@ type CookieDetail struct {
 	Username      string
 	Password      string
 	ShowBrowser   bool
-	Nickname      string
-	AvatarURL     string
-	MetadataJSON  string
-	LastRefreshAt int64
-	LoginMethod   string
-	LastLoginAt   int64
-	CreatedAt     string
+	// CaptchaBrowserMode 表示账号 Token 风控验证码使用的处理模式。
+	CaptchaBrowserMode string
+	Nickname           string
+	AvatarURL          string
+	MetadataJSON       string
+	LastRefreshAt      int64
+	LoginMethod        string
+	LastLoginAt        int64
+	CreatedAt          string
 }
 
 // AccountLoginLog 记录账号登录/续登尝试。

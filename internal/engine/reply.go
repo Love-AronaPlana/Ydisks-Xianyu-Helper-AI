@@ -51,10 +51,34 @@ type AIReplier interface {
 	Reply(ctx context.Context, m ChatMessage) (*ReplyResult, error)
 }
 
-// MessageSender 是回复服务发送文本/图片所需的最小接口。
-type MessageSender interface {
-	SendText(ctx context.Context, chatID, toUserID, text string) error
-	SendImage(ctx context.Context, chatID, toUserID, imageURL string, cardID int64, width, height int) error
+// ReplyMessage 是引擎生成并交给聊天应用的一条完整回复消息。
+type ReplyMessage struct {
+	// AccountID 是回复所属账号标识。
+	AccountID string
+	// ChatID 是目标聊天会话标识。
+	ChatID string
+	// ToUserID 是回复接收方的平台用户标识。
+	ToUserID string
+	// Text 是可选的文字回复。
+	Text string
+	// ImageURL 是可选的来源图片地址；上传和尺寸处理由聊天应用完成。
+	ImageURL string
+}
+
+// ReplySendResult 是聊天应用投递完整回复后的分段确认结果。
+type ReplySendResult struct {
+	// ImageSent 表示图片已由平台确认接收。
+	ImageSent bool
+	// TextSent 表示文字已由平台确认接收。
+	TextSent bool
+	// Uncertain 表示平台动作可能已经发生，调用方不得安全重试。
+	Uncertain bool
+}
+
+// ReplyDelivery 是回复服务使用的完整消息投递端口。
+type ReplyDelivery interface {
+	// SendReply 发送完整回复；实现方负责复用消息页面的图片上传和文字发送规则。
+	SendReply(ctx context.Context, message ReplyMessage) (ReplySendResult, error)
 }
 
 // ReplyService 单账号回复服务。
@@ -63,27 +87,35 @@ type ReplyService struct {
 	store    *db.Store
 	api      APIReplier // 可为 nil
 	ai       AIReplier  // 可为 nil
-	sender   MessageSender
+	// delivery 是生产自动回复使用的聊天应用完整消息发送端口。
+	delivery ReplyDelivery
 	logger   *slog.Logger
-	// imageDimensions 在回复发送前读取图片像素尺寸；读取失败时由协议层沿用默认尺寸。
-	imageDimensions replyImageDimensionResolver
+	// now 提供当前时间；生产环境使用系统时钟，测试可注入确定性的过期边界。
+	now func() time.Time
 }
 
 // NewReplyService 构造。
-func NewReplyService(cookieID string, store *db.Store, sender MessageSender,
+func NewReplyService(cookieID string, store *db.Store, delivery ReplyDelivery,
 	api APIReplier, ai AIReplier, logger *slog.Logger) *ReplyService {
+	return newReplyService(cookieID, store, delivery, api, ai, logger)
+}
+
+// newReplyService 统一构造回复解析和完整消息投递依赖。
+func newReplyService(cookieID string, store *db.Store, delivery ReplyDelivery, api APIReplier, ai AIReplier, logger *slog.Logger) *ReplyService {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &ReplyService{
-		cookieID:        cookieID,
-		store:           store,
-		api:             api,
-		ai:              ai,
-		sender:          sender,
-		logger:          logger.With("account", cookieID, "subsys", "reply"),
-		imageDimensions: resolveReplyImageDimensions,
+	// service 保存统一装配的回复解析、状态存储和消息投递端口。
+	service := &ReplyService{
+		cookieID: cookieID,
+		store:    store,
+		api:      api,
+		ai:       ai,
+		delivery: delivery,
+		logger:   logger.With("account", cookieID, "subsys", "reply"),
+		now:      time.Now,
 	}
+	return service
 }
 
 // Handle 收到一条聊天消息，按四级优先级回复。
@@ -97,7 +129,7 @@ func (r *ReplyService) Handle(ctx context.Context, m ChatMessage) error {
 	}
 	// 发送：图片优先，文本随后。reply_once 使用持久化分段状态，失败时只重试
 	// 尚未成功的部分。
-	if r.sender == nil {
+	if r.delivery == nil {
 		return nil
 	}
 	// record 用于本次流程后续判断的record
@@ -115,76 +147,68 @@ func (r *ReplyService) Handle(ctx context.Context, m ChatMessage) error {
 			return nil
 		}
 	}
-	if res.ImageURL != "" && !record.ImageSent {
-		// imageWidth 和 imageHeight 保存回复图片的像素尺寸，供官方客户端按原比例展示。
-		imageWidth, imageHeight := r.replyImageDimensions(ctx, res.ImageURL)
-		if // err 用于本次流程后续判断的err
-		err := r.sender.SendImage(ctx, m.ChatID, m.SenderUserID, res.ImageURL, 0, imageWidth, imageHeight); err != nil {
-			r.logger.Error("发送回复图片失败", "err", err)
-			// persistErr 保存确定未发送状态写入错误。
-			if persistErr := r.markReplyFailure(ctx, res, m, err); persistErr != nil {
-				return errors.Join(err, persistErr)
-			}
-			return err
-		}
-		if res.ReplyOnce && m.ChatID != "" {
-			if // err 用于本次流程后续判断的err
-			err := r.store.DefaultReps.MarkPartSent(ctx, r.cookieID, m.ChatID, "image"); err != nil {
-				r.markReplyUncertain(ctx, res, m, err)
-				return err
-			}
+	return r.handleWithDelivery(ctx, m, res, record)
+}
+
+// handleWithDelivery 把完整回复交给聊天应用，并把其分段结果同步到 reply_once 状态。
+func (r *ReplyService) handleWithDelivery(ctx context.Context, m ChatMessage, res *ReplyResult, record db.DefaultReplyRecord) error {
+	// message 保存本次仍需发送的完整回复；已成功的 reply_once 分段会被剔除。
+	message := ReplyMessage{AccountID: r.cookieID, ChatID: m.ChatID, ToUserID: m.SenderUserID, Text: res.Text, ImageURL: res.ImageURL}
+	if record.ImageSent {
+		message.ImageURL = ""
+	}
+	if record.TextSent {
+		message.Text = ""
+	}
+	if strings.TrimSpace(message.Text) == "" && strings.TrimSpace(message.ImageURL) == "" {
+		return nil
+	}
+	// sent、sendErr 保存消息页面完整发送入口返回的分段确认和错误。
+	sent, sendErr := r.delivery.SendReply(ctx, message)
+	if sent.ImageSent && !record.ImageSent && res.ReplyOnce && m.ChatID != "" {
+		// markErr 保存图片分段状态持久化结果。
+		if markErr := r.store.DefaultReps.MarkPartSent(ctx, r.cookieID, m.ChatID, "image"); markErr != nil {
+			r.markReplyUncertain(ctx, res, m, markErr)
+			return markErr
 		}
 	}
-	if res.Text != "" && !record.TextSent {
-		if // err 用于本次流程后续判断的err
-		err := r.sender.SendText(ctx, m.ChatID, m.SenderUserID, res.Text); err != nil {
-			r.logger.Error("发送回复文本失败", "err", err)
-			// persistErr 保存确定未发送状态写入错误。
-			if persistErr := r.markReplyFailure(ctx, res, m, err); persistErr != nil {
-				return errors.Join(err, persistErr)
-			}
-			return err
+	if sent.TextSent && !record.TextSent && res.ReplyOnce && m.ChatID != "" {
+		// markErr 保存文字分段状态持久化结果。
+		if markErr := r.store.DefaultReps.MarkPartSent(ctx, r.cookieID, m.ChatID, "text"); markErr != nil {
+			r.markReplyUncertain(ctx, res, m, markErr)
+			return markErr
 		}
-		if res.ReplyOnce && m.ChatID != "" {
-			if // err 用于本次流程后续判断的err
-			err := r.store.DefaultReps.MarkPartSent(ctx, r.cookieID, m.ChatID, "text"); err != nil {
-				r.markReplyUncertain(ctx, res, m, err)
-				return err
-			}
+	}
+	if sendErr != nil {
+		r.logger.Error("通过聊天应用发送回复失败", "err", sendErr)
+		if sent.Uncertain {
+			r.markReplyUncertain(ctx, res, m, sendErr)
+			return sendErr
 		}
-		if res.Source == "AI" && res.AutoPriceQuote != nil && m.ChatID != "" && m.SenderUserID != "" && m.ItemID != "" {
-			// quote 把模型承诺价格绑定到当前账号、买家、商品和已成功发送的会话。
-			quote := db.AIBargainQuote{CookieID: r.cookieID, ChatID: m.ChatID, BuyerID: m.SenderUserID, ItemID: m.ItemID, PriceCents: res.AutoPriceQuote.PriceCents}
-			// expiresAt 是固定 30 分钟报价有效期的 Unix 秒时间。
-			expiresAt := time.Now().UTC().Add(aiQuoteValidity).Unix()
-			// err 是已发送报价写入失败原因，失败时必须阻止静默丢失自动改价承诺。
-			if err := r.store.AIReply.ReplacePendingQuote(ctx, quote, expiresAt); err != nil {
-				return fmt.Errorf("保存已发送的 AI 自动改价报价: %w", err)
-			}
+		// persistErr 保存确定未发送状态写入错误。
+		if persistErr := r.markReplyFailure(ctx, res, m, sendErr); persistErr != nil {
+			return errors.Join(sendErr, persistErr)
+		}
+		return sendErr
+	}
+	if sent.TextSent && res.Source == "AI" && res.AutoPriceQuote != nil && m.ChatID != "" && m.SenderUserID != "" && m.ItemID != "" {
+		// quote 保存完整回复文字已确认后才允许执行的 AI 报价。
+		quote := db.AIBargainQuote{CookieID: r.cookieID, ChatID: m.ChatID, BuyerID: m.SenderUserID, ItemID: m.ItemID, PriceCents: res.AutoPriceQuote.PriceCents}
+		// expiresAt 保存固定 30 分钟报价有效期的 Unix 秒时间。
+		expiresAt := time.Now().UTC().Add(aiQuoteValidity).Unix()
+		// quoteErr 保存已发送报价写入失败原因。
+		if quoteErr := r.store.AIReply.ReplacePendingQuote(ctx, quote, expiresAt); quoteErr != nil {
+			return fmt.Errorf("保存已发送的 AI 自动改价报价: %w", quoteErr)
 		}
 	}
 	if res.ReplyOnce && m.ChatID != "" {
-		if // err 用于本次流程后续判断的err
-		err := r.store.DefaultReps.MarkRecordSent(ctx, r.cookieID, m.ChatID); err != nil {
-			r.markReplyUncertain(ctx, res, m, err)
-			return err
+		// recordErr 保存完整回复记录收口结果。
+		if recordErr := r.store.DefaultReps.MarkRecordSent(ctx, r.cookieID, m.ChatID); recordErr != nil {
+			r.markReplyUncertain(ctx, res, m, recordErr)
+			return recordErr
 		}
 	}
 	return nil
-}
-
-// replyImageDimensions 读取自动回复图片尺寸；ctx 控制解析请求取消，imageURL 是图片地址；失败时返回零尺寸并保留原有发送路径。
-func (r *ReplyService) replyImageDimensions(ctx context.Context, imageURL string) (int, int) {
-	if r.imageDimensions == nil {
-		return 0, 0
-	}
-	// width、height 和 dimensionErr 保存图片像素尺寸及读取错误；失败不阻断既有图片投递。
-	width, height, dimensionErr := r.imageDimensions(ctx, imageURL)
-	if dimensionErr != nil {
-		r.logger.Debug("自动回复图片尺寸读取失败，将沿用协议默认尺寸")
-		return 0, 0
-	}
-	return width, height
 }
 
 // markReplyFailure 持久化确定未发送的默认回复失败状态，并反馈状态写入错误。
@@ -222,6 +246,9 @@ func (r *ReplyService) markReplyUncertain(ctx context.Context, res *ReplyResult,
 
 // resolve 按优先级确定回复内容（不发送）。
 func (r *ReplyService) resolve(ctx context.Context, m ChatMessage) *ReplyResult {
+	// handoffBlocksAI 表示人工接管已生效或接管状态无法可靠读取；两种情况都不得调用 AI。
+	handoffBlocksAI := r.humanHandoffBlocksAI(ctx, m)
+
 	// 优先级1：API 回复。
 	if r.api != nil {
 		if // res、err 用于本次流程后续判断的res、err
@@ -233,13 +260,17 @@ func (r *ReplyService) resolve(ctx context.Context, m ChatMessage) *ReplyResult 
 		}
 	}
 
-	// 优先级2：关键词匹配。
-	if res := r.keywordReply(ctx, m); res != nil {
-		return res
+	// 优先级2：关键词匹配。AI 完全接管模式下跳过，所有买家消息直接由 AI 回答；
+	// 模式读取失败时按未接管处理，保持既有回复链不受影响。
+	if !r.aiTakesOverAll(ctx) {
+		// res 是关键词规则命中的回复结果；空值表示继续进入 AI 或默认回复。
+		if res := r.keywordReply(ctx, m); res != nil {
+			return res
+		}
 	}
 
-	// 优先级3：AI 回复。
-	if r.ai != nil {
+	// 优先级3：AI 回复；人工接管期间继续进入默认回复，不调用 AI。
+	if r.ai != nil && !handoffBlocksAI {
 		if // res、err 用于本次流程后续判断的res、err
 		res, err := r.ai.Reply(ctx, m); err != nil {
 			r.logger.Error("AI 回复失败", "err", err)
@@ -251,6 +282,83 @@ func (r *ReplyService) resolve(ctx context.Context, m ChatMessage) *ReplyResult 
 
 	// 优先级4：默认回复。
 	return r.defaultReply(ctx, m)
+}
+
+// humanHandoffBlocksAI 处理人工关键词的接管激活和当前买家状态查询。
+// 接管仅按账号与买家标识隔离；状态读写失败时阻止 AI，且日志不记录消息正文。
+func (r *ReplyService) humanHandoffBlocksAI(ctx context.Context, m ChatMessage) bool {
+	// now 返回当前 Unix 时间；注入时钟让过期边界测试不依赖真实时间流逝。
+	now := time.Now
+	if r.now != nil {
+		now = r.now
+	}
+	// hasHandoffKeyword 表示当前消息是否要求人工接管；只检查固定业务关键词，不记录正文。
+	hasHandoffKeyword := strings.Contains(m.Text, "人工")
+	if hasHandoffKeyword {
+		if r.store == nil || r.store.AIReply == nil {
+			r.logger.Error("人工接管依赖未初始化")
+			return r.ai != nil
+		}
+		// settings 保存账号 AI 设置；settingsErr 表示读取设置失败，失败时必须阻止 AI。
+		settings, settingsErr := r.store.AIReply.Get(ctx, r.cookieID)
+		if settingsErr != nil {
+			r.logger.Error("读取人工接管配置失败", "err", settingsErr)
+			return r.ai != nil
+		}
+		if settings != nil && settings.HumanHandoffMinutes > 0 {
+			if m.SenderUserID == "" {
+				r.logger.Error("人工接管消息缺少买家标识")
+				return r.ai != nil
+			}
+			// until 是人工接管截止时间的 Unix 秒；分钟值来自账号设置并按秒换算。
+			until := now().UTC().Add(time.Duration(settings.HumanHandoffMinutes) * time.Minute).Unix()
+			// activateErr 是写入人工接管记录失败的错误；失败时仅记录日志并继续，不影响后续 API 与关键词回复。
+			if activateErr := r.store.AIReply.ActivateHumanHandoff(ctx, r.cookieID, m.SenderUserID, until); activateErr != nil {
+				r.logger.Error("激活人工接管失败", "err", activateErr)
+				return r.ai != nil
+			}
+			// 当前触发消息也不能调用 AI；API 和关键词优先级仍在本函数返回后继续执行。
+			return true
+		}
+	}
+	if m.SenderUserID == "" {
+		return false
+	}
+	if r.store == nil || r.store.AIReply == nil {
+		r.logger.Error("人工接管依赖未初始化")
+		return r.ai != nil
+	}
+	// active、activeErr 保存当前账号与买家的接管状态；数据库读取失败必须按接管处理。
+	active, activeErr := r.store.AIReply.IsHumanHandoffActive(ctx, r.cookieID, m.SenderUserID, now().UTC().Unix())
+	if activeErr != nil {
+		r.logger.Error("读取人工接管状态失败", "err", activeErr)
+		return r.ai != nil
+	}
+	return active
+}
+
+// aiTakesOverAll 判断 AI 是否配置为完全接管模式（full）。
+// 未注入 AI 或读取失败时按未接管处理；AI 失败或返回空时仍回退到默认回复链。
+func (r *ReplyService) aiTakesOverAll(ctx context.Context) bool {
+	if r.ai == nil {
+		return false
+	}
+	// mode 是账号当前配置的 AI 回复模式；err 是只读模式列的查询错误。
+	mode, err := r.store.AIReply.ReplyMode(ctx, r.cookieID)
+	if err != nil {
+		r.logger.Error("读取 AI 回复模式失败", "err", err)
+		return false
+	}
+	if mode != db.AIReplyModeFull {
+		return false
+	}
+	// enabled 表示 AI 实际是否启用；AI 未启用时不能屏蔽关键词规则。
+	enabled, err := r.store.AIReply.IsEnabled(ctx, r.cookieID)
+	if err != nil {
+		r.logger.Error("读取 AI 回复开关失败", "err", err)
+		return false
+	}
+	return enabled
 }
 
 // keywordReply 关键词匹配。返回 nil 表示无匹配；
@@ -266,11 +374,11 @@ func (r *ReplyService) keywordReply(ctx context.Context, m ChatMessage) *ReplyRe
 	// msgLower 用于本次流程后续判断的msgLower
 	msgLower := strings.ToLower(m.Text)
 
-	// 1. 商品ID关键词优先。
+	// 1. 商品ID关键词优先；一条规则可关联多个商品，命中任一即可。
 	if m.ItemID != "" {
 		// kw 表示当前遍历过程中的kw
 		for _, kw := range kws {
-			if kw.ItemID == m.ItemID && strings.Contains(msgLower, strings.ToLower(kw.Keyword)) {
+			if containsItemID(kw.ItemID, m.ItemID) && strings.Contains(msgLower, strings.ToLower(kw.Keyword)) {
 				return r.keywordResult(kw, m)
 			}
 		}
@@ -282,6 +390,19 @@ func (r *ReplyService) keywordReply(ctx context.Context, m ChatMessage) *ReplyRe
 		}
 	}
 	return nil
+}
+
+// containsItemID 判断规则的商品范围字段是否覆盖目标商品标识。
+// 字段为逗号分隔的商品集合时命中任一元素即视为覆盖；空字段不会匹配任何商品。
+// 引擎直接读取持久化字段，故分隔符必须与关键词应用服务的存储约定保持一致。
+func containsItemID(rawItemIDs string, target string) bool {
+	// itemID 表示规则商品范围中的单个商品标识。
+	for _, itemID := range strings.Split(rawItemIDs, ",") {
+		if strings.TrimSpace(itemID) == target {
+			return true
+		}
+	}
+	return false
 }
 
 // keywordResult 封装关键词结果业务协调。

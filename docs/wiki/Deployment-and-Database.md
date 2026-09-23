@@ -28,7 +28,7 @@ Compose injects the default connection, so a PostgreSQL URL is not required. Cha
 
 Automatic renewal in Docker uses the Linux-native browser fingerprint detected by Chromium inside the container when requesting Xianyu. It does not skip silent renewal just because the host is Linux. The result still depends on the Xianyu response and account login state.
 
-The source service defaults to `-addr :59188` and listens on all interfaces. Docker Compose also defaults to `XIANYU_BIND_ADDRESS=0.0.0.0`. Desktop packages explicitly bind `127.0.0.1:59188`. Remote deployments must restrict the management port at the firewall, security group, or reverse proxy; `:59188` in source examples does not mean localhost-only.
+The source service defaults to `-addr :59188` and listens on all interfaces. Docker Compose also defaults to `XIANYU_BIND_ADDRESS=0.0.0.0`. Desktop packages differ by platform: the Windows service binds `0.0.0.0:59188`, so the management page is reachable at `http://<host-ip>:59188` from other machines on the LAN as well as at `http://127.0.0.1:59188` on the machine itself; macOS and Linux packages keep the loopback binding `127.0.0.1:59188`. Opening the Windows port to a LAN is only acceptable behind Windows Firewall or an equivalent network ACL, and it must never be exposed to the public internet. Remote deployments must restrict the management port at the firewall, security group, or reverse proxy; `:59188` in source examples does not mean localhost-only.
 
 ## Versions, images, and releases
 
@@ -55,9 +55,11 @@ Standalone packages and Docker use the same Playwright Chromium source. Chromium
 
 | Platform | Installation | Service identifier | Default URL |
 | --- | --- | --- | --- |
-| Linux amd64/arm64 | Extract and run `./install.sh` as root | `ydisks-xianyu-helper.service` | `http://127.0.0.1:59188` |
-| Windows | Run the Inno Setup installer | `YdisksXianyuHelper` | `http://127.0.0.1:59188` |
-| macOS arm64/amd64 | Run the package for the matching architecture | `com.ydisks.xianyu-helper.server` | `http://127.0.0.1:59188` |
+| Linux amd64/arm64 | Extract and run `./install.sh` as root | `ydisks-xianyu-helper.service` | `http://127.0.0.1:59188` (loopback only) |
+| Windows | Run the Inno Setup installer | `YdisksXianyuHelper` | `http://<host-ip>:59188` on the LAN and `http://127.0.0.1:59188` on the machine itself; the service listens on `0.0.0.0:59188` |
+| macOS arm64/amd64 | Run the package for the matching architecture | `com.ydisks.xianyu-helper.server` | `http://127.0.0.1:59188` (loopback only) |
+
+The Windows installer does not create a firewall rule, so inbound LAN access works only after an explicit allow rule scoped to the local subnet, and it must never be published to the public internet.
 
 Windows and macOS packages also install an independent tray/menu-bar controller. It shows checking, starting, healthy, and stopping states; starts, stops, and restarts the backend; opens the log directory; and waits for confirmed shutdown before exiting. During Windows installation, the interactive user receives permission to query, start, and stop this service, so normal tray actions do not repeatedly show UAC. Changing service configuration or deleting the service still requires administrator rights. Linux has no desktop tray; use systemd and `journalctl -u ydisks-xianyu-helper.service`.
 

@@ -15,7 +15,7 @@ func TestNewRuntimeBundle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRuntimeBundle error: %v", err)
 	}
-	if bundle == nil || bundle.Adapter == nil || bundle.Manager == nil || bundle.Notifier == nil || bundle.Automation == nil || bundle.Chat == nil {
+	if bundle == nil || bundle.Adapter == nil || bundle.Manager == nil || bundle.Notifier == nil || bundle.Automation == nil || bundle.Chat == nil || bundle.ChatApplication == nil {
 		t.Fatalf("运行时依赖未完整装配: %+v", bundle)
 	}
 	if bundle.Adapter.chat != bundle.Chat || bundle.Adapter.automation != bundle.Automation || bundle.Adapter.notifier != bundle.Notifier {

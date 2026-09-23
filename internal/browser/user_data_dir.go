@@ -31,3 +31,9 @@ func resolvePersistentUserDataDir(path string) (string, error) {
 	}
 	return absPath, nil
 }
+
+// ManualVerificationUserDataDir 返回账号人工验证专用的系统浏览器 profile 绝对路径。
+// 它刻意与自动化 profile 分开：用户可能长期保留人工验证窗口，而自动化流程需要独占自己的账号 profile。
+func ManualVerificationUserDataDir(cookieID string) (string, error) {
+	return resolvePersistentUserDataDir(filepath.Join("browser_data", "manual_"+pureUserID(cookieID)))
+}

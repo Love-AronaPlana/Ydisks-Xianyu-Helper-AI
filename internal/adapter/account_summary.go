@@ -140,7 +140,7 @@ func accountSummaryModel(record db.CookieSummary) accountapp.AccountSummary {
 	return accountapp.AccountSummary{
 		ID: record.ID, UserID: record.UserID, AutoConfirm: record.AutoConfirm, AutoConsign: record.AutoConsign, AutoBargain: record.AutoBargain,
 		Remark: record.Remark, PauseDuration: record.PauseDuration, PausedUntil: record.PausedUntil,
-		Username: record.Username, ShowBrowser: record.ShowBrowser, Nickname: record.Nickname,
+		CaptchaBrowserMode: record.CaptchaBrowserMode, Username: record.Username, ShowBrowser: record.ShowBrowser, Nickname: record.Nickname,
 		AvatarURL: record.AvatarURL, LastRefreshAt: record.LastRefreshAt, LoginMethod: record.LoginMethod,
 		LastLoginAt: record.LastLoginAt, CreatedAt: record.CreatedAt,
 	}

@@ -59,6 +59,32 @@ type ImageUpload struct {
 	Height int
 }
 
+// ImageURLDownloader 定义把公网图片 URL 转换为消息页面图片输入的能力。
+// 返回值依次为图片字节、媒体类型和上传文件名；下载实现不得持久化图片或泄露凭证。
+type ImageURLDownloader func(ctx context.Context, imageURL string) (data []byte, contentType string, filename string, err error)
+
+// ReplyInput 是一次完整聊天回复的应用层输入，图片先于文字发送。
+type ReplyInput struct {
+	// Session 保存已完成账号归属校验的会话摘要，不包含登录凭证。
+	Session Session
+	// Text 保存可选的文字回复内容。
+	Text string
+	// ImageURL 保存可选的来源图片地址；发送时会先下载并复用 SendImage 上传链路。
+	ImageURL string
+}
+
+// ReplyResult 是完整回复的分段投递结果，用于调用方恢复一次性回复状态。
+type ReplyResult struct {
+	// Image 保存图片分段的本地消息；图片未请求或尚未创建时为空。
+	Image *Message
+	// Text 保存文字分段的本地消息；文字未请求或尚未创建时为空。
+	Text *Message
+	// ImageSent 表示图片已由平台确认，包含本地状态收口失败但远端已确认的情况。
+	ImageSent bool
+	// TextSent 表示文字已由平台确认，包含本地状态收口失败但远端已确认的情况。
+	TextSent bool
+}
+
 // OutgoingRepository 定义发送用例需要的本地消息写入能力。
 type OutgoingRepository interface {
 	// CreateOutgoing 创建状态为 sending 的文字消息并返回幂等键。
@@ -91,12 +117,18 @@ type ImageUploader interface {
 
 // NewWithSending 创建同时支持历史查询和实时发送的聊天应用服务。
 func NewWithSending(repository Repository, outgoing OutgoingRepository, senders SenderProvider, uploader ImageUploader, identity ...IdentityResolver) *Service {
+	return NewWithSendingAndDownloader(repository, outgoing, senders, uploader, nil, identity...)
+}
+
+// NewWithSendingAndDownloader 创建支持 URL 图片回复的聊天应用服务，下载能力由适配器构造期注入。
+func NewWithSendingAndDownloader(repository Repository, outgoing OutgoingRepository, senders SenderProvider, uploader ImageUploader, downloader ImageURLDownloader, identity ...IdentityResolver) *Service {
 	// service 保存聊天历史、发送和平台身份能力的统一应用服务。
 	service := &Service{
 		repository:        repository,
 		outgoing:          outgoing,
 		senders:           senders,
 		uploader:          uploader,
+		imageDownloader:   downloader,
 		sessionOperations: newSessionOperationGate(),
 	}
 	if len(identity) > 0 {
@@ -107,16 +139,26 @@ func NewWithSending(repository Repository, outgoing OutgoingRepository, senders 
 
 // NewWithSendingAndSubscription 创建同时支持发送和实时订阅的聊天应用服务。
 func NewWithSendingAndSubscription(repository Repository, outgoing OutgoingRepository, senders SenderProvider, uploader ImageUploader, subscription SubscriptionProvider, identity ...IdentityResolver) *Service {
-	// service 保存聊天历史、发送和实时订阅能力的统一应用服务。
-	service := NewWithSending(repository, outgoing, senders, uploader, identity...)
+	return NewWithSendingAndSubscriptionAndDownloader(repository, outgoing, senders, uploader, subscription, nil, identity...)
+}
+
+// NewWithSendingAndSubscriptionAndDownloader 创建支持实时订阅和 URL 图片下载端口的聊天应用服务。
+func NewWithSendingAndSubscriptionAndDownloader(repository Repository, outgoing OutgoingRepository, senders SenderProvider, uploader ImageUploader, subscription SubscriptionProvider, downloader ImageURLDownloader, identity ...IdentityResolver) *Service {
+	// service 保存聊天历史、发送、实时订阅和图片下载能力的统一应用服务。
+	service := NewWithSendingAndDownloader(repository, outgoing, senders, uploader, downloader, identity...)
 	service.subscription = subscription
 	return service
 }
 
 // NewWithSendingSubscriptionAndRefresh 创建同时支持发送、订阅和平台刷新的聊天应用服务。
 func NewWithSendingSubscriptionAndRefresh(repository Repository, outgoing OutgoingRepository, senders SenderProvider, uploader ImageUploader, subscription SubscriptionProvider, refresh RefreshProvider, identity ...IdentityResolver) *Service {
-	// service 保存聊天用例所需的持久化、平台刷新、发送和订阅端口。
-	service := NewWithSendingAndSubscription(repository, outgoing, senders, uploader, subscription, identity...)
+	return NewWithSendingSubscriptionAndRefreshAndDownloader(repository, outgoing, senders, uploader, subscription, refresh, nil, identity...)
+}
+
+// NewWithSendingSubscriptionAndRefreshAndDownloader 创建生产聊天应用服务并固定 URL 图片下载端口。
+func NewWithSendingSubscriptionAndRefreshAndDownloader(repository Repository, outgoing OutgoingRepository, senders SenderProvider, uploader ImageUploader, subscription SubscriptionProvider, refresh RefreshProvider, downloader ImageURLDownloader, identity ...IdentityResolver) *Service {
+	// service 保存聊天用例所需的持久化、平台刷新、发送、订阅和图片下载端口。
+	service := NewWithSendingAndSubscriptionAndDownloader(repository, outgoing, senders, uploader, subscription, downloader, identity...)
 	service.refresh = refresh
 	return service
 }
@@ -130,6 +172,93 @@ func (s *Service) SendingAvailable() bool {
 // ImageUploadAvailable 报告图片上传所需的应用端口是否已完成装配。
 func (s *Service) ImageUploadAvailable() bool {
 	return s != nil && s.uploader != nil
+}
+
+// SendReply 按消息页面的统一发送规则投递一条完整回复，图片先发送、文字随后发送。
+// 图片 URL 会先进入 SendImage 的上传、真实尺寸透传和本地状态收口链路，不再由自动回复直接调用 WebSocket。
+func (s *Service) SendReply(ctx context.Context, input ReplyInput) (*ReplyResult, error) {
+	// session、text 和 imageURL 保存规范化后的完整回复内容。
+	session, text, imageURL, normalizeErr := normalizeReplyInput(input)
+	if normalizeErr != nil {
+		return nil, normalizeErr
+	}
+	if s == nil || s.outgoing == nil || s.senders == nil || (imageURL != "" && (s.uploader == nil || s.imageDownloader == nil)) {
+		return nil, ErrUnavailable
+	}
+	// result 保存图片和文字两个分段的本地消息及平台确认状态。
+	result := &ReplyResult{}
+	if imageURL != "" {
+		// imageMessage 和 imageErr 保存公开 URL 图片发送入口的结果及错误。
+		imageMessage, imageErr := s.SendImageURL(ctx, ImageURLInput{Session: session, ImageURL: imageURL})
+		result.Image = imageMessage
+		result.ImageSent = replyPartDelivered(imageMessage, imageErr)
+		if imageErr != nil {
+			return result, imageErr
+		}
+	}
+	if text != "" {
+		// textMessage 和 textErr 保存统一文字发送入口的结果及错误。
+		textMessage, textErr := s.SendText(ctx, OutgoingInput{Session: session, Text: text})
+		result.Text = textMessage
+		result.TextSent = replyPartDelivered(textMessage, textErr)
+		if textErr != nil {
+			return result, textErr
+		}
+	}
+	return result, nil
+}
+
+// SendImageURL 下载并通过消息页面的 SendImage 入口发送 URL 图片。
+// 调用方不需要自行读取图片尺寸，上传适配器会从实际图片内容和平台响应中得到真实宽高。
+func (s *Service) SendImageURL(ctx context.Context, input ImageURLInput) (*Message, error) {
+	// session、imageURL 保存规范化后的图片会话和来源地址。
+	session := input.Session
+	session.AccountID = strings.TrimSpace(session.AccountID)
+	session.ChatID = strings.TrimSpace(session.ChatID)
+	session.PeerUserID = strings.TrimSpace(session.PeerUserID)
+	// imageURL 保存去除空白后的来源图片地址。
+	imageURL := strings.TrimSpace(input.ImageURL)
+	if session.AccountID == "" || session.ChatID == "" || session.PeerUserID == "" || imageURL == "" {
+		return nil, ErrSendInvalidInput
+	}
+	if s == nil || s.outgoing == nil || s.senders == nil || s.uploader == nil || s.imageDownloader == nil {
+		return nil, ErrUnavailable
+	}
+	// imageInput 和 downloadErr 保存 URL 图片转换后的消息页面输入及下载错误。
+	imageInput, downloadErr := s.downloadImageInput(ctx, session, imageURL)
+	if downloadErr != nil {
+		return nil, fmt.Errorf("%w: %v", ErrSend, downloadErr)
+	}
+	return s.SendImage(ctx, imageInput)
+}
+
+// ImageURLInput 是通过统一消息页面入口发送远程图片的应用层输入。
+type ImageURLInput struct {
+	// Session 保存目标会话摘要，不包含账号凭证。
+	Session Session
+	// ImageURL 保存待下载的公网图片地址。
+	ImageURL string
+}
+
+// downloadImageInput 把 URL 图片下载结果转换成现有图片发送用例的输入。
+func (s *Service) downloadImageInput(ctx context.Context, session Session, imageURL string) (ImageInput, error) {
+	if s == nil || s.imageDownloader == nil {
+		return ImageInput{}, ErrUnavailable
+	}
+	// data、contentType、filename 和 downloadErr 保存图片下载结果及错误。
+	data, contentType, filename, downloadErr := s.imageDownloader(ctx, imageURL)
+	if downloadErr != nil {
+		return ImageInput{}, downloadErr
+	}
+	if len(data) == 0 || strings.TrimSpace(contentType) == "" {
+		return ImageInput{}, ErrSendInvalidInput
+	}
+	return ImageInput{Session: session, Filename: filename, ContentType: contentType, Data: data}, nil
+}
+
+// replyPartDelivered 判断一个回复分段是否已经由平台确认；状态收口失败不应触发远端重发。
+func replyPartDelivered(message *Message, sendErr error) bool {
+	return message != nil && (sendErr == nil || errors.Is(sendErr, ErrStatusSave))
 }
 
 // Subscribe 订阅当前用户有权接收的实时聊天事件；取消函数可安全重复调用。
@@ -289,6 +418,23 @@ func normalizeOutgoingInput(session Session, text string) (Session, string, erro
 		return Session{}, "", ErrSendInvalidInput
 	}
 	return session, text, nil
+}
+
+// normalizeReplyInput 校验并规范化完整回复输入，至少要求文字或图片存在其一。
+func normalizeReplyInput(input ReplyInput) (Session, string, string, error) {
+	// session、text 和 imageURL 保存去除空白后的回复定位和内容。
+	session := input.Session
+	session.AccountID = strings.TrimSpace(session.AccountID)
+	session.ChatID = strings.TrimSpace(session.ChatID)
+	session.PeerUserID = strings.TrimSpace(session.PeerUserID)
+	// text 保存去除首尾空白后的文字回复。
+	text := strings.TrimSpace(input.Text)
+	// imageURL 保存去除首尾空白后的图片回复地址。
+	imageURL := strings.TrimSpace(input.ImageURL)
+	if session.AccountID == "" || session.ChatID == "" || session.PeerUserID == "" || (text == "" && imageURL == "") || len([]rune(text)) > 2000 {
+		return Session{}, "", "", ErrSendInvalidInput
+	}
+	return session, text, imageURL, nil
 }
 
 // messagePointer 在状态更新返回空值时回退到已创建消息，确保错误响应仍能携带幂等键。

@@ -57,6 +57,25 @@ func TestItemsListForUserUsesOwnershipJoin(t *testing.T) {
 	if err != nil || len(filtered) != 1 || filtered[0].CookieID != "owned-cookie" {
 		t.Fatalf("filtered items=%+v err=%v", filtered, err)
 	}
+	// owned、ownedErr 验证商品归属存在性查询不读取商品详情。
+	owned, ownedErr := store.Items.ExistsByCookieItem(ctx, "owned-cookie", "owned-item")
+	if ownedErr != nil || !owned {
+		t.Fatalf("本账号商品归属=%v err=%v", owned, ownedErr)
+	}
+	// missing、missingErr 验证不存在商品不会被误判为当前账号商品。
+	missing, missingErr := store.Items.ExistsByCookieItem(ctx, "owned-cookie", "missing-item")
+	if missingErr != nil || missing {
+		t.Fatalf("缺失商品归属=%v err=%v", missing, missingErr)
+	}
+	// deleteErr 保存商品同步下线后的逻辑删除结果；历史归属仍需作为已售订单的卖家证据。
+	if deleteErr := store.Items.Delete(ctx, "owned-cookie", "owned-item"); deleteErr != nil {
+		t.Fatal(deleteErr)
+	}
+	// historicalOwned、historicalErr 验证软删除商品仍可证明历史订单属于当前账号。
+	historicalOwned, historicalErr := store.Items.ExistsByCookieItem(ctx, "owned-cookie", "owned-item")
+	if historicalErr != nil || !historicalOwned {
+		t.Fatalf("软删除商品历史归属=%v err=%v", historicalOwned, historicalErr)
+	}
 	// forbidden、err 保存跨用户账号筛选得到的结果及错误。
 	forbidden, err := store.Items.ListForUser(ctx, owner.ID, "other-cookie")
 	if err != nil || len(forbidden) != 0 {

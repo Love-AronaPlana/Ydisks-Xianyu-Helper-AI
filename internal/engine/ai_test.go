@@ -42,6 +42,69 @@ func TestBuildSystemPrompt(t *testing.T) {
 	}
 }
 
+// TestMergePromptStrategies 验证商品级提示词的跟随、追加和覆盖策略。
+func TestMergePromptStrategies(t *testing.T) {
+	// accountPrompt 是账号级基础提示词；itemPrompt 是商品专属业务补充。
+	accountPrompt := "账号规则"
+	// itemPrompt 是商品专属业务补充，按不同策略与账号提示词合并。
+	itemPrompt := "商品规则"
+	// got 是 inherit 策略的合并结果，必须与账号提示词完全一致。
+	if got := mergePrompt(accountPrompt, itemPromptContext{promptStrategy: "inherit", itemPrompt: itemPrompt}); got != accountPrompt {
+		t.Fatalf("inherit 应保持账号提示词: %q", got)
+	}
+	// got 是 append 策略的合并结果，必须为“账号提示词 + 空行 + 商品提示词”。
+	if got := mergePrompt(accountPrompt, itemPromptContext{promptStrategy: "append", itemPrompt: itemPrompt}); got != "账号规则\n\n商品规则" {
+		t.Fatalf("append 合并异常: %q", got)
+	}
+	// got 是 override 策略的合并结果，必须完全替换为商品提示词。
+	if got := mergePrompt(accountPrompt, itemPromptContext{promptStrategy: "override", itemPrompt: itemPrompt}); got != itemPrompt {
+		t.Fatalf("override 合并异常: %q", got)
+	}
+}
+
+// TestRenderPromptVariablesReplacesOnce 验证内置和自定义变量单次替换且不会递归展开。
+func TestRenderPromptVariablesReplacesOnce(t *testing.T) {
+	// context 保存商品字段与会故意包含占位符的自定义变量值。
+	context := itemPromptContext{
+		id: "item-1", title: "商品名", price: 12.5, description: "商品描述", category: "数码",
+		customVariables: map[string]string{"note": "值-{item_title}"},
+	}
+	// got 是渲染后的提示词文本，自定义变量值中的占位符不得被二次展开。
+	got := renderPromptVariables("{item_id}|{item_title}|{item_price}|{item_description}|{item_category}|{custom.note}", context)
+	// want 是期望文本：价格保留两位小数，{custom.note} 原样保留内层占位符。
+	want := "item-1|商品名|12.50|商品描述|数码|值-{item_title}"
+	if got != want {
+		t.Fatalf("变量渲染异常: got=%q want=%q", got, want)
+	}
+}
+
+// TestBuildFullModeSystemPrompt 验证完全模式提示词的默认内容和占位符替换。
+func TestBuildFullModeSystemPrompt(t *testing.T) {
+	// custom 是带商品占位符的完全模式提示词。
+	custom := buildFullModeSystemPrompt("请介绍 {item_title}，价格是 {item_price} 元。{item_description}", "商品A", 12.5, "适合日常使用")
+	if custom != "请介绍 商品A，价格是 12.50 元。适合日常使用" {
+		t.Fatalf("完全模式占位符替换异常: %q", custom)
+	}
+	// fallback 是空提示词时的内置完全模式提示词。
+	fallback := buildFullModeSystemPrompt("", "商品B", 8, "描述B")
+	if !strings.Contains(fallback, "全能自动回复助手") || !strings.Contains(fallback, "商品B") {
+		t.Fatalf("完全模式默认提示词异常: %q", fallback)
+	}
+}
+
+// TestAIReplyModeValues 验证三种 AI 回复模式枚举及非法值判断。
+func TestAIReplyModeValues(t *testing.T) {
+	// mode 是当前待校验的 AI 回复模式枚举。
+	for _, mode := range []string{db.AIReplyModeBargain, db.AIReplyModeKeywordFirst, db.AIReplyModeFull} {
+		if !db.IsAIReplyMode(mode) {
+			t.Fatalf("合法 AI 回复模式被拒绝: %q", mode)
+		}
+	}
+	if db.IsAIReplyMode("unknown") {
+		t.Fatal("非法 AI 回复模式不应通过校验")
+	}
+}
+
 // TestExtractExecutableOffer 验证内部报价标记不会发送给买家，且重复或非法标记不可执行。
 func TestExtractExecutableOffer(t *testing.T) {
 	// visible、price、ok 分别是买家可见文本、解析金额和可执行标记状态。
@@ -293,6 +356,68 @@ func TestAIReplyBuildsExecutableQuote(t *testing.T) {
 	}
 	if strings.Contains(result.Text, "AUTO_PRICE") || result.Text != "可以，90.00 元成交。" {
 		t.Fatalf("内部报价标记不应发送给买家: %q", result.Text)
+	}
+}
+
+// TestAIReply_UsesItemPromptContext 验证 Reply 将商品级策略、类目、商品 ID 和自定义变量传入模型且不递归替换。
+func TestAIReply_UsesItemPromptContext(t *testing.T) {
+	// store、cleanup 保存隔离的 AI 测试数据库和关闭责任。
+	store, cleanup := newAIStore(t)
+	defer cleanup()
+	// ctx 是商品配置写入与 AI 回复调用共用的测试上下文。
+	ctx := context.Background()
+	// err 是写入含完整商品上下文测试商品时不应出现的数据库错误。
+	if _, err := store.DB.ExecContext(ctx, `INSERT INTO item_info (cookie_id,item_id,item_title,item_price,item_description,item_category) VALUES ('cid','item-context','测试商品','12.5','商品描述','数码')`); err != nil {
+		t.Fatal(err)
+	}
+	// err 是商品级提示词配置写入失败原因。
+	if err := store.ItemAIPrompts.Upsert(ctx, db.ItemAIPrompt{CookieID: "cid", ItemID: "item-context", Strategy: "append", Prompt: "规则 {item_category}/{item_id}/{custom.note}", CustomVariablesJSON: `{"note":"值-{item_title}"}`}); err != nil {
+		t.Fatal(err)
+	}
+	// request 是模型收到的请求体，用于核对最终 system prompt。
+	var request struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	// srv 返回固定文本并保存模型请求，避免依赖真实平台。
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// err 是模型请求体解析失败的错误；记录后仍返回合法响应，避免客户端因测试服务器异常而挂起。
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("解析模型请求失败: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"已收到"}}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	// err 是启用完全模式并配置模型服务地址时不应出现的数据库错误。
+	if _, err := store.DB.ExecContext(ctx, `INSERT INTO ai_reply_settings (cookie_id,ai_enabled,ai_reply_mode,ai_full_prompt,custom_prompts) VALUES ('cid',1,'full','账号规则 {item_title}','')`); err != nil {
+		t.Fatal(err)
+	}
+	// err 是写入 AI 密钥设置时不应出现的数据库错误，用于保证后续请求使用测试密钥。
+	if err := store.Settings.Set(ctx, "ai_api_key", "sk-test"); err != nil {
+		t.Fatal(err)
+	}
+	// err 是把模型服务地址指向本地测试服务器时的写入错误。
+	if err := store.Settings.Set(ctx, "ai_api_url", srv.URL); err != nil {
+		t.Fatal(err)
+	}
+	// result 是使用商品级提示词成功生成的回复。
+	result, err := NewAIReplier("cid", store, nil).Reply(ctx, chatMsg("介绍一下", "item-context", "chat-context"))
+	if err != nil || result == nil || result.Text != "已收到" {
+		t.Fatalf("商品级提示词 Reply 异常: result=%+v err=%v", result, err)
+	}
+	if len(request.Messages) == 0 {
+		t.Fatal("模型请求缺少 system 消息")
+	}
+	// systemPrompt 是模型收到的业务提示词；商品变量值中的占位符必须保持原样。
+	systemPrompt := request.Messages[0].Content
+	// expected 是 system prompt 中必须出现的关键片段：账号提示词已渲染商品名，商品规则中的自定义变量只展开一层。
+	for _, expected := range []string{"账号规则 测试商品", "规则 数码/item-context/值-{item_title}"} {
+		if !strings.Contains(systemPrompt, expected) {
+			t.Fatalf("system prompt 缺少 %q: %s", expected, systemPrompt)
+		}
 	}
 }
 

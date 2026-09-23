@@ -15,6 +15,14 @@ type aiReplySettingsResponse struct {
 	AIEnabled bool `json:"ai_enabled"`
 	// AutoAdjustPriceEnabled 表示有效 AI 报价是否会触发真实订单改价。
 	AutoAdjustPriceEnabled bool `json:"auto_adjust_price_enabled"`
+	// ReplyMode 是账号 AI 回复模式。
+	ReplyMode string `json:"ai_reply_mode"`
+	// FullPrompt 是完全模式独立系统提示词。
+	FullPrompt string `json:"ai_full_prompt"`
+	// HumanHandoffMinutes 是人工接管时暂停买家的分钟数。
+	HumanHandoffMinutes int `json:"human_handoff_minutes"`
+	// VisionEnabled 表示是否把买家图片随消息发送给多模态模型。
+	VisionEnabled bool `json:"ai_vision_enabled"`
 	// MaxDiscountPercent 是允许的最大折扣比例。
 	MaxDiscountPercent int `json:"max_discount_percent"`
 	// MaxDiscountAmount 是允许的最大折扣金额。
@@ -400,8 +408,10 @@ type keywordTypedResponse struct {
 	Keyword string `json:"keyword"`
 	// Reply 是文字回复内容。
 	Reply string `json:"reply"`
-	// ItemID 是限定的商品标识。
+	// ItemID 是限定的商品标识；多选规则取 ItemIDs 首项以保持兼容。
 	ItemID string `json:"item_id"`
+	// ItemIDs 是限定的商品标识集合；空集合表示账号级回复。
+	ItemIDs []string `json:"item_ids"`
 	// Type 是回复类型。
 	Type string `json:"type"`
 	// ImageURL 是图片回复地址。

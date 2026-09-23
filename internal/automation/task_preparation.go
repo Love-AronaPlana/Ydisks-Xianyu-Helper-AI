@@ -8,9 +8,23 @@ import (
 	"xianyu-go/internal/db"
 )
 
-// resolvePaidTaskOrder 为只有会话标识的简化付款消息回填本账号最近待发货订单，避免缺少订单号时无法匹配商品规则。
+// resolvePaidTaskOrder 为交易系统消息回填本账号已有订单事实，避免未知角色事件因协议字段缺失而无法完成卖家核验。
 func (c *Center) resolvePaidTaskOrder(ctx context.Context, task Task) (Task, error) {
-	if c == nil || c.store == nil || c.store.Orders == nil || task.TriggerType != TriggerOrderPaid || task.OrderID != "" || task.ChatID == "" {
+	if c == nil || c.store == nil || c.store.Orders == nil || (task.TriggerType != TriggerOrderCreated && task.TriggerType != TriggerOrderPaid && task.TriggerType != TriggerBargainPending) {
+		return task, nil
+	}
+	if task.OrderID != "" {
+		// order、err 保存已有订单的最小本地事实；不存在时保留事件，交给角色门禁决定是否延期。
+		order, err := c.store.Orders.Get(ctx, task.OrderID)
+		if errors.Is(err, db.ErrNotFound) {
+			return task, nil
+		}
+		if err != nil {
+			return task, fmt.Errorf("按订单回填自动化事实: %w", err)
+		}
+		return mergeOrderIntoTask(task, order), nil
+	}
+	if task.TriggerType == TriggerOrderCreated || task.ChatID == "" {
 		return task, nil
 	}
 	// order 保存按账号、会话以及可选买家和商品条件命中的待发货订单。

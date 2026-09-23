@@ -734,8 +734,9 @@ func (c *Conn) ReceiveLoop(ctx context.Context, onMessage func(decrypted map[str
 			}
 		}(raw)
 
-		// 仅处理同步包：body.syncPushPackage.data[0].data
-		syncData, ok := extractSyncPayload(raw)
+		// 仅处理同步包：body.syncPushPackage.data 中的每一条都必须按平台顺序独立处理，
+		// 同一帧内后续卡片（例如后续付款事件）不得因为只读取第一个条目而被静默丢弃。
+		syncPayloads, ok := extractSyncPayloads(raw)
 		if !ok {
 			c.sendACK(ctx, raw)
 			if // recorder 用于本次流程后续判断的recorder
@@ -744,27 +745,40 @@ func (c *Conn) ReceiveLoop(ctx context.Context, onMessage func(decrypted map[str
 			}
 			continue
 		}
-		// decoded、err 用于本次流程后续判断的decoded、err
-		decoded, err := decodeSyncData(syncData)
-		if err != nil {
-			c.sendACK(ctx, raw)
+		// decodedMessages 按平台顺序收集本帧全部成功解码的业务消息，容量上限为条目数，供 ACK 后统一派发。
+		decodedMessages := make([]map[string]any, 0, len(syncPayloads))
+		// payload 是本帧内的当前同步条目；无效条目只记录告警并跳过，不能中断同帧其它条目。
+		for _, payload := range syncPayloads {
+			if !payload.valid {
+				c.logger.Warn("同步推送条目无效，已跳过", "index", payload.index, "reason", payload.invalidReason)
+				continue
+			}
+			// decoded、err 分别是当前条目的解码结果与解密/解析错误；单条失败只丢弃该条目。
+			decoded, err := decodeSyncData(payload.data)
+			if err != nil {
+				if // recorder 用于本次流程后续判断的recorder
+				recorder := c.recorderSnapshot(); recorder != nil {
+					recorder("in", rawText, "", "decrypt_failed", err.Error())
+				}
+				c.logger.Error("同步推送条目解密失败", "index", payload.index, "err", err)
+				continue
+			}
 			if // recorder 用于本次流程后续判断的recorder
 			recorder := c.recorderSnapshot(); recorder != nil {
-				recorder("in", rawText, "", "decrypt_failed", err.Error())
+				if // b、e 用于本次流程后续判断的b、e
+				b, e := json.Marshal(decoded); e == nil {
+					recorder("in", rawText, string(b), "decrypted", "")
+				}
 			}
-			c.logger.Error("消息解密失败", "err", err)
-			continue
+			decodedMessages = append(decodedMessages, decoded)
 		}
-		if // recorder 用于本次流程后续判断的recorder
-		recorder := c.recorderSnapshot(); recorder != nil {
-			if // b、e 用于本次流程后续判断的b、e
-			b, e := json.Marshal(decoded); e == nil {
-				recorder("in", rawText, string(b), "decrypted", "")
-			}
-		}
+		// 每个原始帧只回一次 ACK：多条目共用同一 headers，重复确认会让平台侧推送计数与连接状态错乱。
 		c.sendACK(ctx, raw)
 		if onMessage != nil {
-			onMessage(decoded)
+			// decoded 是本帧内第若干条成功解码的业务消息，必须保持平台帧内顺序派发。
+			for _, decoded := range decodedMessages {
+				onMessage(decoded)
+			}
 		}
 	}
 }

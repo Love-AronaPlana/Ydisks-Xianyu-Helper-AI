@@ -65,7 +65,7 @@ func (s *RefreshService) persistSoldOrders(ctx context.Context, cookieID string,
 		// existing、exists 保存当前订单的本地实体及存在标记。
 		existing, exists := existingOrders[remote.OrderID]
 		if exists && remote.CreatedAt == "" {
-			// 缺少平台时间时沿用已有订单创建时间，避免详情补全把它改成同步时间。
+			// 缺少平台时间时沿用已有订单创建时间，避免列表字段不完整时改成同步时间。
 			remote.CreatedAt = existing.CreatedAt
 		}
 		// changed 表示远端订单字段是否发生变化。

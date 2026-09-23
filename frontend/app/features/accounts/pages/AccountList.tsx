@@ -51,6 +51,7 @@ const AccountList: React.FC = () => {
     username: '',
     login_password: '',
     show_browser: false,
+    captcha_browser_mode: 'playwright',
     showLoginPassword: false,
     clear_password: false,
   });

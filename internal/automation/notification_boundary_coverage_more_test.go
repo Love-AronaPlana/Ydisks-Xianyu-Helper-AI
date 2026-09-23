@@ -123,7 +123,7 @@ func TestBargainUncertainResultSendsManualInterventionNotification(t *testing.T)
 	// center 是注入免拼客户端和通知替身的自动化中心。
 	center := NewWithDependencies(store, nil, nil, CenterDependencies{MTop: client, Notifier: probe})
 	// task 是“我已小刀，待刀成”WebSocket 阶段的完整平台事实。
-	task := Task{Source: "ws", AccountID: "cid", TriggerType: TriggerBargainPending, OrderID: "bargain-review-order", ItemID: "item", BuyerID: "buyer", ChatID: "chat", IsBargain: true}
+	task := Task{Source: "ws", AccountID: "cid", OrderRole: OrderRoleSeller, TriggerType: TriggerBargainPending, OrderID: "bargain-review-order", ItemID: "item", BuyerID: "buyer", ChatID: "chat", IsBargain: true}
 	// handleErr 保存免拼结果不确定错误。
 	handleErr := center.HandleTask(ctx, task)
 	if handleErr == nil || probe.manualCalls != 1 || probe.manualAction != "二人小刀免拼" || !strings.Contains(probe.manualReason, "deadline") || probe.manualKey != bargainManualInterventionKey(task) {

@@ -54,7 +54,21 @@ func (a *Adapter) ChatSessionRole(ctx context.Context, accountID, chatID, itemID
 	return a.chat.SessionRole(ctx, accountID, chatID, itemID)
 }
 
-// SaveChatSessionRole 保存一次平台发布者核验得到的会话角色，不修改 Cookie 或 Token。
+// ItemBelongsToAccount 判断商品是否仍在当前账号的有效本地商品集合中。
+// 本地归属是自动回复识别卖家角色的确定证据；查询只返回存在性，不读取或解密 Cookie、Token 等敏感字段。
+func (a *Adapter) ItemBelongsToAccount(ctx context.Context, accountID, itemID string) (bool, error) {
+	if a == nil || a.store == nil || a.store.Items == nil {
+		return false, errors.New("商品归属仓储未初始化")
+	}
+	// _, lookupErr 只读取账号和商品主键；商品不存在代表当前账号不能安全地作为卖家自动回复。
+	_, lookupErr := a.store.Items.GetByCookieItem(ctx, accountID, itemID)
+	if errors.Is(lookupErr, db.ErrNotFound) {
+		return false, nil
+	}
+	return lookupErr == nil, lookupErr
+}
+
+// SaveChatSessionRole 保存一次本地商品归属核验得到的会话角色，不修改 Cookie 或 Token。
 func (a *Adapter) SaveChatSessionRole(ctx context.Context, accountID, chatID, itemID, accountRole, buyerUserID, sellerUserID, roleSource string) error {
 	if a == nil || a.chat == nil {
 		return errors.New("聊天服务未初始化")
@@ -129,6 +143,14 @@ func classifyAccountAlertEvent(title, body string) string {
 	}
 }
 
+// normalizeCaptchaBrowserMode 归一化账号验证码处理模式；缺省和未知值均回落历史自动模式。
+func normalizeCaptchaBrowserMode(mode string) string {
+	if strings.EqualFold(strings.TrimSpace(mode), db.CaptchaBrowserModeSystemManual) {
+		return db.CaptchaBrowserModeSystemManual
+	}
+	return db.CaptchaBrowserModePlaywright
+}
+
 // OnTokenCaptchaVerification 处理 token 刷新触发的闲鱼滑块风控。
 func (a *Adapter) OnTokenCaptchaVerification(ctx context.Context, cookieID, cookieStr, verificationURL, deviceID string) (*mtop.RefreshResult, bool) {
 	// start 用于本次流程后续判断的开始
@@ -153,6 +175,8 @@ func (a *Adapter) OnTokenCaptchaVerification(ctx context.Context, cookieID, cook
 	showBrowser := false
 	// metadataJSON 用于本次流程后续判断的metadataJSON
 	metadataJSON := ""
+	// captchaMode 是账号选择的验证码处理模式；读取失败按历史自动模式处理，避免升级后行为突变。
+	captchaMode := db.CaptchaBrowserModePlaywright
 	if a.store == nil || a.store.Cookies == nil {
 		a.OnAccountEvent(ctx, cookieID, engine.EventSecurityVerification, engine.AlertLevelWarn,
 			"token 风控验证无法保存", "账号存储未初始化，无法保存验证后的 Cookie。")
@@ -163,6 +187,9 @@ func (a *Adapter) OnTokenCaptchaVerification(ctx context.Context, cookieID, cook
 	d, err := a.store.Cookies.GetCookiePlatformRuntimeData(ctx, cookieID); err == nil {
 		showBrowser = d.ShowBrowser
 		metadataJSON = d.MetadataJSON
+		captchaMode = normalizeCaptchaBrowserMode(d.CaptchaBrowserMode)
+	} else {
+		a.logger.Warn("读取账号验证码处理模式失败，使用自动模式", "account", cookieID, "err", err)
 	}
 
 	// provider 用于本次流程后续判断的provider
@@ -178,48 +205,22 @@ func (a *Adapter) OnTokenCaptchaVerification(ctx context.Context, cookieID, cook
 		return res.VerificationURL, res.TokenOK, res.UpdatedCookies, nil
 	}
 
-	// newCookies 用于本次流程后续判断的newCookies
-	newCookies := ""
-	// captchaEngine 用于本次流程后续判断的captchaEngine
-	captchaEngine := "playwright"
-	// remoteHandled 用于本次流程后续判断的remoteHandled
-	remoteHandled := false
-	// captchaHeadless 用于本次流程后续判断的captchaHeadless
-	captchaHeadless := browser.ResolveHeadless(showBrowser)
-	// err 用于本次流程后续判断的err
-	var err error
-	if // remoteConfig 用于本次流程后续判断的remote配置
-	remoteConfig := a.loadRemoteCaptchaConfig(ctx, cookieID); remoteConfig != nil {
-		newCookies, remoteHandled, err = solveRemoteCaptcha(
-			ctx, newRemoteCaptchaHTTPClient(), *remoteConfig,
-			cookieID, verificationURL, cookieStr, deviceID, provider,
-		)
-		if remoteHandled {
-			captchaEngine = "remote"
-		} else if err != nil {
-			a.logger.Warn("远程过滑块不可用，回退本机逻辑", "account", cookieID, "err", err)
-			err = nil
-		}
+	// solveResult 是按账号模式求解风控的结果；人工模式与自动模式的编排细节在 token_captcha_solve.go。
+	solveResult := a.solveTokenCaptcha(ctx, tokenCaptchaSolveInput{
+		CookieID: cookieID, CookieStr: cookieStr, VerificationURL: verificationURL, DeviceID: deviceID,
+		Mode: captchaMode, ShowBrowser: showBrowser, Provider: provider,
+	})
+	// newCookies 是验证成功后的最新 Cookie；captchaEngine 是实际生效的验证分支。
+	newCookies, captchaEngine := solveResult.Cookies, solveResult.Engine
+	// remoteHandled 标识远程代理是否已经完成验证；人工与远程分支都不再读取本机浏览器快照。
+	remoteHandled := captchaEngine == "remote"
+	if !solveResult.Handled {
+		a.OnAccountEvent(ctx, cookieID, engine.EventSecurityVerification, engine.AlertLevelWarn,
+			"token 风控验证无法自动处理", "远程服务不可用且浏览器自动化未启用，无法自动完成 token 滑块验证。")
+		return nil, false
 	}
-	if !remoteHandled {
-		// br、ok 用于本次流程后续判断的br、ok
-		br, ok := a.browser.(browserTokenCaptchaRecoverer)
-		if a.browser == nil || !ok {
-			a.OnAccountEvent(ctx, cookieID, engine.EventSecurityVerification, engine.AlertLevelWarn,
-				"token 风控验证无法自动处理", "远程服务不可用且浏览器自动化未启用，无法自动完成 token 滑块验证。")
-			return nil, false
-		}
-		if // withEngine、ok 用于本次流程后续判断的withEngine、ok
-		withEngine, ok := a.browser.(browserTokenCaptchaEngineRecoverer); ok {
-			newCookies, captchaEngine, err = withEngine.TokenCaptchaRecoverWithEngine(
-				ctx, cookieID, cookieStr, verificationURL, captchaHeadless, provider,
-			)
-		} else {
-			newCookies, err = br.TokenCaptchaRecover(
-				ctx, cookieID, cookieStr, verificationURL, captchaHeadless, provider,
-			)
-		}
-	}
+	// err 是本次验证的失败原因；非空时统一按人工验证地址提示收口。
+	err := solveResult.Err
 	if err != nil {
 		// manualURL 用于本次流程后续判断的manualURL
 		manualURL := browser.TokenCaptchaManualVerificationURL(err)
@@ -251,7 +252,7 @@ func (a *Adapter) OnTokenCaptchaVerification(ctx context.Context, cookieID, cook
 		if // reader、ok 用于本次流程后续判断的reader、ok
 		reader, ok := a.browser.(browserTokenCaptchaSnapshotReader); ok {
 			// profileCookies、profileSnapshot、readErr 用于本次流程后续判断的profileCookies、profileSnapshot、readErr
-			profileCookies, profileSnapshot, readErr := reader.TokenCaptchaCookieSnapshot(ctx, cookieID, captchaHeadless)
+			profileCookies, profileSnapshot, readErr := reader.TokenCaptchaCookieSnapshot(ctx, cookieID, browser.ResolveHeadless(showBrowser))
 			if readErr != nil {
 				a.logger.Warn("读取滑块验证后完整 Cookie Jar 失败，回退 Go 快照合并", "account", cookieID, "err", readErr)
 			} else {

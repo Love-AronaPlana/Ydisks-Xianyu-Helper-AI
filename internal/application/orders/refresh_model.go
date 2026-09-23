@@ -19,7 +19,7 @@ type refreshWrite struct {
 	CookieUpdate RefreshCookieUpdate
 }
 
-// refreshTarget 保存待补全详情的订单目标。
+// refreshTarget 保存单订单或其他显式详情补全流程的订单目标；批量列表同步不创建此目标。
 type refreshTarget struct {
 	// OrderID 是待刷新订单标识。
 	OrderID string

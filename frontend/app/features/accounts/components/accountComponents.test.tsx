@@ -26,6 +26,9 @@ const accountFixture = {
 const aiSettingsFixture: AIReplySettings = {
   ai_enabled: false,
   auto_adjust_price_enabled: false,
+  ai_reply_mode: 'bargain',
+  ai_full_prompt: '',
+  human_handoff_minutes: 0, ai_vision_enabled: true,
   max_discount_percent: 10,
   max_discount_amount: 100,
   max_bargain_rounds: 3,
@@ -64,6 +67,9 @@ describe('账号 feature 展示组件', /* 当前回调覆盖账号页面子模�
     const view = render(<AccountAISettingsModal account={accountFixture} settings={aiSettingsFixture} saving={false} onChange={onChange} onClose={noopAccountAction} onSave={onSave} />);
     fireEvent.click(screen.getByLabelText('切换 AI 自动回复'));
     fireEvent.change(screen.getByDisplayValue('10'), { target: { value: '20' } });
+    fireEvent.change(screen.getByLabelText('人工接管后暂停 AI（分钟）'), { target: { value: '1500' } });
+    expect(onChange).toHaveBeenNthCalledWith(3, { ...aiSettingsFixture, human_handoff_minutes: 1440 });
+    expect(screen.getByText('买家发送人工后暂停该买家 AI；设为 0 关闭')).toBeTruthy();
     fireEvent.click(screen.getByText('保存'));
     expect(onChange).toHaveBeenNthCalledWith(1, { ...aiSettingsFixture, ai_enabled: true });
     expect(onChange).toHaveBeenNthCalledWith(2, { ...aiSettingsFixture, max_discount_percent: 20 });
@@ -72,7 +78,7 @@ describe('账号 feature 展示组件', /* 当前回调覆盖账号页面子模�
     const enabledSettings = { ...aiSettingsFixture, ai_enabled: true };
     view.rerender(<AccountAISettingsModal account={accountFixture} settings={enabledSettings} saving={false} onChange={onChange} onClose={noopAccountAction} onSave={onSave} />);
     fireEvent.click(screen.getByLabelText('切换 AI 自动改价'));
-    expect(onChange).toHaveBeenNthCalledWith(3, { ...enabledSettings, auto_adjust_price_enabled: true });
+    expect(onChange).toHaveBeenNthCalledWith(4, { ...enabledSettings, auto_adjust_price_enabled: true });
   });
 
   test('删除确认框展示错误并转发确认动作', /* 当前回调验证删除确认框的错误和提交分支。 */ () => {

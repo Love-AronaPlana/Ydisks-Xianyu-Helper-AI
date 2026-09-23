@@ -204,7 +204,11 @@ describe('useAccountQRCodeLogin 二维码登录协调器', /* 当前回调验证
       /** session_id 表示二维码登录会话标识。 */
       session_id?: string;
     }) => void) | undefined;
-    qrLoginMocks.generateQRLogin.mockImplementationOnce(/* generateAction 创建可取消的二维码请求。 */ ({ signal }: { signal: AbortSignal }) => new Promise(resolve => {
+    // QRLoginRequest 描述可取消二维码请求的最小参数。
+    type QRLoginRequest = { /** signal 控制二维码请求的取消生命周期。 */ signal: AbortSignal };
+    qrLoginMocks.generateQRLogin.mockImplementationOnce(/* generateAction 创建可取消的二维码请求。 */ (request: QRLoginRequest) => new Promise(resolve => {
+      // signal 控制二维码请求的取消生命周期。
+      const signal = request.signal;
       signal.addEventListener('abort', /* abortAction 记录二维码请求取消事件。 */ () => resolveGeneration = resolve, { once: true });
       resolveGeneration = resolve;
     }));

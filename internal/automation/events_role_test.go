@@ -99,3 +99,21 @@ func TestIsBuyerReviewedEvent_RoleDefense(t *testing.T) {
 		}
 	}
 }
+
+// TestExtractTaskFromWS_ConflictingRolesFailClosed 验证同一系统报文同时声明买家和卖家时不会选择任一方向执行。
+func TestExtractTaskFromWS_ConflictingRolesFailClosed(t *testing.T) {
+	// raw 保存外层卖家业务键和内层买家链接互相冲突的交易卡片。
+	raw := roleEventFixture(t, TriggerOrderPaid, "bizTag", "seller")
+	// notice 覆盖同一通知的跳转链接，使固定字段和备用字段分别携带相反角色。
+	notice := mapAt(mapAt(raw, "1"), "10")
+	notice["reminderUrl"] = "fleamarket://order_detail?id=3310145690545023994&role=buyer&itemId=1000000000002"
+	// fields 保存冲突角色合并后的解析状态，供断言确认失败关闭原因。
+	fields := fieldsFromRaw(raw)
+	if !fields.orderRoleConflict {
+		t.Fatalf("应记录角色冲突: %+v", fields)
+	}
+	// task 保存冲突角色事件的统一入口结果，冲突时必须为空。
+	if task := ExtractTaskFromWS("cid", "", raw); task != nil {
+		t.Fatalf("角色冲突事件不应进入自动化: %+v", task)
+	}
+}

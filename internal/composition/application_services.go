@@ -77,6 +77,8 @@ type Services struct {
 	itemCatalog *itemapp.CatalogService
 	// itemCatalogMutation 是商品创建、更新、删除和交付开关应用服务。
 	itemCatalogMutation *itemapp.CatalogMutationService
+	// itemAIPrompt 是商品级 AI 提示词归属校验和持久化应用服务。
+	itemAIPrompt *itemapp.ItemAIPromptService
 	// accountLogin 是账号登录应用服务。
 	accountLogin *accountLoginService
 	// authentication 是用户会话、密码校验和登录凭据应用服务。
@@ -150,6 +152,8 @@ type Dependencies struct {
 	ItemDependencies *adapter.ItemDependencies
 	// ChatDependencies 创建聊天发送应用服务。
 	ChatDependencies *adapter.ChatDependencies
+	// ChatApplication 是组合根预先装配的消息页面聊天应用服务；生产自动回复与人工消息共用它。
+	ChatApplication *chatapp.Service
 	// AutomationDependencies 创建自动化唤醒和发布后规则用例。
 	AutomationDependencies *adapter.AutomationDependencies
 	// TransportApplications 保存已由组合根装配的其余应用服务。
@@ -309,6 +313,7 @@ type TransportPorts struct {
 	ItemSync                    *itemapp.SyncService
 	ItemCatalog                 *itemapp.CatalogService
 	ItemCatalogMutation         *itemapp.CatalogMutationService
+	ItemAIPrompt                *itemapp.ItemAIPromptService
 	AccountLogin                AccountLogin
 	QRLogin                     adapter.QRLoginService
 	PlatformCredentials         *accountapp.PlatformCredentialService
@@ -349,7 +354,7 @@ func (services *Services) TransportPorts() TransportPorts {
 		ItemBatchPreview: services.itemBatchPreview, ItemBatchManagement: services.itemBatchManagement,
 		ItemCategoryRecommendation: services.itemCategoryRecommendation, ItemBatchPreviewPersistence: services.itemBatchPreviewPersistence,
 		ItemBatchLocalPublish: services.itemBatchLocalPublish, ItemSync: services.itemSync, ItemCatalog: services.itemCatalog,
-		ItemCatalogMutation: services.itemCatalogMutation, AccountLogin: services.accountLogin, QRLogin: services.qrLogin,
+		ItemCatalogMutation: services.itemCatalogMutation, ItemAIPrompt: services.itemAIPrompt, AccountLogin: services.accountLogin, QRLogin: services.qrLogin,
 		PlatformCredentials: services.platformCredentials, Authentication: services.authentication, LoginAudit: services.loginAudit,
 		PasswordLogin: services.passwordLogin, AccountDelete: services.accountDelete, AccountProfile: services.accountProfile,
 		AccountLongLogin: services.accountLongLogin, AccountSettings: services.accountSettings, AccountRuntime: services.accountRuntime,
@@ -502,6 +507,7 @@ func New(dependencies Dependencies) (*Services, error) {
 		})),
 		itemCatalog:            catalogServices.catalog,
 		itemCatalogMutation:    catalogServices.mutation,
+		itemAIPrompt:           catalogServices.aiPrompt,
 		accountLogin:           &accountLoginService{cookieWriterFactory: cookieWriterFactory, cookieUpdaterFactory: cookieUpdaterFactory, sessionPort: accountRepository, createApplication: accountLoginCreate, qrApplication: accountQRLogin, qrSessions: qrSessionRegistry},
 		authentication:         nil,
 		loginAudit:             loginAudit,
@@ -514,7 +520,7 @@ func New(dependencies Dependencies) (*Services, error) {
 		accountSummaries:       accountSummaries,
 		accountTasks:           dependencies.TransportApplications.AccountTasks,
 		credentialWake:         credentialWake,
-		chat:                   dependencies.ChatDependencies.NewChatSendingApplication(dependencies.Chat, dependencies.Manager, dependencies.MTopClient),
+		chat:                   buildChatApplication(dependencies),
 		uncertainNotifications: dependencies.TransportApplications.UncertainNotifications,
 		notificationChannels:   dependencies.TransportApplications.NotificationChannels,
 		analytics:              dependencies.TransportApplications.Analytics,
@@ -536,6 +542,14 @@ func New(dependencies Dependencies) (*Services, error) {
 	}
 	services.authentication = authentication
 	return services, nil
+}
+
+// buildChatApplication 复用运行时组合根预先创建的聊天应用；旧测试构造路径仍按原依赖现场创建。
+func buildChatApplication(dependencies Dependencies) *chatapp.Service {
+	if dependencies.ChatApplication != nil {
+		return dependencies.ChatApplication
+	}
+	return dependencies.ChatDependencies.NewChatSendingApplication(dependencies.Chat, dependencies.Manager, dependencies.MTopClient)
 }
 
 // buildOrderServices 构造订单用例集合及其刷新 worker 门面，并把后台诊断限制在组合根。

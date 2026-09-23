@@ -14,10 +14,13 @@ import (
 	accountmanager "xianyu-go/internal/account"
 	accountapp "xianyu-go/internal/application/account"
 	automationapp "xianyu-go/internal/application/automation"
+	chatapp "xianyu-go/internal/application/chat"
 	"xianyu-go/internal/automation"
 	"xianyu-go/internal/browser"
+	"xianyu-go/internal/browseragent"
 	"xianyu-go/internal/chat"
 	"xianyu-go/internal/db"
+	"xianyu-go/internal/engine"
 	"xianyu-go/internal/notify"
 	"xianyu-go/internal/renewal"
 	"xianyu-go/internal/xianyu/cookierefresh"
@@ -47,6 +50,19 @@ type browserTokenCaptchaSnapshotReader interface {
 	TokenCaptchaCookieSnapshot(ctx context.Context, cookieID string, headless bool) (cookies string, snapshot []cookierefresh.BrowserCookie, err error)
 }
 
+// TokenCaptchaManualVerificationRequest 描述人工验证代理需要处理的非敏感请求上下文；Cookie 仅供代理按最小权限完成验证，不得写入日志。
+type TokenCaptchaManualVerificationRequest struct {
+	CookieID        string
+	CookieStr       string
+	VerificationURL string
+	DeviceID        string
+}
+
+// TokenCaptchaManualVerificationPort 定义系统人工验证代理返回新 Cookie 的最小能力。
+type TokenCaptchaManualVerificationPort interface {
+	VerifyTokenCaptcha(ctx context.Context, request TokenCaptchaManualVerificationRequest) (cookies string, err error)
+}
+
 // tokenCaptchaRequester 用于本次流程后续判断的令牌CaptchaRequester
 type tokenCaptchaRequester interface {
 	RequestFreshCaptchaURLContext(ctx context.Context, cookiesStr, deviceID string) (*mtop.FreshCaptchaResult, error)
@@ -74,6 +90,7 @@ type Adapter struct {
 	renewSvc       xrenew.Service
 	cooldown       *renewal.CooldownManager
 	captchaReq     tokenCaptchaRequester
+	manualCaptcha  TokenCaptchaManualVerificationPort
 	orderMTop      orderDetailClient
 	chat           *chat.Service
 	// initialOrderSync 在账号运行实例首次 WebSocket 注册成功后执行一次订单同步；仅在进程组合期注入，运行中不可替换。
@@ -129,6 +146,7 @@ func newAdapter(store *db.Store, bm *browser.Manager, logger *slog.Logger, order
 		credentialWake:      newCredentialWakeService(store),
 		cooldown:            renewal.GlobalCooldown,
 		captchaReq:          mtop.NewClient(),
+		manualCaptcha:       NewManualTokenCaptchaVerifier(browseragent.NewSystemBrowserAgent()),
 		orderMTop:           mtop.NewClient(),
 		orderDetails:        orderDetails,
 		passwordCoordinator: accountapp.NewCredentialRefreshCoordinator(),
@@ -149,6 +167,8 @@ type RuntimeBundle struct {
 	Automation *automation.Center
 	// Chat 是处理聊天持久化与实时事件的领域服务。
 	Chat *chat.Service
+	// ChatApplication 是消息页面使用的聊天应用服务，自动回复也通过它发送。
+	ChatApplication *chatapp.Service
 	// OrderDetails 是自动发货和管理端订单刷新共用的限流与去重协调器。
 	OrderDetails *OrderDetailCoordinator
 }
@@ -169,8 +189,15 @@ func NewRuntimeBundle(store *db.Store, bm *browser.Manager, logger *slog.Logger,
 	runtimeAdapter.initialOrderSync = initialOrderSync
 	// chatService 是账号实时消息落库和广播服务，必须先于账号引擎启动完成注入。
 	chatService := chat.New(store)
+	// replyDelivery 保存消息页面完整发送端口；它在账号启动前由下方聊天应用服务完成赋值。
+	var replyDelivery engine.ReplyDelivery
 	// manager 是自动化中心的在线发送器来源，同时在启动期把 Adapter 固定为账号事件处理器。
-	manager := accountmanager.NewManager(store, runtimeAdapter, logger)
+	manager := accountmanager.NewManagerWithReplyDelivery(store, runtimeAdapter, logger, func() engine.ReplyDelivery {
+		return replyDelivery
+	})
+	// chatApplication 是人工消息页面和自动回复共用的聊天应用服务。
+	chatApplication := NewChatSendingApplication(chatService, store, manager, func() mtop.Client { return mtop.NewClient() })
+	replyDelivery = NewChatReplyDelivery(chatApplication)
 	// notifier 是自动化与账号告警共用的通知出口，构造完成后不可替换。
 	notifier := notify.New("", store, logger)
 	// automationSenders 为自动化图片卡密注入“临时下载、平台上传、WebSocket 发送”链路，不在本地保存图片。
@@ -185,12 +212,13 @@ func NewRuntimeBundle(store *db.Store, bm *browser.Manager, logger *slog.Logger,
 	runtimeAdapter.automation = autoCenter
 	runtimeAdapter.notifier = notifier
 	return &RuntimeBundle{
-		Adapter:      runtimeAdapter,
-		Manager:      manager,
-		Notifier:     notifier,
-		Automation:   autoCenter,
-		Chat:         chatService,
-		OrderDetails: orderDetails,
+		Adapter:         runtimeAdapter,
+		Manager:         manager,
+		Notifier:        notifier,
+		Automation:      autoCenter,
+		Chat:            chatService,
+		ChatApplication: chatApplication,
+		OrderDetails:    orderDetails,
 	}, nil
 }
 
@@ -236,6 +264,11 @@ func (a *Adapter) SetRenewService(s xrenew.Service) { a.renewSvc = s }
 
 // SetTokenCaptchaRequester 覆盖 token 风控验证链接刷新器；仅供测试隔离网络，冻结验证码生产路径不得运行时替换。
 func (a *Adapter) SetTokenCaptchaRequester(r tokenCaptchaRequester) { a.captchaReq = r }
+
+// SetTokenCaptchaManualVerificationPort 注入人工验证代理；system_manual 模式仅使用该端口，不会调用自动滑块。
+func (a *Adapter) SetTokenCaptchaManualVerificationPort(port TokenCaptchaManualVerificationPort) {
+	a.manualCaptcha = port
+}
 
 // SetOrderDetailClient 覆盖纯 Go 订单详情客户端；该 setter 是测试替身覆盖点，待订单端口构造注入并迁移测试后删除。
 func (a *Adapter) SetOrderDetailClient(c orderDetailClient) { a.orderMTop = c }

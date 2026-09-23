@@ -19,7 +19,7 @@ This Wiki is for operators of the management console. Start with [Deployment and
 11. Create and bind notification channels, then send a test notification.
 12. Use a low-value test order to verify card delivery and inventory deduction; when the account enables Automatic Shipping Confirmation, also verify that the platform status changes to shipped before listing real products.
 
-For desktop packages, the management URL is `http://127.0.0.1:59188`. Windows and macOS packages include the backend service, tray/menu-bar controller, and matching Playwright driver and Chromium. Linux packages include the same browser runtime and only add system dependencies during installation. The desktop controller stops the backend before it exits.
+For desktop packages, the management URL depends on the platform. The Windows service binds `0.0.0.0:59188`, so use `http://<host-ip>:59188` from another machine on the LAN or `http://127.0.0.1:59188` on the machine itself; keep that port behind Windows Firewall or an equivalent network ACL and never expose it to the public internet. macOS and Linux packages keep the loopback binding `http://127.0.0.1:59188`. Windows and macOS packages include the backend service, tray/menu-bar controller, and matching Playwright driver and Chromium. Linux packages include the same browser runtime and only add system dependencies during installation. The desktop controller stops the backend before it exits.
 
 The sidebar footer shows the running version and short commit ID. Source runs normally show `dev`/`unknown`; release packages and Docker images show build-injected version and commit information.
 

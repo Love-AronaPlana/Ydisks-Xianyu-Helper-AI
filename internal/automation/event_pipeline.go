@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"xianyu-go/internal/db"
 )
@@ -113,6 +114,27 @@ func (m ruleMatcher) match(ctx context.Context, task Task) ([]db.AutomationRule,
 		return []db.AutomationRule{*rule}, nil
 	}
 	return m.store.Automation.Match(ctx, task.AccountID, task.ItemID, task.TriggerType)
+}
+
+// ruleAllowsAllItems 判断账号级付款规则是否已由用户明确授权忽略订单规格。
+// 只有触发类型为 order_paid、规则触发类型一致、规则未绑定商品，且 ConfigJSON 中
+// allow_all_items 为布尔真时才返回 true；配置解析失败一律返回 false，禁止按规则名称或模板猜测。
+func ruleAllowsAllItems(rule db.AutomationRule, triggerType string) bool {
+	if triggerType != TriggerOrderPaid || rule.TriggerType != TriggerOrderPaid {
+		return false
+	}
+	if strings.TrimSpace(rule.ItemID) != "" {
+		return false
+	}
+	// scope 保存规则配置中的账号级授权标记；解析失败表示无法确认授权，按未授权处理。
+	var scope struct {
+		// AllowAllItems 表示用户确认此规则可作用于当前账号下的全部商品与规格。
+		AllowAllItems bool `json:"allow_all_items"`
+	}
+	if json.Unmarshal([]byte(rule.ConfigJSON), &scope) != nil {
+		return false
+	}
+	return scope.AllowAllItems
 }
 
 // actionPlanner 只根据任务事实和规则动作生成不可变的动作计划。

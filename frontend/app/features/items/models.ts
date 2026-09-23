@@ -102,7 +102,7 @@ export interface Item {
   /** 商品价格文本。 */
   item_price?: string;
   /** 商品主图地址。 */
-  item_image?: string; // Inferred from common usage, though not explicitly in list model sometimes
+  item_image?: string;
   /** 商品分类标识。 */
   item_category?: string;
   /** 商品详情原始 JSON。 */
@@ -114,6 +114,86 @@ export interface Item {
   /** 是否启用多数量发货兼容字段。 */
   is_multi_qty_ship?: number | boolean;
 }
+
+/** 商品提示词继承方式；决定商品提示词与账号默认提示词的合并策略。 */
+export type ItemAIPromptStrategy = 'inherit' | 'append' | 'override';
+
+/** 商品提示词中的自定义变量 UI 模型；空键值只用于编辑过程，不提交给服务端。 */
+export interface ItemAICustomVariable {
+  /** 变量名称，不包含花括号。 */
+  key: string;
+  /** 变量替换时使用的文本值。 */
+  value: string;
+}
+
+/** 商品 AI 提示词 UI 模型；由商品 feature adapter 从接口 DTO 转换而来。 */
+export interface ItemAIPrompt {
+  /** 商品所属账号标识。 */
+  cookie_id: string;
+  /** 平台商品标识。 */
+  item_id: string;
+  /** 提示词与账号默认值的合并策略。 */
+  strategy: ItemAIPromptStrategy;
+  /** 商品专属提示词正文。 */
+  prompt: string;
+  /** 商品专属变量键值表。 */
+  custom_variables: Record<string, string>;
+  /** 服务端是否已配置该商品提示词；旧响应缺少时按未提供处理。 */
+  configured?: boolean;
+}
+
+/** 商品 AI 提示词保存载荷；保持字段与版本化契约一致。 */
+export interface ItemAIPromptInput {
+  /** 提示词与账号默认值的合并策略。 */
+  strategy: ItemAIPromptStrategy;
+  /** 商品专属提示词正文。 */
+  prompt: string;
+  /** 商品专属变量键值表。 */
+  custom_variables: Record<string, string>;
+}
+
+/** 商品 AI 提示词编辑器中的变量行 UI 状态。 */
+export interface ItemAIVariableRow {
+  /** 变量名称，不包含花括号。 */
+  key: string;
+  /** 变量替换文本。 */
+  value: string;
+}
+
+/** 商品 AI 提示词接口允许插入的内置变量。 */
+export const itemAIBuiltInVariables = [
+  '{item_title}',
+  '{item_price}',
+  '{item_description}',
+  '{item_category}',
+  '{item_id}',
+] as const;
+
+/** 商品 AI 提示词接口的内置变量名称类型。 */
+export type ItemAIBuiltInVariable = (typeof itemAIBuiltInVariables)[number];
+
+/** 由变量表生成保存载荷，过滤空键并保留用户输入值。 */
+export const itemAIVariablesToRecord = (rows: ItemAIVariableRow[]): Record<string, string> => {
+  // variables 保存去除空键后的自定义变量，避免无效字段进入服务端配置。
+  const variables: Record<string, string> = {};
+  rows.forEach(/* row 表示编辑器中的一行自定义变量。 */ row => {
+    // key 保存去除首尾空白后的变量名。
+    const key = row.key.trim();
+    if (key) variables[key] = row.value;
+  });
+  return variables;
+};
+
+/** 将服务端变量键值表转换为可编辑的有序变量行。 */
+export const itemAIVariablesToRows = (variables: Record<string, string>): ItemAIVariableRow[] => Object.entries(variables).map(
+  /* entry 表示服务端变量表中的一个键值对。 */ ([key, value]) => ({ key, value }),
+);
+
+/** 创建空白自定义变量行，供编辑器继续添加配置。 */
+export const createEmptyItemAIVariableRow = (): ItemAIVariableRow => ({ key: '', value: '' });
+
+/** 商品提示词编辑器保存的默认表单值。 */
+export const emptyItemAIPromptInput = (): ItemAIPromptInput => ({ strategy: 'inherit', prompt: '', custom_variables: {} });
 
 /** 由当前 feature adapter 归一后的 AutomationTriggerType UI 模型；不直接暴露 HTTP DTO。 */
 export type AutomationTriggerType = 'order_paid' | 'buyer_reviewed' | 'review_missing_timeout';

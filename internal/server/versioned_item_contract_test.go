@@ -60,6 +60,45 @@ func TestVersionedItemRoutesPreserveLegacyContracts(t *testing.T) {
 		t.Fatalf("versioned item detail=%+v", detailValue)
 	}
 
+	// aiPromptGetReq 是读取商品级 AI 提示词默认配置的请求。
+	aiPromptGetReq := httptest.NewRequest(http.MethodGet, "/api/v1/items/acc1/item-v1/ai-prompt", nil)
+	aiPromptGetReq.AddCookie(sessionCookie)
+	// aiPromptGetRecorder 捕获商品级 AI 提示词默认响应。
+	aiPromptGetRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(aiPromptGetRecorder, aiPromptGetReq)
+	assertOpenAPISuccessResponse(t, aiPromptGetReq, aiPromptGetRecorder)
+	// aiPromptDefault 是未配置商品提示词时的继承策略响应。
+	var aiPromptDefault itemAIPromptResponse
+	// decodeErr 是默认配置响应体反序列化失败的错误，非空说明响应结构不再符合 DTO 契约。
+	if decodeErr := json.Unmarshal(aiPromptGetRecorder.Body.Bytes(), &aiPromptDefault); decodeErr != nil {
+		t.Fatalf("decode default item AI prompt: %v", decodeErr)
+	}
+	if aiPromptDefault.Strategy != "inherit" || aiPromptDefault.CookieID != "acc1" || aiPromptDefault.ItemID != "item-v1" {
+		t.Fatalf("default item AI prompt=%+v", aiPromptDefault)
+	}
+
+	// aiPromptPutReq 是保存商品级追加提示词与自定义变量的请求。
+	aiPromptPutReq := httptest.NewRequest(http.MethodPut, "/api/v1/items/acc1/item-v1/ai-prompt", strings.NewReader(`{"strategy":"append","prompt":"请突出交付方式","custom_variables":{"delivery":"数字资料"}}`))
+	aiPromptPutReq.AddCookie(sessionCookie)
+	// aiPromptPutRecorder 捕获商品级 AI 提示词保存响应。
+	aiPromptPutRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(aiPromptPutRecorder, aiPromptPutReq)
+	assertOpenAPISuccessResponse(t, aiPromptPutReq, aiPromptPutRecorder)
+	// savedAIPrompt 是保存后返回的商品提示词配置。
+	var savedAIPrompt itemAIPromptResponse
+	// decodeErr 是保存响应体反序列化失败的错误，非空说明保存接口返回结构已偏离契约。
+	if decodeErr := json.Unmarshal(aiPromptPutRecorder.Body.Bytes(), &savedAIPrompt); decodeErr != nil {
+		t.Fatalf("decode saved item AI prompt: %v", decodeErr)
+	}
+	if savedAIPrompt.Strategy != "append" || savedAIPrompt.CustomVariables["delivery"] != "数字资料" {
+		t.Fatalf("saved item AI prompt=%+v", savedAIPrompt)
+	}
+	// storedAIPrompt 是数据库读取的持久化结果，用于验证请求没有停留在内存。
+	storedAIPrompt, configured, promptErr := store.ItemAIPrompts.Get(ctx, "acc1", "item-v1")
+	if promptErr != nil || !configured || storedAIPrompt.Strategy != "append" {
+		t.Fatalf("stored item AI prompt=%+v configured=%v err=%v", storedAIPrompt, configured, promptErr)
+	}
+
 	// updateReq 是通过版本化入口更新商品的请求。
 	updateReq := httptest.NewRequest(http.MethodPut, "/api/v1/items/acc1/item-v1", strings.NewReader(`{"item_title":"版本化新商品名"}`))
 	updateReq.AddCookie(sessionCookie)

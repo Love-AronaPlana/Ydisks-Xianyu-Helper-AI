@@ -295,16 +295,20 @@ until their recorded phase is completed; agents MUST NOT add new violations.
 ## Desktop packaging and service behavior
 
 The application defaults to port `59188`; commands using `-addr :59188` listen on all interfaces. Desktop
-packages explicitly bind the server to `127.0.0.1:59188` and keep the server and tray as separate processes:
+packages keep the server and tray as separate processes and bind the management port per platform:
 
 - Windows installs the `YdisksXianyuHelper` Windows Service and starts `xianyu-tray.exe` for the current
-  user. The installer grants the interactive user only service status/start/stop rights, so tray service
+  user. The service binds `0.0.0.0:59188`, so other hosts on the LAN can reach the management page at
+  `http://<host-ip>:59188` while the machine itself still uses `http://127.0.0.1:59188`. Opening the port to a
+  LAN is only acceptable behind Windows Firewall or equivalent network ACLs; never expose it to the public
+  internet. The installer grants the interactive user only service status/start/stop rights, so tray service
   actions do not launch UAC prompts after installation. Service configuration and deletion remain admin-only.
-- macOS registers `com.ydisks.xianyu-helper.server` and `com.ydisks.xianyu-helper.tray` LaunchAgents.
-  The app is `/Applications/Ydisks闲鱼助手/Ydisks闲鱼助手.app`, and the tray executable is named
-  `Ydisks闲鱼助手` with `LSUIElement=true` so it does not appear in the Dock.
+- macOS registers `com.ydisks.xianyu-helper.server` and `com.ydisks.xianyu-helper.tray` LaunchAgents and keeps
+  the server on `127.0.0.1:59188` (loopback only). The app is `/Applications/Ydisks闲鱼助手/Ydisks闲鱼助手.app`,
+  and the tray executable is named `Ydisks闲鱼助手` with `LSUIElement=true` so it does not appear in the Dock.
 - Linux packages are architecture-specific tar archives. `install.sh` must run as root on a native matching
-  architecture, installs `ydisks-xianyu-helper.service`, and keeps data in `/var/lib/ydisks-xianyu-helper`.
+  architecture, installs `ydisks-xianyu-helper.service`, and keeps data in `/var/lib/ydisks-xianyu-helper`. The
+  unit keeps the server on `127.0.0.1:59188` (loopback only).
 
 All desktop packages contain the matching Playwright driver, Chromium and headless shell. Do not add a
 Debian Chromium package or download a second browser during installation. The Docker final image uses
@@ -323,9 +327,11 @@ The tray state machine is shared by Windows and macOS: it serializes actions, sh
 waits for a healthy `/health` response after start/restart, waits for the endpoint to become unreachable
 after stop, and stops the server before exiting. The tray also provides an “Open log directory” action.
 
-Desktop first-run initialization is done in the web UI at `http://127.0.0.1:59188`; users enter and confirm
-the initial administrator password. `-init-admin` remains an operational/headless fallback, while Docker
-Compose uses `XIANYU_ADMIN_PASSWORD` for non-interactive initialization.
+Desktop first-run initialization is done in the web UI: the Windows service listens on `0.0.0.0:59188`, so use
+`http://<host-ip>:59188` or `http://127.0.0.1:59188` from the machine itself, while macOS and Linux packages stay
+on `http://127.0.0.1:59188`. Users enter and confirm the initial administrator password. `-init-admin` remains an
+operational/headless fallback, while Docker Compose uses `XIANYU_ADMIN_PASSWORD` for non-interactive
+initialization.
 
 ## macOS 本地安装包构建
 

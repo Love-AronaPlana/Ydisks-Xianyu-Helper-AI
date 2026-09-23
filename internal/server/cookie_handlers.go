@@ -112,17 +112,19 @@ func (s *Server) updateRunningCookie(ctx context.Context, cookieID, value string
 
 // updateCookieSettingsRequest 用于本次流程后续判断的update登录凭证设置请求
 type updateCookieSettingsRequest struct {
-	Cookie        *string  `json:"cookie"`
-	Remark        *string  `json:"remark"`
-	AutoConfirm   *bool    `json:"auto_confirm"`
-	AutoConsign   *bool    `json:"auto_consign"`
-	AutoBargain   *bool    `json:"auto_bargain"`
-	PauseDuration *int     `json:"pause_duration"`
-	Username      *string  `json:"username"`
-	LoginPassword *string  `json:"login_password"`
-	ClearPassword bool     `json:"clear_password"`
-	ShowBrowser   *bool    `json:"show_browser"`
-	ChannelIDs    *[]int64 `json:"channel_ids"`
+	Cookie      *string `json:"cookie"`
+	Remark      *string `json:"remark"`
+	AutoConfirm *bool   `json:"auto_confirm"`
+	AutoConsign *bool   `json:"auto_consign"`
+	AutoBargain *bool   `json:"auto_bargain"`
+	// CaptchaBrowserMode 是账号验证码处理模式，仅接受 playwright 或 system_manual。
+	CaptchaBrowserMode *string  `json:"captcha_browser_mode"`
+	PauseDuration      *int     `json:"pause_duration"`
+	Username           *string  `json:"username"`
+	LoginPassword      *string  `json:"login_password"`
+	ClearPassword      bool     `json:"clear_password"`
+	ShowBrowser        *bool    `json:"show_browser"`
+	ChannelIDs         *[]int64 `json:"channel_ids"`
 }
 
 // longLoginSettingsRequest 是更新账号长登录开关的 HTTP 请求 DTO。
@@ -228,7 +230,7 @@ func (s *Server) updateCookieSettings(w http.ResponseWriter, r *http.Request) {
 	settingsResult, err := s.accountSettingsApplication().UpdateSettings(r.Context(), accountapp.SettingsUpdateInput{
 		UserID: ownedDetail.UserID, AccountID: cid, Cookie: req.Cookie, Remark: req.Remark,
 		AutoConfirm: req.AutoConfirm, AutoConsign: req.AutoConsign, AutoBargain: req.AutoBargain, PauseDuration: req.PauseDuration, Username: req.Username,
-		Password: password, ShowBrowser: req.ShowBrowser, ChannelIDs: req.ChannelIDs,
+		Password: password, ShowBrowser: req.ShowBrowser, CaptchaBrowserMode: req.CaptchaBrowserMode, ChannelIDs: req.ChannelIDs,
 	})
 	if err != nil {
 		switch {
@@ -290,31 +292,32 @@ func (s *Server) listCookieDetails(w http.ResponseWriter, r *http.Request) {
 		// enabled、statusErr 保存当前账号启用状态及查询错误。
 		enabled, statusErr := s.accountSummaryApplication().StatusOwned(r.Context(), sess.UserID, summary.ID)
 		result = append(result, cookieSummaryResponse{
-			ID:                summary.ID,
-			HasCookie:         true,
-			Enabled:           statusErr == nil && enabled,
-			AutoConfirm:       summary.AutoConfirm,
-			AutoConsign:       summary.AutoConsign,
-			AutoBargain:       summary.AutoBargain,
-			Remark:            summary.Remark,
-			PauseDuration:     summary.PauseDuration,
-			PausedUntil:       summary.PausedUntil,
-			Paused:            summary.PausedUntil > time.Now().UTC().Unix(),
-			ShowBrowser:       summary.ShowBrowser,
-			Username:          summary.Username,
-			Nickname:          cachedCookieSummaryNickname(summary),
-			AvatarURL:         summary.AvatarURL,
-			LoginMethod:       summary.LoginMethod,
-			LastLoginAt:       summary.LastLoginAt,
-			ProfileError:      "",
-			AIEnabled:         false,
-			AutoRateEnabled:   tasks.AutoRateEnabled,
-			RateContent:       tasks.RateContent,
-			AutoPolishEnabled: tasks.AutoPolishEnabled,
-			PolishTime:        tasks.PolishTime,
-			LastRateScanAt:    tasks.LastRateScanAt,
-			LastPolishDate:    tasks.LastPolishDate,
-			LastPolishAt:      tasks.LastPolishAt,
+			ID:                 summary.ID,
+			HasCookie:          true,
+			Enabled:            statusErr == nil && enabled,
+			AutoConfirm:        summary.AutoConfirm,
+			AutoConsign:        summary.AutoConsign,
+			AutoBargain:        summary.AutoBargain,
+			Remark:             summary.Remark,
+			PauseDuration:      summary.PauseDuration,
+			PausedUntil:        summary.PausedUntil,
+			Paused:             summary.PausedUntil > time.Now().UTC().Unix(),
+			ShowBrowser:        summary.ShowBrowser,
+			CaptchaBrowserMode: summary.CaptchaBrowserMode,
+			Username:           summary.Username,
+			Nickname:           cachedCookieSummaryNickname(summary),
+			AvatarURL:          summary.AvatarURL,
+			LoginMethod:        summary.LoginMethod,
+			LastLoginAt:        summary.LastLoginAt,
+			ProfileError:       "",
+			AIEnabled:          false,
+			AutoRateEnabled:    tasks.AutoRateEnabled,
+			RateContent:        tasks.RateContent,
+			AutoPolishEnabled:  tasks.AutoPolishEnabled,
+			PolishTime:         tasks.PolishTime,
+			LastRateScanAt:     tasks.LastRateScanAt,
+			LastPolishDate:     tasks.LastPolishDate,
+			LastPolishAt:       tasks.LastPolishAt,
 		})
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -347,7 +350,8 @@ func (s *Server) getCookieDetails(w http.ResponseWriter, r *http.Request) {
 		AutoBargain: summary.AutoBargain,
 		Remark:      summary.Remark, PauseDuration: summary.PauseDuration, PausedUntil: summary.PausedUntil,
 		Paused: summary.PausedUntil > time.Now().UTC().Unix(), ShowBrowser: summary.ShowBrowser,
-		Username: summary.Username, Nickname: cachedCookieSummaryNickname(summary), AvatarURL: summary.AvatarURL,
+		CaptchaBrowserMode: summary.CaptchaBrowserMode,
+		Username:           summary.Username, Nickname: cachedCookieSummaryNickname(summary), AvatarURL: summary.AvatarURL,
 		LoginMethod: summary.LoginMethod, LastLoginAt: summary.LastLoginAt, ProfileError: "", HasCookie: true,
 		AutoRateEnabled: tasks.AutoRateEnabled, RateContent: tasks.RateContent,
 		AutoPolishEnabled: tasks.AutoPolishEnabled, PolishTime: tasks.PolishTime,

@@ -34,8 +34,6 @@ type messageDispatcher struct {
 	observeOutgoing func(OutgoingChatMessage)
 	// reply 负责自动回复链，可能为空。
 	reply *ReplyService
-	// itemPublisher 查询会话商品的发布人；缺少能力时禁止自动回复。
-	itemPublisher replyItemPublisher
 	// logger 记录消息分发和防抖错误。
 	logger *slog.Logger
 	// beginTask 登记账号生命周期任务，并返回该任务唯一的释放函数。
@@ -56,8 +54,6 @@ type messageDispatcherConfig struct {
 	ObserveOutgoing func(OutgoingChatMessage)
 	// Reply 是自动回复服务。
 	Reply *ReplyService
-	// ItemPublisher 只返回商品发布人身份，不依赖商品是否已同步到本地。
-	ItemPublisher replyItemPublisher
 	// Logger 记录分发过程中的错误和诊断信息。
 	Logger *slog.Logger
 	// BeginTask 登记账号生命周期任务，并返回该任务唯一的释放函数。
@@ -112,7 +108,6 @@ func newMessageDispatcher(config messageDispatcherConfig) messageDispatcher {
 		currentHandler:  currentHandler,
 		observeOutgoing: observeOutgoing,
 		reply:           config.Reply,
-		itemPublisher:   config.ItemPublisher,
 		logger:          logger,
 		beginTask:       beginTask,
 		recordMessage:   recordMessage,

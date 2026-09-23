@@ -243,7 +243,7 @@ function Register-InstalledService {
     New-Item -ItemType Directory -Force -Path (Join-Path $WorkDir 'data') | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $WorkDir 'logs') | Out-Null
 
-    $binaryPath = '"{0}" -service -workdir "{1}" -data-key-file "{1}\data-key" -addr 127.0.0.1:59188 -playwright-runtime-root "{2}"' -f `
+    $binaryPath = '"{0}" -service -workdir "{1}" -data-key-file "{1}\data-key" -addr 0.0.0.0:59188 -playwright-runtime-root "{2}"' -f `
         $ExePath, $WorkDir, $RuntimeRoot
     if (-not (Test-ServiceInstalled)) {
         Create-InstalledService -BinaryPath $binaryPath

@@ -1,5 +1,5 @@
 import { existsSync,readdirSync,readFileSync } from 'node:fs';
-import { dirname,relative,resolve } from 'node:path';
+import { dirname,relative,resolve,sep } from 'node:path';
 import { describe,expect,test } from 'vitest';
 
 // sourceRoot 是前端源码根目录，所有架构规则都基于生产源码扫描。
@@ -21,7 +21,7 @@ const collectSourceFiles = (directory: string): string[] => readdirSync(director
 const productionSources = (): Array<{ /* relativePath 表示relative当前路径。 */ relativePath: string; /* source 表示source。 */ source: string }> => collectSourceFiles(sourceRoot)
   .filter(filePath => !filePath.endsWith('.test.ts') && !filePath.endsWith('.test.tsx') /* filePath 为待排除测试文件的源码路径。 */)
   .map(filePath => ({
-    relativePath: relative(sourceRoot, filePath).split('/').join('/'),
+    relativePath: relative(sourceRoot, filePath).split(sep).join('/'),
     source: readFileSync(filePath, 'utf8'),
   }) /* map 回调读取单个生产文件并保留稳定相对路径。 */);
 

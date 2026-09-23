@@ -3,6 +3,7 @@ AIReplySettings,
 AIReplySettingsResponse,
 AccountBindingsResponse,
 AccountDetail,AccountSummaryResponse,
+CaptchaBrowserMode,
 AccountTaskRunResponseEnvelope,
 AccountTaskSettings,
 AccountTaskSettingsResponse,
@@ -74,6 +75,7 @@ export const getAccountDetails = async (options?: RequestControlOptions): Promis
     username: item.username || '',
     login_password_configured: undefined,
     show_browser: item.show_browser === true || item.show_browser === 1 || item.show_browser === '1' || item.show_browser === 'true',
+    captcha_browser_mode: item.captcha_browser_mode === 'system_manual' ? 'system_manual' : 'playwright',
     nickname: item.nickname || item.remark || `账号 ${item.id.substring(0,6)}`,
     avatar_url: accountAvatarURL(item, avatarVersion),
     profile_error: item.profile_error || '',
@@ -218,6 +220,7 @@ export interface AccountSettingsUpdate {
   /** login_password 表示登录密码。 */ login_password?: string;
   /** clear_password 表示是否清理登录密码。 */ clear_password?: boolean;
   /** show_browser 表示是否显示浏览器。 */ show_browser?: boolean;
+  /** captcha_browser_mode 表示验证码处理模式：内置浏览器自动处理或系统浏览器人工完成。 */ captcha_browser_mode?: CaptchaBrowserMode;
   /** channel_ids 表示通知渠道标识列表。 */ channel_ids?: number[];
 }
 
@@ -344,12 +347,16 @@ export const updateAccountAISettings = async (cookieId: string, settings: Partia
   const payload = {
     ai_enabled: settings.ai_enabled ?? false,
     auto_adjust_price_enabled: settings.auto_adjust_price_enabled ?? false,
+    ai_reply_mode: settings.ai_reply_mode ?? 'bargain',
+    ai_full_prompt: settings.ai_full_prompt ?? '',
+    human_handoff_minutes: settings.human_handoff_minutes ?? 0,
+    ai_vision_enabled: settings.ai_vision_enabled ?? true,
     max_discount_percent: settings.max_discount_percent ?? 10,
     max_discount_amount: settings.max_discount_amount ?? 100,
     max_bargain_rounds: settings.max_bargain_rounds ?? 3,
     custom_prompts: settings.custom_prompts ?? ''
   };
-  return runContractRequest(/* signal 控制账号 AI 设置更新的取消和超时。 */ signal => contractClient.PUT('/api/v1/settings/ai-reply/{cookie_id}', { params: { path: { cookie_id: cookieId } }, body: payload, signal }), options);
+  return runContractRequest(/* signal 控制账号 AI 设置更新的取消和超时。 */ signal => contractClient.PUT('/api/v1/settings/ai-reply/{cookie_id}', { params: { path: { cookie_id: cookieId } }, body: payload as never, signal }), options);
 }
 
 

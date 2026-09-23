@@ -357,7 +357,8 @@ func (s *Scheduler) scanPendingShipResumesWithContextAndLimit(ctx context.Contex
 			taskCtx, cancel := context.WithTimeout(ctx, pendingShipTaskTimeout)
 			// task 携带运行快照里冻结的动作计划与运行标识：执行链必须沿用运行创建时的计划，
 			// 不能把数字游标套用到管理员后来修改过的规则上。
-			task := Task{Source: "scheduler", AccountID: candidate.Order.CookieID, TriggerType: TriggerOrderPaid,
+			// task 是从本地卖家订单和已冻结运行计划恢复的任务；显式标记卖家，避免被 WS 未知角色门禁误拦截。
+			task := Task{Source: "scheduler", AccountID: candidate.Order.CookieID, OrderRole: OrderRoleSeller, TriggerType: TriggerOrderPaid,
 				ChatID: candidate.Order.ChatID, OrderID: candidate.Order.OrderID,
 				ItemID: candidate.Order.ItemID, BuyerID: candidate.Order.BuyerID,
 				ActionPlan: frozenPlan,

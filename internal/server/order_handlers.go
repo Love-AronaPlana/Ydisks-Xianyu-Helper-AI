@@ -115,7 +115,9 @@ func missingRefreshTargetIDs(targets []refreshTarget, seen map[string]struct{}) 
 	return missing
 }
 
-func (s *Server) refreshSingleOrder(w http.ResponseWriter, r *http.Request) { // refreshSingleOrder 保持单订单刷新与批量刷新使用相同的详情 DTO。
+// refreshSingleOrder 处理仍需访问订单详情接口的单订单刷新；批量刷新只返回已售列表同步统计。
+func (s *Server) refreshSingleOrder(w http.ResponseWriter, r *http.Request) {
+	// orderID 是需要通过详情接口刷新的订单标识。
 	orderID := chi.URLParam(r, "order_id")
 	// sess 用于本次流程后续判断的sess
 	sess := auth.SessionFromContext(r.Context())

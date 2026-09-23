@@ -8,6 +8,8 @@ import (
 )
 
 var (
+	// ErrInvalidCaptchaBrowserMode 表示账号验证码处理模式不在应用层支持的枚举内。
+	ErrInvalidCaptchaBrowserMode = errors.New("验证码浏览器模式无效")
 	// ErrRuntimeStopConflict 表示账号实例未能在关闭预算内完全停止，持久化状态保持可重试。
 	ErrRuntimeStopConflict = errors.New("账号运行实例尚未停止")
 	// ErrRuntimeStartUnavailable 表示账号已写入启用或新 Cookie，但运行实例未能达到可运行状态。
@@ -30,6 +32,8 @@ type SettingsUpdateInput struct {
 	AutoConsign *bool
 	// AutoBargain 是可选的砍价“待刀成”阶段自动免拼开关。
 	AutoBargain *bool
+	// CaptchaBrowserMode 是可选的验证码处理模式，仅允许 playwright 或 system_manual。
+	CaptchaBrowserMode *string
 	// PauseDuration 是可选的暂停时长，单位为分钟；零表示立即恢复。
 	PauseDuration *int
 	// Username 是可选的密码登录用户名更新值。
@@ -149,6 +153,9 @@ func (s *SettingsService) transitionLock(accountID string) *sync.Mutex {
 
 // UpdateSettings 原子保存账号设置；Cookie、metadata 和旧 Token 在同一凭证锁内完成，运行时重启在锁外串行执行。
 func (s *SettingsService) UpdateSettings(ctx context.Context, input SettingsUpdateInput) (SettingsResult, error) {
+	if input.CaptchaBrowserMode != nil && *input.CaptchaBrowserMode != "playwright" && *input.CaptchaBrowserMode != "system_manual" {
+		return SettingsResult{}, ErrInvalidCaptchaBrowserMode
+	}
 	if s == nil || s.repository == nil {
 		return SettingsResult{}, errors.New("账号设置服务未初始化")
 	}

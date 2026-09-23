@@ -26,6 +26,9 @@ func (s *Server) mountVersionedChatTaskRoutes(r chi.Router) {
 		r.Delete("/api/v1/chat/quick-replies/{quick_reply_id}", s.deleteChatQuickReply)
 		r.Get("/api/v1/chat/buyer-notes/{buyer_id}", s.getChatBuyerNote)
 		r.Put("/api/v1/chat/buyer-notes/{buyer_id}", s.saveChatBuyerNote)
+		r.Get("/api/v1/chat/human-handoff", s.getChatHumanHandoff)
+		r.Put("/api/v1/chat/human-handoff", s.setChatHumanHandoff)
+		r.Delete("/api/v1/chat/human-handoff", s.clearChatHumanHandoff)
 
 		r.Get("/api/v1/account-tasks/{cid}", s.getAccountTaskSettings)
 		r.Put("/api/v1/account-tasks/{cid}", s.updateAccountTaskSettings)

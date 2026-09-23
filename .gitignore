@@ -44,6 +44,13 @@
 !/internal/webui/static/assets/*.svg
 /internal/webui/static/assets/*.map
 
+# Desktop packaging artifacts (installers, staged binaries, bundled Chromium runtime)
+/dist/
+/packaging/windows/Output/
+
+# Local agent tooling state (plans, drafts, session metadata)
+/.zcode/
+
 # OS / editor
 .DS_Store
 .idea/

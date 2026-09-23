@@ -1,5 +1,5 @@
 import type { Dispatch,SetStateAction } from 'react';
-import type { AccountDetail,AIReplySettings,NotificationChannel } from './api';
+import type { AccountDetail,AIReplySettings,CaptchaBrowserMode,NotificationChannel } from './api';
 
 // AccountEditForm 描述账号编辑弹窗中的可编辑字段。
 export interface AccountEditForm {
@@ -21,6 +21,8 @@ export interface AccountEditForm {
   login_password: string;
   // show_browser 表示密码登录时是否展示浏览器窗口。
   show_browser: boolean;
+  // captcha_browser_mode 表示验证码处理模式：内置浏览器自动处理或系统浏览器人工完成。
+  captcha_browser_mode: CaptchaBrowserMode;
   // showLoginPassword 控制密码输入框是否显示明文。
   showLoginPassword: boolean;
   // clear_password 表示保存时清空服务端密码。

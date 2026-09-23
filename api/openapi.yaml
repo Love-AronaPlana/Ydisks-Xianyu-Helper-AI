@@ -2737,6 +2737,82 @@ paths:
         '401': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
         '403': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
         '500': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+  "/api/v1/chat/human-handoff":
+    get:
+      operationId: getApiV1ChatHumanHandoff
+      summary: 读取指定会话买家的人工接管状态
+      security: [{cookieAuth: []}]
+      parameters:
+        - name: account_id
+          in: query
+          required: true
+          schema: {type: string}
+        - name: chat_id
+          in: query
+          required: true
+          schema: {type: string}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatHumanHandoff'
+        '400': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '401': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '403': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '404': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '500': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '503': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+    put:
+      operationId: putApiV1ChatHumanHandoff
+      summary: 按分钟数接管指定会话买家的 AI 回复
+      security: [{cookieAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatHumanHandoffUpdateRequest'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatHumanHandoff'
+        '400': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '401': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '403': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '404': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '500': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '503': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+    delete:
+      operationId: deleteApiV1ChatHumanHandoff
+      summary: 提前结束指定会话买家的人工接管
+      security: [{cookieAuth: []}]
+      parameters:
+        - name: account_id
+          in: query
+          required: true
+          schema: {type: string}
+        - name: chat_id
+          in: query
+          required: true
+          schema: {type: string}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatHumanHandoff'
+        '400': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '401': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '403': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '404': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '500': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '503': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
   "/api/v1/chat/messages":
     get:
       operationId: getApiV1ChatMessages
@@ -3566,6 +3642,117 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiResponse'
+        '400':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/v1/items/{cookie_id}/{item_id}/ai-prompt":
+    get:
+      operationId: getApiV1ItemsBycookie_idByitem_idAiPrompt
+      summary: 读取商品级 AI 提示词
+      parameters:
+          - name: cookie_id
+            in: path
+            required: true
+            schema:
+              type: string
+          - name: item_id
+            in: path
+            required: true
+            schema:
+              type: string
+      security: [{cookieAuth: []}]
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ItemAIPromptResponse'
+        '400':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    put:
+      operationId: putApiV1ItemsBycookie_idByitem_idAiPrompt
+      summary: 保存商品级 AI 提示词
+      parameters:
+          - name: cookie_id
+            in: path
+            required: true
+            schema:
+              type: string
+          - name: item_id
+            in: path
+            required: true
+            schema:
+              type: string
+      security: [{cookieAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ItemAIPromptRequest'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ItemAIPromptResponse'
         '400':
           description: 统一错误响应
           content:
@@ -5714,6 +5901,12 @@ paths:
             schema:
               type: string
       security: [{cookieAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KeywordCreateRequest'
       responses:
         '200':
           description: 成功
@@ -5862,6 +6055,12 @@ paths:
             schema:
               type: string
       security: [{cookieAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KeywordCreateRequest'
       responses:
         '200':
           description: 成功
@@ -7519,17 +7718,28 @@ components:
       items: {$ref: '#/components/schemas/KeywordItemResponse'}
     KeywordTypedResponse:
       type: object
-      required: [id, keyword, reply, item_id, type, image_url]
+      required: [id, keyword, reply, item_id, item_ids, type, image_url]
       properties:
         id: {type: integer}
         keyword: {type: string}
         reply: {type: string}
-        item_id: {type: string}
+        item_id: {type: string, description: 关联商品标识的持久化字段；多选时为逗号分隔串，空串表示账号级回复}
+        item_ids: {type: array, items: {type: string}, description: 关联商品标识集合；空集合表示账号级回复}
         type: {type: string}
         image_url: {type: string}
     KeywordTypedListResponse:
       type: array
       items: {$ref: '#/components/schemas/KeywordTypedResponse'}
+    KeywordCreateRequest:
+      type: object
+      required: [keyword, reply, item_id, item_ids, type, image_url]
+      properties:
+        keyword: {type: string}
+        reply: {type: string}
+        item_id: {type: string, description: 兼容旧单值调用方；多选时由 item_ids 合并而来}
+        item_ids: {type: array, items: {type: string}, description: 关联商品标识集合；一条规则可关联多个商品，空集合表示账号级回复}
+        type: {type: string}
+        image_url: {type: string}
     DefaultReplyMapResponse:
       type: object
       additionalProperties:
@@ -7549,21 +7759,33 @@ components:
       items: {$ref: '#/components/schemas/ItemReplyResponse'}
     AIReplySettingsResponse:
       type: object
-      required: [ai_enabled, auto_adjust_price_enabled, max_discount_percent, max_discount_amount, max_bargain_rounds, custom_prompts]
+      required: [ai_enabled, auto_adjust_price_enabled, human_handoff_minutes, max_discount_percent, max_discount_amount, max_bargain_rounds, custom_prompts]
       properties:
         cookie_id: {type: string}
         ai_enabled: {type: boolean}
         auto_adjust_price_enabled: {type: boolean}
+        ai_reply_mode: {type: string, enum: [bargain, keyword_first, full], default: bargain}
+        ai_full_prompt: {type: string, maxLength: 8000, default: ''}
+        human_handoff_minutes: {type: integer, minimum: 0, maximum: 1440, default: 0}
+        ai_vision_enabled:
+          type: boolean
+          description: 是否把买家图片随消息发送给多模态模型；省略时保留账号当前值，新账号默认开启。
         max_discount_percent: {type: integer}
         max_discount_amount: {type: integer}
         max_bargain_rounds: {type: integer}
         custom_prompts: {type: string}
     AIReplySettingsUpdateRequest:
       type: object
-      required: [ai_enabled, auto_adjust_price_enabled, max_discount_percent, max_discount_amount, max_bargain_rounds, custom_prompts]
+      required: [ai_enabled, auto_adjust_price_enabled, human_handoff_minutes, max_discount_percent, max_discount_amount, max_bargain_rounds, custom_prompts]
       properties:
         ai_enabled: {type: boolean}
         auto_adjust_price_enabled: {type: boolean}
+        ai_reply_mode: {type: string, enum: [bargain, keyword_first, full], default: bargain}
+        ai_full_prompt: {type: string, maxLength: 8000, default: ''}
+        human_handoff_minutes: {type: integer, minimum: 0, maximum: 1440, default: 0}
+        ai_vision_enabled:
+          type: boolean
+          description: 是否把买家图片随消息发送给多模态模型；省略时保留账号当前值。
         max_discount_percent: {type: integer, minimum: 0, maximum: 100}
         max_discount_amount: {type: integer, minimum: 0}
         max_bargain_rounds: {type: integer, minimum: 1, maximum: 10}
@@ -7938,6 +8160,28 @@ components:
         item_detail: {type: string}
         is_multi_spec: {type: boolean}
         multi_quantity_delivery: {type: boolean}
+    ItemAIPromptRequest:
+      type: object
+      required: [strategy, prompt, custom_variables]
+      properties:
+        strategy: {type: string, enum: [inherit, append, override]}
+        prompt: {type: string, maxLength: 8000}
+        custom_variables:
+          type: object
+          additionalProperties: {type: string, maxLength: 1000}
+          maxProperties: 32
+    ItemAIPromptResponse:
+      type: object
+      required: [cookie_id, item_id, strategy, prompt, custom_variables]
+      properties:
+        cookie_id: {type: string}
+        item_id: {type: string}
+        strategy: {type: string, enum: [inherit, append, override]}
+        prompt: {type: string, maxLength: 8000}
+        custom_variables:
+          type: object
+          additionalProperties: {type: string, maxLength: 1000}
+          maxProperties: 32
     NotificationChannelResponse:
       type: object
       required: [id, name, type, enabled]
@@ -8108,7 +8352,7 @@ components:
           type: string
     AccountDetailResponse:
       type: object
-      required: [id, has_cookie, enabled, auto_confirm, auto_consign, auto_bargain, remark, pause_duration, paused_until, paused, show_browser, username, nickname, avatar_url, login_method, last_login_at, profile_error, auto_rate_enabled, rate_content, auto_polish_enabled, polish_time, last_rate_scan_at, last_polish_date, last_polish_at]
+      required: [id, has_cookie, enabled, auto_confirm, auto_consign, auto_bargain, remark, pause_duration, paused_until, paused, show_browser, captcha_browser_mode, username, nickname, avatar_url, login_method, last_login_at, profile_error, auto_rate_enabled, rate_content, auto_polish_enabled, polish_time, last_rate_scan_at, last_polish_date, last_polish_at]
       properties:
         id:
           type: string
@@ -8132,6 +8376,10 @@ components:
           type: boolean
         show_browser:
           type: boolean
+        captcha_browser_mode:
+          type: string
+          enum: [playwright, system_manual]
+          default: playwright
         username:
           type: string
         nickname:
@@ -8193,6 +8441,10 @@ components:
           type: boolean
         show_browser:
           type: boolean
+        captcha_browser_mode:
+          type: string
+          enum: [playwright, system_manual]
+          description: 验证码处理模式；省略时保持账号当前值，新账号默认 playwright。
         channel_ids:
           type: array
           items:
@@ -8559,6 +8811,22 @@ components:
       properties:
         account_id: {type: string}
         content: {type: string, maxLength: 2000}
+    ChatHumanHandoff:
+      type: object
+      required: [account_id, buyer_id, paused_until, active, remaining_seconds]
+      properties:
+        account_id: {type: string}
+        buyer_id: {type: string}
+        paused_until: {type: integer}
+        active: {type: boolean}
+        remaining_seconds: {type: integer}
+    ChatHumanHandoffUpdateRequest:
+      type: object
+      required: [account_id, chat_id, minutes]
+      properties:
+        account_id: {type: string}
+        chat_id: {type: string}
+        minutes: {type: integer, minimum: 1, maximum: 1440}
     OrderDTO:
       type: object
       required: [order_id, item_id, item_title, item_image, buyer_id, quantity, amount, order_status, status, cookie_id, created_at]

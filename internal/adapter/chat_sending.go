@@ -35,13 +35,14 @@ func NewChatSendingApplication(domainService *domainchat.Service, store *db.Stor
 		return chatapp.WithPlatformReadReporter(chatapp.WithChatItemCatalog(service, NewChatItemCatalog(store, clientProvider, manager)), readReporter)
 	}
 	// service 是装配历史、发送、订阅、刷新和身份能力的聊天应用服务。
-	service := chatapp.NewWithSendingSubscriptionAndRefresh(
+	service := chatapp.NewWithSendingSubscriptionAndRefreshAndDownloader(
 		NewChatRepository(store),
 		NewChatOutgoingRepository(domainService),
 		NewChatSenderProvider(manager),
 		NewChatImageUploader(store, clientProvider, manager),
 		NewChatSubscriptionProvider(domainService),
 		NewChatRefreshProvider(domainService, manager),
+		downloadAutomationImage,
 		NewChatIdentityResolver(store, clientProvider, manager),
 	)
 	return chatapp.WithPlatformReadReporter(chatapp.WithChatItemCatalog(service, NewChatItemCatalog(store, clientProvider, manager)), readReporter)
@@ -195,6 +196,37 @@ func (s chatSender) SendItemCard(ctx context.Context, chatID, toUserID string, i
 		return chatapp.ErrUnavailable
 	}
 	return classifyChatPlatformError(itemSender.SendItemCard(engine.WithOutgoingMessageKey(ctx, messageKey), chatID, toUserID, item.ItemID, item.Title, item.ImageURL, item.Price))
+}
+
+// chatReplyDelivery 将引擎生成的完整回复转交给聊天应用服务，不自行上传图片或拼装协议尺寸。
+type chatReplyDelivery struct {
+	// service 保存消息页面使用的统一聊天应用服务。
+	service *chatapp.Service
+}
+
+// NewChatReplyDelivery 创建自动回复使用的聊天应用发送端口。
+func NewChatReplyDelivery(service *chatapp.Service) engine.ReplyDelivery {
+	return chatReplyDelivery{service: service}
+}
+
+// SendReply 通过消息页面的完整回复入口发送图片和文字，并返回一次性状态所需的分段结果。
+func (d chatReplyDelivery) SendReply(ctx context.Context, message engine.ReplyMessage) (engine.ReplySendResult, error) {
+	if d.service == nil {
+		return engine.ReplySendResult{}, chatapp.ErrUnavailable
+	}
+	// sent、sendErr 保存聊天应用统一发送结果及错误。
+	sent, sendErr := d.service.SendReply(ctx, chatapp.ReplyInput{
+		Session: chatapp.Session{AccountID: message.AccountID, ChatID: message.ChatID, PeerUserID: message.ToUserID},
+		Text:    message.Text, ImageURL: message.ImageURL,
+	})
+	// result 保存引擎只关心的分段确认和未知结果标记，不泄露应用层消息模型。
+	result := engine.ReplySendResult{}
+	if sent != nil {
+		result.ImageSent = sent.ImageSent
+		result.TextSent = sent.TextSent
+	}
+	result.Uncertain = errors.Is(sendErr, chatapp.ErrSendUncertain) || errors.Is(sendErr, chatapp.ErrStatusSave)
+	return result, sendErr
 }
 
 // classifyChatPlatformError 将平台无法确认的发送结果映射为聊天应用错误；不会触发凭证恢复或重发。
@@ -470,4 +502,5 @@ var (
 	_ chatapp.Sender             = chatSender{}
 	_ chatapp.ImageUploader      = chatImageUploader{}
 	_ chatapp.ChatItemCatalog    = chatItemCatalog{}
+	_ engine.ReplyDelivery       = chatReplyDelivery{}
 )

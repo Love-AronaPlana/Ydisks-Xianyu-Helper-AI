@@ -142,8 +142,8 @@ func (c *apiDeliveryClient) Test(ctx context.Context, input cardsapp.APIRequestT
 	if err != nil {
 		return cardsapp.APIRequestTestResult{Status: "failed", StatusCode: response.StatusCode, ResponseContentType: response.Header.Get("Content-Type")}, err
 	}
-	// result 是返回给前端的非敏感状态、类型和限长响应预览。
-	result := cardsapp.APIRequestTestResult{Status: "success", StatusCode: response.StatusCode, ResponseContentType: response.Header.Get("Content-Type"), ResponsePreview: truncateAPITestPreview(string(rawBody))}
+	// result 保存返回给前端的非敏感诊断；响应字段默认使用空数组，保证失败或非对象响应仍符合 HTTP 契约。
+	result := cardsapp.APIRequestTestResult{Status: "success", StatusCode: response.StatusCode, ResponseContentType: response.Header.Get("Content-Type"), ResponseFields: []string{}, ResponsePreview: truncateAPITestPreview(string(rawBody))}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		result.Status = "failed"
 		return result, nil
