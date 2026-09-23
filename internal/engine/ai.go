@@ -52,23 +52,42 @@ func NewAIReplier(cookieID string, store *db.Store, logger *slog.Logger) *AIRepl
 	}
 }
 
-// Reply 实现 AIReplier 接口。
-func (a *AIReplierImpl) Reply(ctx context.Context, m ChatMessage) (*ReplyResult, error) {
-	// cfg、err 用于本次流程后续判断的cfg、err
+// aiReplyDecision 读取账号 AI 配置并判断本条买家消息是否需要交给模型。
+// 返回 proceed=false 表示按配置跳过 AI（开关关闭或议价模式下的非砍价消息），调用方应直接回退默认回复。
+func (a *AIReplierImpl) aiReplyDecision(ctx context.Context, m ChatMessage) (cfg *db.AIReplySettings, replyMode string, isBargain bool, proceed bool) {
+	// err 是读取账号 AI 设置的错误；读取失败保持既有静默行为，交由调用方回退默认回复。
 	cfg, err := a.store.AIReply.Get(ctx, a.cookieID)
-	if err != nil || cfg == nil || !cfg.AIEnabled {
-		return nil, nil // 未启用 AI
+	if err != nil {
+		return nil, "", false, false
 	}
-	// replyMode 是归一化后的 AI 回复模式；历史未配置或非法值按 bargain 保持旧行为。
-	replyMode := cfg.ReplyMode
+	if cfg == nil || !cfg.AIEnabled {
+		// 账号 AI 开关关闭时不再回复；这里必须留下可排查的记录，否则运营只会看到“AI 不回”。
+		a.logger.Warn("账号 AI 开关未开启，跳过 AI 回复", "chat_id", m.ChatID)
+		return nil, "", false, false
+	}
+	// 归一化回复模式；历史未配置或非法值按 bargain 保持旧行为。
+	replyMode = cfg.ReplyMode
 	if !db.IsAIReplyMode(replyMode) {
 		replyMode = db.AIReplyModeBargain
 	}
 	// isBargain 表示买家消息是否带有砍价意图；完全模式仅对砍价意图执行价格安全拦截。
-	isBargain := bargainMessageRe.MatchString(strings.ToLower(m.Text))
-	// bargain 模式沿用历史门槛：AI 设置面向砍价场景，普通未命中消息继续交给默认回复，
+	isBargain = bargainMessageRe.MatchString(strings.ToLower(m.Text))
+	// 议价模式沿用历史门槛：AI 设置面向砍价场景，普通未命中消息继续交给默认回复，
 	// 避免 AI 抢答问候、售后等与砍价无关的消息。
 	if replyMode == db.AIReplyModeBargain && !isBargain {
+		// 该分支是“人工接管到期后 AI 仍然不回”的常见原因：账号停留在议价模式时普通消息不会交给模型。
+		a.logger.Info("当前为议价模式且消息不含砍价意图，跳过 AI 回复", "chat_id", m.ChatID,
+			"hint", "如需所有消息都由 AI 回复，请在账号 AI 设置中切换为关键词优先或完全模式")
+		return cfg, replyMode, isBargain, false
+	}
+	return cfg, replyMode, isBargain, true
+}
+
+// Reply 实现 AIReplier 接口。
+func (a *AIReplierImpl) Reply(ctx context.Context, m ChatMessage) (*ReplyResult, error) {
+	// cfg、replyMode、isBargain、proceed 是本条消息的账号配置判定结果；proceed=false 时按配置跳过 AI。
+	cfg, replyMode, isBargain, proceed := a.aiReplyDecision(ctx, m)
+	if !proceed {
 		return nil, nil
 	}
 	// aiCfg、err 用于本次流程后续判断的人工智能Cfg、err

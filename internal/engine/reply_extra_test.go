@@ -937,5 +937,48 @@ func TestContains(t *testing.T) {
 	}
 }
 
+// TestReply_ExpiredHandoffFromOlderBuildReleasesAI 复现用户反馈的现场：
+// 买家“以前”发过人工、接管记录由旧版本（键带 @goofish 后缀、且已过期）写入，
+// 当前版本收到该买家的普通消息时必须立即恢复 AI 并清掉过期记录。
+func TestReply_ExpiredHandoffFromOlderBuildReleasesAI(t *testing.T) {
+	// store、cleanup 提供本测试独占的人工接管状态。
+	store, cleanup := newReplyStore(t)
+	defer cleanup()
+	// ctx 是状态写入和回复解析共用的测试上下文。
+	ctx := context.Background()
+	// setupErr 保存完全模式与人工接管配置的写入结果；完全模式下 AI 对所有消息生效，便于断言恢复。
+	if setupErr := store.AIReply.UpsertSettings(ctx, "cid", db.AIReplySettings{
+		AIEnabled: true, HumanHandoffMinutes: 30, ReplyMode: db.AIReplyModeFull,
+	}); setupErr != nil {
+		t.Fatal(setupErr)
+	}
+	// 旧版本按原始发送者标识写入接管记录，这里模拟带平台后缀的历史键。
+	if legacyErr := store.AIReply.ActivateHumanHandoff(ctx, "cid", "1000000000001@goofish", 1_000); legacyErr != nil {
+		t.Fatalf("写入历史接管失败: %v", legacyErr)
+	}
+	// ai 返回固定内容，用于断言接管到期后 AI 确实恢复。
+	ai := &fakeAIReplier{result: &ReplyResult{Text: "AI恢复"}}
+	// reply 的时钟停在历史截止时间之后，代表接管早已过期。
+	reply := NewReplyService("cid", store, nil, nil, ai, nil)
+	reply.now = func() time.Time { return time.Unix(9_000, 0).UTC() }
+	// message 是该买家在接管过期后的普通消息。
+	message := chatMsg("在吗", "", "chat-old-handoff")
+	message.SenderUserID = "1000000000001"
+	// result 必须来自 AI，证明过期的历史接管不会永久禁用该买家的 AI。
+	result := reply.resolve(ctx, message)
+	if result == nil || result.Source != "AI" || ai.called != 1 {
+		t.Fatalf("过期历史接管应恢复 AI: result=%+v calls=%d", result, ai.called)
+	}
+	// 归一后的键在无记录时不应留下任何接管残留。
+	if pausedUntil, found, readErr := store.AIReply.GetHumanHandoff(ctx, "cid", "1000000000001"); readErr != nil || found || pausedUntil != 0 {
+		t.Fatalf("归一键不应存在接管记录=(%d,%v,%v)", pausedUntil, found, readErr)
+	}
+	// 旧后缀键的记录本就不该再影响新版本；这里同时确认它也不会被误判为有效。
+	legacyActive, legacyErr := store.AIReply.IsHumanHandoffActive(ctx, "cid", "1000000000001@goofish", 9_000)
+	if legacyErr != nil || legacyActive {
+		t.Fatalf("历史后缀键不应仍有效: active=%v err=%v", legacyActive, legacyErr)
+	}
+}
+
 // 编译期保证 db 包被引用（测试构造 store 时使用）。
 var _ = db.DialectSQLite

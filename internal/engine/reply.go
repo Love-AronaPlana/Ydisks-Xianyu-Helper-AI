@@ -353,6 +353,8 @@ func (r *ReplyService) humanHandoffBlocksAI(ctx context.Context, m ChatMessage) 
 		return false
 	}
 	if pausedUntil > nowUnix {
+		// 记录剩余秒数，让运营能直接判断当前是“还在接管窗口内”还是“接管已过期但 AI 因其它原因不回”。
+		r.logger.Info("人工接管期间跳过 AI 回复", "buyer", buyerKey, "remaining_seconds", pausedUntil-nowUnix)
 		return true
 	}
 	// 已到期：清理记录并记录一次恢复日志，既避免过期记录无限累积，也让运营能直接看到 AI 恢复时刻。
