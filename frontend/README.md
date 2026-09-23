@@ -28,7 +28,7 @@ frontend/
 ## 开发
 
 ```bash
-cd /Users/christ/Workspace/git/xianyu/Ydisks-Xianyu-Helper/frontend
+cd /path/to/Ydisks-Xianyu-Helper/frontend
 npm ci
 npm run dev
 ```
