@@ -551,11 +551,37 @@ func isSelfUserID(senderUserID, selfUserID string) bool {
 	return sender != "" && self != "" && sender == self
 }
 
+// platformPromoPhrases 是平台插进会话的营销/引导文案特征。
+// 已知样本：“开通留资卡功能 建联更安全”：它以普通消息形态出现且 contentType 不是 14/25/26，
+// 只靠结构化字段拦不住，命中这些文案时按系统提示处理，不进入自动回复链、也不调用 AI。
+// 平台会不定期更换文案，发现新样本时在此追加即可。
+var platformPromoPhrases = []string{
+	"开通留资卡功能",
+	"建联更安全",
+}
+
+// isPlatformPromoNotice 判断消息正文是否命中平台营销/引导文案。
+func isPlatformPromoNotice(reminder string) bool {
+	// text 是去掉首尾空白后的消息正文，避免平台在文案两侧补空格影响匹配。
+	text := strings.TrimSpace(reminder)
+	if text == "" {
+		return false
+	}
+	// phrase 是当前比对的平台文案特征。
+	for _, phrase := range platformPromoPhrases {
+		if strings.Contains(text, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
 // isNonUserChatNotice 判断闲鱼 IM 中不应进入自动回复的系统提示或交易卡片。
 // 典型样本：
 // - contentType=14：“有蚂蚁森林能量可领”“不想宝贝被砍价?设置不砍价回复”“退款成功”
 // - contentType=26：交易卡片，如“我已拍下，待付款”“我发起了退款申请”
 // - contentType=25：确认收货后的评价提醒，如“快给ta一个评价吧～”
+// - 普通消息形态的平台营销文案：“开通留资卡功能 建联更安全”
 // 付款待发货卡片已经在 handleMessage 前半段进入 automation.Center，这里不能再进入聊天回复链。
 // isNonUserChatNotice 封装isNon用户聊天Notice业务协调。
 func isNonUserChatNotice(m1, m10 map[string]any, reminder string) bool {
@@ -566,6 +592,9 @@ func isNonUserChatNotice(m1, m10 map[string]any, reminder string) bool {
 		return true
 	}
 	if strings.TrimSpace(reminder) == "快给ta一个评价吧～" || strings.TrimSpace(reminder) == "快给ta一个评价吧~" {
+		return true
+	}
+	if isPlatformPromoNotice(reminder) {
 		return true
 	}
 	if // sessionType 用于本次流程后续判断的会话类型

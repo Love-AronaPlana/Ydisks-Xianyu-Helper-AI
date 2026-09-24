@@ -885,6 +885,18 @@ func TestIsNonUserChatNotice(t *testing.T) {
 	if !isNonUserChatNotice(map[string]any{}, map[string]any{}, "快给ta一个评价吧～") {
 		t.Error("评价提醒文案即使缺少扩展字段也不应进入聊天回复")
 	}
+	// 平台营销文案以普通消息形态出现，必须按系统提示处理，避免 AI 去回答平台引导语。
+	if !isNonUserChatNotice(map[string]any{}, map[string]any{}, "开通留资卡功能 建联更安全") {
+		t.Fatal("平台营销文案应被过滤")
+	}
+	// 文案两侧可能带空格，仍须命中。
+	if !isPlatformPromoNotice("  开通留资卡功能 建联更安全  ") {
+		t.Fatal("带空格的平台营销文案应被过滤")
+	}
+	// 普通买家消息不能被误伤。
+	if isPlatformPromoNotice("这个留资卡是干嘛的") || isPlatformPromoNotice("") {
+		t.Fatal("普通买家消息不应被当作平台文案")
+	}
 	if isNonUserChatNotice(map[string]any{}, map[string]any{}, "[买家说你好]") {
 		t.Error("普通消息不应判为系统提示")
 	}
